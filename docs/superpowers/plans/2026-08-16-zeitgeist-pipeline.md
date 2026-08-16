@@ -185,6 +185,21 @@ from pydantic import ValidationError
 
 from zeitgeist.models import MediaBrief, Post, ScoredTopic, Sentiment, Topic
 
+# The complete specified field set. Written out by hand rather than derived
+# from the model, so that a change to the model fails this test.
+POST_FIELDS = {
+    "platform",
+    "source_id",
+    "title",
+    "body_excerpt",
+    "permalink",
+    "score",
+    "comment_count",
+    "created_at",
+    "fetched_at",
+    "channel",
+}
+
 
 def _post(**overrides) -> Post:
     defaults = dict(
@@ -202,58 +217,104 @@ def _post(**overrides) -> Post:
     return Post(**{**defaults, **overrides})
 
 
-def test_post_round_trips_through_json():
-    post = _post()
-    restored = Post.model_validate_json(post.model_dump_json())
-    assert restored == post
-
-
-def test_post_has_no_author_field():
-    assert "author" not in Post.model_fields
-
-
-def test_topic_defaults_to_zero_score():
-    topic = Topic(id="cats", label="Cats", summary="Cat things.", post_ids=["abc123"])
-    assert topic.trend_score == 0.0
-    assert topic.score_components == {}
-
-
-def test_scored_topic_extends_topic():
-    scored = ScoredTopic(
+def _scored(**overrides) -> ScoredTopic:
+    defaults = dict(
         id="cats",
         label="Cats",
         summary="Cat things.",
         post_ids=["abc123"],
         primary_sentiment=Sentiment.CUTE,
-        valence=0.8,
-        meme_potential=0.9,
+        valence=0.5,
+        meme_potential=0.5,
     )
-    assert isinstance(scored, Topic)
+    return ScoredTopic(**{**defaults, **overrides})
+
+
+def test_post_carries_exactly_the_specified_fields():
+    """Catches two breaks at once: a PII field such as `author` creeping in,
+    and a field the checkpoint format depends on quietly disappearing.
+    """
+    assert set(Post.model_fields) == POST_FIELDS
+
+
+@pytest.mark.parametrize("field", ["author", "username", "user_id", "titel"])
+def test_post_rejects_undeclared_fields(field):
+    """Without extra="forbid", Pydantic silently drops unknown keys — so a
+    typo'd field name or an author slipped in by a new source would pass
+    unnoticed rather than failing loudly.
+    """
+    with pytest.raises(ValidationError):
+        _post(**{field: "somebody"})
+
+
+@pytest.mark.parametrize("valence", [-1.01, 1.01, 5.0, -5.0])
+def test_valence_outside_minus_one_to_one_is_rejected(valence):
+    with pytest.raises(ValidationError):
+        _scored(valence=valence)
+
+
+@pytest.mark.parametrize("valence", [-1.0, 0.0, 1.0])
+def test_valence_accepts_its_boundaries(valence):
+    assert _scored(valence=valence).valence == valence
+
+
+@pytest.mark.parametrize("meme_potential", [-0.01, 1.01])
+def test_meme_potential_outside_zero_to_one_is_rejected(meme_potential):
+    with pytest.raises(ValidationError):
+        _scored(meme_potential=meme_potential)
+
+
+@pytest.mark.parametrize("meme_potential", [0.0, 1.0])
+def test_meme_potential_accepts_its_boundaries(meme_potential):
+    assert _scored(meme_potential=meme_potential).meme_potential == meme_potential
+
+
+def test_topic_defaults_leave_room_for_the_scoring_stage():
+    """score_topics fills these in later; the defaults are what let a topic
+    exist between consolidation and scoring.
+    """
+    topic = Topic(id="cats", label="Cats", summary="Cat things.", post_ids=["abc123"])
+    assert topic.trend_score == 0.0
+    assert topic.score_components == {}
+
+
+def test_scored_topic_defaults_leave_room_for_the_selection_stage():
+    scored = _scored()
     assert scored.secondary_sentiments == []
     assert scored.final_rank == 0
 
 
-def test_valence_outside_range_is_rejected():
-    with pytest.raises(ValidationError):
-        ScoredTopic(
-            id="x",
-            label="X",
-            summary="",
-            post_ids=[],
-            primary_sentiment=Sentiment.FUNNY,
-            valence=2.0,
-            meme_potential=0.5,
-        )
-
-
-def test_media_brief_requires_caption_slots():
-    brief = MediaBrief(
-        topic_id="cats",
-        template_id="drake",
-        caption_slots={"rejected": "Dogs", "preferred": "Cats"},
-        rationale="Preference structure fits.",
+def test_scored_topic_accepts_every_field_of_a_scored_topic():
+    """judge_topics constructs ScoredTopic(**topic.model_dump(), ...). If the
+    two models drift apart, that call breaks — here rather than mid-run.
+    """
+    topic = Topic(
+        id="cats",
+        label="Cats",
+        summary="Cat things.",
+        post_ids=["abc123"],
+        trend_score=0.7,
+        score_components={"base": 0.7},
     )
-    assert brief.caption_slots["preferred"] == "Cats"
+    scored = ScoredTopic(
+        **topic.model_dump(),
+        primary_sentiment=Sentiment.CUTE,
+        valence=0.5,
+        meme_potential=0.5,
+    )
+    assert scored.trend_score == 0.7
+    assert scored.score_components == {"base": 0.7}
+
+
+def test_media_brief_rejects_undeclared_fields():
+    with pytest.raises(ValidationError):
+        MediaBrief(
+            topic_id="cats",
+            template_id="drake",
+            caption_slots={"rejected": "Dogs"},
+            rationale="",
+            image_url="http://example.com/not-a-real-field",
+        )
 ```
 
 - [ ] **Step 8: Run test to verify it fails**
@@ -269,7 +330,12 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.models'`
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+# Unknown keys are an error, not something to drop quietly. A misspelled field
+# in a new Source, or an `author` slipped in by a future platform, should fail
+# loudly at the boundary rather than vanish.
+STRICT = ConfigDict(extra="forbid")
 
 
 class Sentiment(str, Enum):
@@ -295,6 +361,8 @@ class Post(BaseModel):
     and omitting it keeps the project clear of storing personal data.
     """
 
+    model_config = STRICT
+
     platform: str
     source_id: str
     title: str
@@ -309,6 +377,8 @@ class Post(BaseModel):
 
 class Topic(BaseModel):
     """A cluster of posts about the same thing."""
+
+    model_config = STRICT
 
     id: str
     label: str
@@ -331,6 +401,8 @@ class ScoredTopic(Topic):
 class MediaBrief(BaseModel):
     """Instructions for rendering one piece of media."""
 
+    model_config = STRICT
+
     topic_id: str
     template_id: str
     caption_slots: dict[str, str]
@@ -340,7 +412,7 @@ class MediaBrief(BaseModel):
 - [ ] **Step 10: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_models.py -v`
-Expected: PASS, 6 tests
+Expected: PASS, 20 tests
 
 - [ ] **Step 11: Format and lint**
 
@@ -374,6 +446,8 @@ git commit -m "feat: add uv project scaffold and domain models"
 Create `tests/test_config.py`:
 
 ```python
+import pytest
+
 from zeitgeist.config import DEFAULT_SENTIMENT_WEIGHTS, Settings
 from zeitgeist.models import Sentiment
 
@@ -387,36 +461,41 @@ def _settings(**overrides) -> Settings:
     return Settings(**{**defaults, **overrides})
 
 
-def test_defaults_are_populated():
-    settings = _settings()
-    assert settings.llm_provider == "anthropic"
-    assert settings.post_limit == 500
-    assert settings.topic_count == 5
-    assert settings.ollama_host == "http://localhost:11434"
-
-
-def test_subreddits_parse_from_comma_separated_string():
-    settings = _settings(subreddits="cats, aww ,mildlyinteresting")
-    assert settings.subreddits == ["cats", "aww", "mildlyinteresting"]
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("cats,aww", ["cats", "aww"]),
+        ("cats, aww ,mildlyinteresting", ["cats", "aww", "mildlyinteresting"]),
+        ("cats,,aww,", ["cats", "aww"]),
+        ("  ", []),
+        ("", []),
+        (["cats", "aww"], ["cats", "aww"]),
+    ],
+)
+def test_subreddits_parse_from_env_strings(raw, expected):
+    """Env vars arrive as strings; the validator has to survive the messy
+    ways a human writes a list into a .env file.
+    """
+    assert _settings(subreddits=raw).subreddits == expected
 
 
 def test_every_sentiment_has_a_default_weight():
-    for sentiment in Sentiment:
-        assert sentiment in DEFAULT_SENTIMENT_WEIGHTS
+    """A sentiment added to the enum without a weight would silently score
+    as neutral, quietly defeating the preference for positive topics.
+    """
+    assert set(DEFAULT_SENTIMENT_WEIGHTS) == set(Sentiment)
 
 
-def test_positive_sentiments_outweigh_negative_ones():
-    assert (
-        DEFAULT_SENTIMENT_WEIGHTS[Sentiment.HEARTWARMING]
-        > DEFAULT_SENTIMENT_WEIGHTS[Sentiment.OUTRAGE]
-    )
-
-
-def test_weight_for_falls_back_to_one_when_unset():
+def test_weight_for_falls_back_to_neutral_when_unconfigured():
+    """A user who overrides SENTIMENT_WEIGHTS with a partial map must not
+    crash the run on the sentiments they left out.
+    """
     settings = _settings(sentiment_weights={Sentiment.CUTE: 2.0})
     assert settings.weight_for(Sentiment.CUTE) == 2.0
     assert settings.weight_for(Sentiment.SAD) == 1.0
 ```
+
+`test_defaults_are_populated` and `test_positive_sentiments_outweigh_negative_ones` are deliberately **not** here. The first asserts constants back at themselves — it fails on every intentional retune and catches no bug. The second states a design decision as a comparison of two numbers; the behaviour it actually protects is tested for real in `test_analysis_sentiment.py`, where a positive topic is shown to outrank a negative one at equal trend.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -497,7 +576,7 @@ class Settings(BaseSettings):
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_config.py -v`
-Expected: PASS, 5 tests
+Expected: PASS, 8 tests
 
 - [ ] **Step 5: Create `.env.example`**
 
@@ -592,13 +671,11 @@ def test_queued_exception_is_raised():
     provider = FakeLLMProvider([LLMError("model exploded")])
     with pytest.raises(LLMError, match="model exploded"):
         provider.complete("p", Answer)
-
-
-def test_queue_appends_after_construction():
-    provider = FakeLLMProvider()
-    provider.queue(Answer(value="later"))
-    assert provider.complete("p", Answer).value == "later"
 ```
+
+Every test here guards something other tests rely on. The double is what keeps roughly forty other tests honest, so its own failure modes matter: silently returning the wrong schema, or silently succeeding when a test forgot to queue a response, would turn real assertions elsewhere into tautologies. That is the break these five catch.
+
+`queue()` is deliberately absent from the double — no test needs it, and an unused method on a test utility is just more surface to maintain.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -660,9 +737,6 @@ class FakeLLMProvider:
     name: str = "fake"
     calls: list[LLMCall] = field(default_factory=list)
 
-    def queue(self, response: BaseModel | Exception) -> None:
-        self.responses.append(response)
-
     def complete(
         self, prompt: str, schema: type[M], *, system: str | None = None
     ) -> M:
@@ -685,7 +759,7 @@ class FakeLLMProvider:
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_llm_base.py -v`
-Expected: PASS, 6 tests
+Expected: PASS, 5 tests
 
 - [ ] **Step 6: Commit**
 
@@ -744,44 +818,74 @@ class StubClient:
         return self._responses.pop(0)
 
 
+def _provider(client) -> AnthropicProvider:
+    return AnthropicProvider(api_key="k", model="claude-test", client=client)
+
+
 def test_returns_validated_model():
-    client = StubClient([_tool_response({"value": "hello"})])
-    provider = AnthropicProvider(api_key="k", model="m", client=client)
+    provider = _provider(StubClient([_tool_response({"value": "hello"})]))
     assert provider.complete("prompt", Answer).value == "hello"
 
 
-def test_passes_schema_as_tool_input_schema():
+def test_sends_the_schema_as_the_tool_contract():
+    """The request payload is our contract with the API. A wrong tool name,
+    a missing tool_choice, or a schema that is not the one asked for all
+    produce unstructured replies at runtime and nothing else catches them.
+    """
     client = StubClient([_tool_response({"value": "hello"})])
-    provider = AnthropicProvider(api_key="k", model="m", client=client)
-    provider.complete("prompt", Answer, system="be terse")
+    _provider(client).complete("prompt", Answer, system="be terse")
+
     request = client.requests[0]
+    assert request["model"] == "claude-test"
     assert request["system"] == "be terse"
-    assert request["tools"][0]["input_schema"]["properties"]["value"]
+    assert request["messages"] == [{"role": "user", "content": "prompt"}]
     assert request["tool_choice"] == {"type": "tool", "name": "respond"}
+    assert request["tools"][0]["name"] == "respond"
+    assert request["tools"][0]["input_schema"] == Answer.model_json_schema()
 
 
-def test_retries_once_on_validation_failure():
+def test_system_key_is_absent_when_no_system_prompt_is_given():
+    """Sending system=None is an API error, so the key must be omitted
+    entirely rather than passed as null.
+    """
+    client = StubClient([_tool_response({"value": "hello"})])
+    _provider(client).complete("prompt", Answer)
+    assert "system" not in client.requests[0]
+
+
+def test_retries_once_with_the_validation_error_appended():
     client = StubClient(
         [_tool_response({"wrong": 1}), _tool_response({"value": "recovered"})]
     )
-    provider = AnthropicProvider(api_key="k", model="m", client=client)
-    assert provider.complete("prompt", Answer).value == "recovered"
-    assert len(client.requests) == 2
-    assert "validation" in client.requests[1]["messages"][0]["content"].lower()
+    assert _provider(client).complete("prompt", Answer).value == "recovered"
+
+    retry_prompt = client.requests[1]["messages"][0]["content"]
+    assert "prompt" in retry_prompt
+    assert "value" in retry_prompt, "the retry must tell the model what was wrong"
 
 
-def test_raises_after_second_validation_failure():
-    client = StubClient([_tool_response({"wrong": 1}), _tool_response({"bad": 2})])
-    provider = AnthropicProvider(api_key="k", model="m", client=client)
-    with pytest.raises(LLMError):
+def test_gives_up_after_exactly_two_attempts():
+    """Bounds the retry: an unbounded loop against a model that always
+    returns garbage would spend money until the process is killed.
+    """
+    client = StubClient(
+        [
+            _tool_response({"wrong": 1}),
+            _tool_response({"bad": 2}),
+            _tool_response({"value": "never reached"}),
+        ]
+    )
+    provider = _provider(client)
+    with pytest.raises(LLMError, match="Answer"):
         provider.complete("prompt", Answer)
+    assert len(client.requests) == 2
 
 
 def test_raises_when_no_tool_use_block_returned():
+    """A text-only reply must not be mistaken for a valid empty result."""
     client = StubClient([SimpleNamespace(content=[]), SimpleNamespace(content=[])])
-    provider = AnthropicProvider(api_key="k", model="m", client=client)
     with pytest.raises(LLMError):
-        provider.complete("prompt", Answer)
+        _provider(client).complete("prompt", Answer)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -815,7 +919,8 @@ class AnthropicProvider:
 
             client = Anthropic(api_key=api_key)
         self._client = client
-        self._model = model
+        # Public: the factory wires these from Settings, and tests assert it.
+        self.model = model
 
     def complete(
         self, prompt: str, schema: type[M], *, system: str | None = None
@@ -830,7 +935,7 @@ class AnthropicProvider:
 
         for _ in range(2):
             kwargs: dict[str, Any] = {
-                "model": self._model,
+                "model": self.model,
                 "max_tokens": MAX_TOKENS,
                 "tools": [tool],
                 "tool_choice": {"type": "tool", "name": TOOL_NAME},
@@ -870,7 +975,7 @@ def _extract_tool_input(response: Any) -> dict | None:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_llm_anthropic.py -v`
-Expected: PASS, 5 tests
+Expected: PASS, 6 tests
 
 - [ ] **Step 5: Commit**
 
@@ -912,70 +1017,115 @@ class Answer(BaseModel):
 
 
 class StubResponse:
-    def __init__(self, payload):
-        self._payload = payload
+    """Ollama replies with the model's text in message.content."""
+
+    def __init__(self, content: str, error: Exception | None = None):
+        self._content = content
+        self._error = error
 
     def raise_for_status(self):
-        return None
+        if self._error is not None:
+            raise self._error
 
     def json(self):
-        return {"message": {"content": json.dumps(self._payload)}}
+        return {"message": {"content": self._content}}
 
 
 class StubClient:
-    def __init__(self, payloads):
-        self._payloads = list(payloads)
+    """Replays raw response bodies so malformed output is as easy to stage
+    as valid output — no subclassing needed per case.
+    """
+
+    def __init__(self, responses: list[StubResponse]):
+        self._responses = list(responses)
         self.requests = []
 
     def post(self, url, json=None, timeout=None):
-        self.requests.append((url, json))
-        return StubResponse(self._payloads.pop(0))
+        self.requests.append((url, json, timeout))
+        return self._responses.pop(0)
+
+
+def _ok(payload: dict) -> StubResponse:
+    return StubResponse(json.dumps(payload))
+
+
+def _provider(client) -> OllamaProvider:
+    return OllamaProvider(host="http://h", model="qwen-test", client=client)
 
 
 def test_returns_validated_model():
-    client = StubClient([{"value": "hello"}])
-    provider = OllamaProvider(host="http://h", model="m", client=client)
-    assert provider.complete("prompt", Answer).value == "hello"
+    assert _provider(StubClient([_ok({"value": "hello"})])).complete(
+        "prompt", Answer
+    ).value == "hello"
 
 
-def test_sends_schema_as_format():
-    client = StubClient([{"value": "hello"}])
-    provider = OllamaProvider(host="http://h", model="m", client=client)
-    provider.complete("prompt", Answer, system="be terse")
-    url, body = client.requests[0]
+def test_sends_the_schema_as_the_format_constraint():
+    """Ollama only constrains output when `format` carries the JSON schema
+    and streaming is off. Losing either silently returns prose.
+    """
+    client = StubClient([_ok({"value": "hello"})])
+    _provider(client).complete("prompt", Answer, system="be terse")
+
+    url, body, timeout = client.requests[0]
     assert url == "http://h/api/chat"
-    assert body["format"]["properties"]["value"]
+    assert body["model"] == "qwen-test"
+    assert body["format"] == Answer.model_json_schema()
     assert body["stream"] is False
-    assert body["messages"][0] == {"role": "system", "content": "be terse"}
+    assert body["messages"] == [
+        {"role": "system", "content": "be terse"},
+        {"role": "user", "content": "prompt"},
+    ]
+    assert timeout is not None, "a local model can take minutes; never unbounded"
 
 
-def test_retries_once_on_validation_failure():
-    client = StubClient([{"wrong": 1}, {"value": "recovered"}])
-    provider = OllamaProvider(host="http://h", model="m", client=client)
-    assert provider.complete("prompt", Answer).value == "recovered"
+def test_omits_the_system_message_when_none_is_given():
+    client = StubClient([_ok({"value": "hello"})])
+    _provider(client).complete("prompt", Answer)
+    assert client.requests[0][1]["messages"] == [
+        {"role": "user", "content": "prompt"}
+    ]
+
+
+def test_trailing_slash_on_host_does_not_double_up():
+    client = StubClient([_ok({"value": "hello"})])
+    OllamaProvider(host="http://h/", model="m", client=client).complete(
+        "prompt", Answer
+    )
+    assert client.requests[0][0] == "http://h/api/chat"
+
+
+def test_retries_once_with_the_validation_error_appended():
+    client = StubClient([_ok({"wrong": 1}), _ok({"value": "recovered"})])
+    assert _provider(client).complete("prompt", Answer).value == "recovered"
+    assert "value" in client.requests[1][1]["messages"][0]["content"]
+
+
+def test_malformed_json_is_treated_as_a_validation_failure():
+    """Small local models emit prose around their JSON often enough that
+    this must be a retry, not a crash.
+    """
+    client = StubClient([StubResponse("not json at all"), _ok({"value": "ok"})])
+    assert _provider(client).complete("prompt", Answer).value == "ok"
+
+
+def test_gives_up_after_exactly_two_attempts():
+    client = StubClient(
+        [_ok({"wrong": 1}), _ok({"bad": 2}), _ok({"value": "never reached"})]
+    )
+    client_provider = _provider(client)
+    with pytest.raises(LLMError, match="Answer"):
+        client_provider.complete("prompt", Answer)
     assert len(client.requests) == 2
 
 
-def test_raises_after_second_validation_failure():
-    client = StubClient([{"wrong": 1}, {"bad": 2}])
-    provider = OllamaProvider(host="http://h", model="m", client=client)
-    with pytest.raises(LLMError):
-        provider.complete("prompt", Answer)
-
-
-def test_raises_on_non_json_content():
-    class BadResponse(StubResponse):
-        def json(self):
-            return {"message": {"content": "not json at all"}}
-
-    class BadClient(StubClient):
-        def post(self, url, json=None, timeout=None):
-            self.requests.append((url, json))
-            return BadResponse({})
-
-    provider = OllamaProvider(host="http://h", model="m", client=BadClient([{}, {}]))
-    with pytest.raises(LLMError):
-        provider.complete("prompt", Answer)
+def test_http_errors_are_not_swallowed_as_validation_failures():
+    """A stopped Ollama server should surface as a connection problem, not
+    be retried once and reported as a schema failure.
+    """
+    boom = RuntimeError("connection refused")
+    client = StubClient([StubResponse("", error=boom)])
+    with pytest.raises(RuntimeError, match="connection refused"):
+        _provider(client).complete("prompt", Answer)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1009,8 +1159,9 @@ class OllamaProvider:
 
             client = httpx.Client()
         self._client = client
-        self._host = host.rstrip("/")
-        self._model = model
+        # Public: the factory wires these from Settings, and tests assert it.
+        self.host = host.rstrip("/")
+        self.model = model
 
     def complete(
         self, prompt: str, schema: type[M], *, system: str | None = None
@@ -1025,9 +1176,9 @@ class OllamaProvider:
             messages.append({"role": "user", "content": attempt_prompt})
 
             response = self._client.post(
-                f"{self._host}/api/chat",
+                f"{self.host}/api/chat",
                 json={
-                    "model": self._model,
+                    "model": self.model,
                     "messages": messages,
                     "format": schema.model_json_schema(),
                     "stream": False,
@@ -1055,7 +1206,7 @@ class OllamaProvider:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_llm_ollama.py -v`
-Expected: PASS, 5 tests
+Expected: PASS, 8 tests
 
 - [ ] **Step 5: Write the failing test for the factory**
 
@@ -1065,7 +1216,9 @@ Create `tests/test_llm_factory.py`:
 import pytest
 
 from zeitgeist.config import Settings
+from zeitgeist.llm.anthropic import AnthropicProvider
 from zeitgeist.llm.factory import build_provider
+from zeitgeist.llm.ollama import OllamaProvider
 
 
 def _settings(**overrides) -> Settings:
@@ -1077,19 +1230,39 @@ def _settings(**overrides) -> Settings:
     return Settings(**{**defaults, **overrides})
 
 
-def test_builds_anthropic_by_default():
-    assert build_provider(_settings()).name == "anthropic"
+def test_builds_anthropic_by_default_wired_to_the_configured_model():
+    provider = build_provider(_settings(llm_model="claude-configured"))
+    assert isinstance(provider, AnthropicProvider)
+    assert provider.model == "claude-configured"
 
 
-def test_builds_ollama_when_configured():
-    settings = _settings(llm_provider="ollama", llm_model="qwen2.5:14b")
-    assert build_provider(settings).name == "ollama"
+def test_builds_ollama_wired_to_the_configured_host_and_model():
+    """Catches the classic factory bug: constructing the right class with
+    arguments crossed or defaulted, which only shows up as a live API call
+    against the wrong model.
+    """
+    settings = _settings(
+        llm_provider="ollama",
+        llm_model="qwen2.5:14b",
+        ollama_host="http://gpu-box:11434",
+    )
+    provider = build_provider(settings)
+    assert isinstance(provider, OllamaProvider)
+    assert provider.model == "qwen2.5:14b"
+    assert provider.host == "http://gpu-box:11434"
 
 
-def test_anthropic_without_api_key_is_rejected():
-    settings = _settings(anthropic_api_key="")
+def test_anthropic_without_api_key_fails_before_any_request():
+    """Without this the failure surfaces as a 401 partway through a run,
+    after the scrape has already been paid for.
+    """
     with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
-        build_provider(settings)
+        build_provider(_settings(anthropic_api_key=""))
+
+
+def test_ollama_needs_no_anthropic_key():
+    provider = build_provider(_settings(llm_provider="ollama", anthropic_api_key=""))
+    assert isinstance(provider, OllamaProvider)
 ```
 
 - [ ] **Step 6: Run test to verify it fails**
@@ -1201,7 +1374,49 @@ def test_most_recent_prior_run_wins(tmp_path):
     assert store.previous_scores(exclude_run_id="run4") == {"Cats": 0.9}
 
 
+def test_each_label_tracks_its_own_history(tmp_path):
+    """Guards the correlated subquery: a naive MAX over all runs would give
+    every label the newest run's score.
+    """
+    store = _store(tmp_path)
+    store.start_run("run1")
+    store.record_topics("run1", [_topic("Cats", 0.2), _topic("Dogs", 0.9)])
+    store.finish_run("run1", status="ok", post_count=10)
+
+    store.start_run("run2")
+    store.record_topics("run2", [_topic("Cats", 0.7)])
+    store.finish_run("run2", status="ok", post_count=10)
+
+    assert store.previous_scores(exclude_run_id="run3") == {"Cats": 0.7, "Dogs": 0.9}
+
+
+def test_finish_run_records_the_outcome(tmp_path):
+    """Without this, deleting the body of finish_run breaks no test, and the
+    CLI's closing summary silently reports nothing.
+    """
+    store = _store(tmp_path)
+    store.start_run("run1")
+    assert store.run_summary("run1") == {
+        "status": None,
+        "post_count": None,
+        "finished_at": None,
+    }
+
+    store.finish_run("run1", status="ok", post_count=42)
+    summary = store.run_summary("run1")
+    assert summary["status"] == "ok"
+    assert summary["post_count"] == 42
+    assert summary["finished_at"] is not None
+
+
+def test_run_summary_is_none_for_an_unknown_run(tmp_path):
+    assert _store(tmp_path).run_summary("never-happened") is None
+
+
 def test_init_schema_is_idempotent(tmp_path):
+    """The CLI calls init_schema on every run, so a bare CREATE TABLE would
+    fail the second time anyone used the tool.
+    """
     store = Store(tmp_path / "test.db")
     store.init_schema()
     store.init_schema()
@@ -1209,6 +1424,7 @@ def test_init_schema_is_idempotent(tmp_path):
 
 
 def test_creates_parent_directory(tmp_path):
+    """data/ is gitignored, so it does not exist on a fresh clone."""
     store = Store(tmp_path / "nested" / "dir" / "test.db")
     store.init_schema()
     assert (tmp_path / "nested" / "dir" / "test.db").exists()
@@ -1303,6 +1519,18 @@ class Store:
         ).fetchall()
         return {label: score for label, score in rows}
 
+    def run_summary(self, run_id: str) -> dict | None:
+        """Outcome of a run, or None if there is no such run. Used by the CLI
+        to report what a run actually did.
+        """
+        row = self._conn.execute(
+            "SELECT status, post_count, finished_at FROM runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {"status": row[0], "post_count": row[1], "finished_at": row[2]}
+
     def close(self) -> None:
         self._conn.close()
 
@@ -1314,7 +1542,7 @@ def _now() -> str:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_store.py -v`
-Expected: PASS, 6 tests
+Expected: PASS, 9 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1423,16 +1651,24 @@ def _source(by_name, subreddits=()):
 
 
 def test_maps_submissions_onto_posts():
-    listing = StubListing([StubSubmission("a1", "Cat opens door")])
-    source = _source({"all": listing})
-    posts = source.fetch(limit=10)
+    """Every downstream stage reads these fields. A crossed assignment —
+    comment_count into score, or fetched_at into created_at — would skew
+    every velocity calculation while breaking nothing visibly.
+    """
+    listing = StubListing(
+        [StubSubmission("a1", "Cat opens door", score=1234, comments=56)]
+    )
+    post = _source({"all": listing}).fetch(limit=10)[0]
 
-    assert posts[0].platform == "reddit"
-    assert posts[0].source_id == "a1"
-    assert posts[0].title == "Cat opens door"
-    assert posts[0].channel == "cats"
-    assert posts[0].permalink.startswith("https://www.reddit.com/")
-    assert posts[0].created_at.tzinfo is not None
+    assert post.platform == "reddit"
+    assert post.source_id == "a1"
+    assert post.title == "Cat opens door"
+    assert post.channel == "cats"
+    assert post.score == 1234
+    assert post.comment_count == 56
+    assert post.permalink == "https://www.reddit.com/r/cats/comments/a1/"
+    assert post.created_at == datetime(2026, 8, 16, 9, 0, tzinfo=UTC)
+    assert post.fetched_at > post.created_at
 
 
 def test_deduplicates_across_hot_and_rising():
@@ -1455,14 +1691,23 @@ def test_respects_the_limit():
     assert len(posts) == 5
 
 
-def test_truncates_long_body_text():
-    listing = StubListing([StubSubmission("a1", "T", selftext="x" * 900)])
+def test_truncates_long_body_to_the_leading_excerpt():
+    """Keeps prompt size bounded. Asserting the content, not just the
+    length, catches a slice taken from the wrong end.
+    """
+    body = "".join(str(n % 10) for n in range(900))
+    listing = StubListing([StubSubmission("a1", "T", selftext=body)])
     posts = _source({"all": listing}).fetch(limit=10)
-    assert len(posts[0].body_excerpt) == 500
+    assert posts[0].body_excerpt == body[:500]
 
 
-def test_empty_body_becomes_none():
-    posts = _source({"all": StubListing([StubSubmission("a1", "T")])}).fetch(limit=10)
+@pytest.mark.parametrize("selftext", ["", "   ", "\n\t "])
+def test_blank_body_becomes_none_rather_than_empty_string(selftext):
+    """Link posts have no selftext. An empty string would put a pointless
+    'Body:' line into every extraction prompt.
+    """
+    listing = StubListing([StubSubmission("a1", "T", selftext=selftext)])
+    posts = _source({"all": listing}).fetch(limit=10)
     assert posts[0].body_excerpt is None
 
 
@@ -1570,7 +1815,7 @@ def _to_post(submission: Any, fetched_at: datetime) -> Post:
 - [ ] **Step 6: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_sources_reddit.py -v`
-Expected: PASS, 7 tests
+Expected: PASS, 9 tests
 
 - [ ] **Step 7: Create the shared post fixture**
 
@@ -1624,16 +1869,22 @@ def fixture_now() -> datetime:
 Append to `tests/test_sources_reddit.py`:
 
 ```python
-def test_fixture_posts_load_and_are_diverse(sample_posts):
+def test_fixture_meets_the_preconditions_later_tests_assume(sample_posts):
+    """Not a test of production code — a guard on the shared fixture. The
+    analysis tests are only meaningful if the fixture spans several channels
+    and subject areas, so trimming posts.json must fail loudly here rather
+    than quietly weakening clustering tests three files away.
+    """
     assert len(sample_posts) >= 10
     assert len({post.channel for post in sample_posts}) >= 5
     assert all(post.created_at.tzinfo is not None for post in sample_posts)
+    assert len({post.source_id for post in sample_posts}) == len(sample_posts)
 ```
 
 - [ ] **Step 10: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_sources_reddit.py -v`
-Expected: PASS, 8 tests
+Expected: PASS, 10 tests
 
 - [ ] **Step 11: Commit**
 
@@ -1698,11 +1949,40 @@ def test_splits_into_batches(sample_posts):
     assert len(provider.calls) == 2
 
 
-def test_prompt_contains_post_titles(sample_posts):
+def test_prompt_carries_the_title_and_the_id_the_model_must_echo(sample_posts):
+    """The model keys its answers by post id, so dropping the id from the
+    prompt makes every assignment unmatchable and silently yields no tags.
+    """
+    post = sample_posts[0]
     provider = FakeLLMProvider([TagExtraction(assignments=[])])
-    extract_tags(sample_posts[:1], provider, batch_size=40)
-    assert sample_posts[0].title in provider.calls[0].prompt
-    assert provider.calls[0].system is not None
+    extract_tags([post], provider, batch_size=40)
+
+    prompt = provider.calls[0].prompt
+    assert post.title in prompt
+    assert post.source_id in prompt
+    assert post.channel in prompt
+
+
+def test_caps_tags_per_post(sample_posts):
+    """Bounds the vocabulary handed to the reduce stage; an uncapped model
+    response would inflate the consolidation prompt without limit.
+    """
+    posts = sample_posts[:1]
+    provider = FakeLLMProvider(
+        [
+            TagExtraction(
+                assignments=[
+                    PostTags(
+                        post_id=posts[0].source_id,
+                        tags=["one", "two", "three", "four", "five"],
+                    )
+                ]
+            )
+        ]
+    )
+    assert extract_tags(posts, provider, batch_size=40) == {
+        posts[0].source_id: ["one", "two", "three"]
+    }
 
 
 def test_failed_batch_is_skipped_not_fatal(sample_posts):
@@ -1855,7 +2135,7 @@ def _clean(tags: list[str]) -> list[str]:
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_analysis_extract.py -v`
-Expected: PASS, 7 tests
+Expected: PASS, 8 tests
 
 - [ ] **Step 6: Commit**
 
@@ -1979,12 +2259,36 @@ def test_topics_with_no_matching_posts_are_dropped():
     assert [t.label for t in topics] == ["Real"]
 
 
-def test_prompt_contains_vocabulary_but_not_post_ids():
+def test_prompt_carries_the_vocabulary_and_not_the_posts():
+    """Sending only the tag vocabulary is what keeps this pass inside a small
+    local model's context. Leaking post ids back in would defeat that, so the
+    ids here are distinctive enough that a substring match cannot pass by luck.
+    """
     provider = FakeLLMProvider([Consolidation(topics=[])])
-    consolidate({"p1": ["cats"], "p2": ["telescope"]}, provider)
+    consolidate(
+        {"zzqq-alpha": ["cats"], "zzqq-beta": ["telescope"]}, provider
+    )
     prompt = provider.calls[0].prompt
-    assert "cats" in prompt and "telescope" in prompt
-    assert "p1" not in prompt
+    assert "cats" in prompt
+    assert "telescope" in prompt
+    assert "zzqq" not in prompt
+
+
+def test_matches_returned_tags_case_insensitively():
+    """Models routinely title-case their echo of an input tag. Matching
+    exactly would drop every post from the topic and the topic with it.
+    """
+    provider = FakeLLMProvider(
+        [
+            Consolidation(
+                topics=[
+                    ConsolidatedTopic(label="Cats", summary="", tags=["Cats", " CATS "])
+                ]
+            )
+        ]
+    )
+    topics = consolidate({"p1": ["cats"]}, provider)
+    assert topics[0].post_ids == ["p1"]
 
 
 def test_failure_returns_empty_list():
@@ -2122,7 +2426,7 @@ def _unique_slug(label: str, used: set[str]) -> str:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_analysis_consolidate.py -v`
-Expected: PASS, 11 tests
+Expected: PASS, 12 tests
 
 - [ ] **Step 5: Commit**
 
@@ -2250,10 +2554,39 @@ def test_wider_channel_spread_scores_higher():
     assert scored["wide"].trend_score > scored["narrow"].trend_score
 
 
-def test_very_recent_post_does_not_produce_infinite_velocity():
-    posts = [_post("a", 5000, 500, "cats", hours=0.01)]
-    scored = score_topics([_topic("t", ["a"])], posts, NOW, {})
-    assert scored[0].score_components["upvote_velocity"] < float("inf")
+def test_age_floor_stops_a_minutes_old_post_dominating():
+    """Without MIN_AGE_HOURS a post seconds old divides by nearly zero and
+    swamps the run purely for being new. Three topics, so normalisation has
+    a real range and the assertion cannot pass on all-zeros.
+    """
+    posts = [
+        _post("a", 100, 10, "cats", hours=0.01),
+        _post("b", 100, 10, "cats", hours=0.5),
+        _post("c", 1000, 100, "cats", hours=1),
+    ]
+    topics = [
+        _topic("brandnew", ["a"]),
+        _topic("halfhour", ["b"]),
+        _topic("big", ["c"]),
+    ]
+    scored = {t.id: t for t in score_topics(topics, posts, NOW, {})}
+
+    assert scored["brandnew"].trend_score == scored["halfhour"].trend_score
+    assert scored["big"].trend_score > scored["brandnew"].trend_score
+
+
+def test_a_topic_averages_its_posts_rather_than_summing_them():
+    """Summing would let a topic climb on post count alone: five ordinary
+    posts would outrank one genuinely fast-moving post.
+    """
+    posts = [_post(f"m{n}", 100, 10, "cats", hours=1) for n in range(5)]
+    posts.append(_post("f", 400, 40, "dogs", hours=1))
+    topics = [
+        _topic("many", [f"m{n}" for n in range(5)]),
+        _topic("fast", ["f"]),
+    ]
+    scored = {t.id: t for t in score_topics(topics, posts, NOW, {})}
+    assert scored["fast"].trend_score > scored["many"].trend_score
 
 
 def test_topics_with_no_known_posts_are_dropped():
@@ -2397,7 +2730,7 @@ rule, without special-casing.
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_analysis_score.py -v`
-Expected: PASS, 10 tests
+Expected: PASS, 11 tests
 
 - [ ] **Step 5: Commit**
 
@@ -2459,12 +2792,34 @@ def _scored(tid: str, sentiment: Sentiment, trend: float, meme: float = 1.0):
     )
 
 
-def test_judges_each_topic_and_preserves_trend_score():
+def test_carries_every_judgement_field_onto_the_scored_topic():
+    """valence and meme_potential are distinct values here on purpose: if
+    the mapping crosses them, selection silently ranks by the wrong number
+    and nothing else in the suite notices.
+    """
+    judgement = SentimentJudgement(
+        primary_sentiment=Sentiment.CUTE,
+        secondary_sentiments=[Sentiment.FUNNY],
+        valence=0.25,
+        meme_potential=0.75,
+    )
+    scored = judge_topics([_topic("cats", 0.5)], FakeLLMProvider([judgement]))[0]
+
+    assert scored.primary_sentiment == Sentiment.CUTE
+    assert scored.secondary_sentiments == [Sentiment.FUNNY]
+    assert scored.valence == 0.25
+    assert scored.meme_potential == 0.75
+
+
+def test_preserves_the_topic_it_was_given():
+    """The trend score computed in the previous stage must survive into
+    selection; recomputing or defaulting it would discard the scoring work.
+    """
     provider = FakeLLMProvider([_judgement(Sentiment.CUTE)])
-    scored = judge_topics([_topic("cats", 0.75)], provider)
-    assert scored[0].primary_sentiment == Sentiment.CUTE
-    assert scored[0].trend_score == 0.75
-    assert scored[0].id == "cats"
+    scored = judge_topics([_topic("cats", 0.75)], provider)[0]
+    assert scored.id == "cats"
+    assert scored.trend_score == 0.75
+    assert scored.summary == "About cats."
 
 
 def test_calls_provider_once_per_topic():
@@ -2637,7 +2992,7 @@ def _build_prompt(topic: Topic) -> str:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_analysis_sentiment.py -v`
-Expected: PASS, 10 tests
+Expected: PASS, 11 tests
 
 - [ ] **Step 5: Commit**
 
@@ -2651,7 +3006,7 @@ git commit -m "feat: add sentiment judgement and weighted selection"
 ### Task 12: Template manifests, loader, and validator
 
 **Files:**
-- Create: `zeitgeist/media/__init__.py`, `zeitgeist/media/templates.py`, `zeitgeist/media/templates/*.json`, `zeitgeist/media/templates/*.png`, `zeitgeist/media/fonts/DejaVuSans-Bold.ttf`
+- Create: `zeitgeist/media/__init__.py`, `zeitgeist/media/templates.py`, `scripts/make_placeholder_templates.py`, `zeitgeist/media/templates/*.json`, `zeitgeist/media/templates/*.png`, `zeitgeist/media/fonts/DejaVuSans-Bold.ttf`
 - Test: `tests/test_media_templates.py`, `tests/fixtures/templates/`
 
 **Interfaces:**
@@ -2766,6 +3121,17 @@ def test_validator_reports_duplicate_slot_names(tmp_path):
     )
     (tmp_path / "drake.json").write_text(json.dumps(manifest), encoding="utf-8")
     assert any("duplicate" in problem for problem in validate_templates(tmp_path))
+
+
+def test_validator_reports_non_positive_max_chars(tmp_path):
+    """A zero max_chars is a silent trap: the manifest loads, and the model
+    is told it may write no characters at all.
+    """
+    _write_template(tmp_path, "drake")
+    manifest = json.loads((tmp_path / "drake.json").read_text(encoding="utf-8"))
+    manifest["slots"][0]["max_chars"] = 0
+    (tmp_path / "drake.json").write_text(json.dumps(manifest), encoding="utf-8")
+    assert any("max_chars" in problem for problem in validate_templates(tmp_path))
 
 
 def test_validator_reports_unparseable_manifest(tmp_path):
@@ -2921,19 +3287,96 @@ place, because the golden tests depend on it.
 
 - [ ] **Step 6: Build the 24-template library**
 
-For each entry in the table below, place `<id>.png` and `<id>.json` in
-`zeitgeist/media/templates/`.
+**Placeholder images for now.** The real meme images will be sourced by hand
+later. For this task, generate a placeholder PNG per template so the pipeline
+runs end to end and the geometry is real.
 
-Source each image from a public meme-template site (imgflip's template
-gallery is the usual one). Open each image, measure each text box in pixels,
-and write the manifest in exactly the shape shown in Step 2's example, using
-the `id`, `shape`, and slot names from this table verbatim. Set `max_chars` by
-judgement — roughly 15 characters per 100 pixels of box width per line.
+Create `scripts/make_placeholder_templates.py`:
+
+```python
+"""Generates placeholder template images and manifests.
+
+Placeholders are laid out on a fixed 800x800 canvas with evenly stacked
+slots, so box geometry is real and the renderer can be exercised properly.
+Replace the PNGs with genuine meme images later and re-measure the boxes;
+`zeitgeist validate-templates` will catch any that no longer fit.
+"""
+
+import json
+from pathlib import Path
+
+from PIL import Image, ImageDraw
+
+TEMPLATES: list[tuple[str, str, list[str]]] = [
+    ("drake", "rejecting option A in favour of preferred option B",
+     ["rejected", "preferred"]),
+    # ... one entry per row of the table below ...
+]
+
+WIDTH = HEIGHT = 800
+MARGIN = 20
+OUT = Path("zeitgeist/media/templates")
+
+
+def main() -> None:
+    OUT.mkdir(parents=True, exist_ok=True)
+    for template_id, shape, slot_names in TEMPLATES:
+        image = Image.new("RGB", (WIDTH, HEIGHT), "#d9d9d9")
+        draw = ImageDraw.Draw(image)
+
+        band = (HEIGHT - MARGIN * (len(slot_names) + 1)) // len(slot_names)
+        slots = []
+        for index, name in enumerate(slot_names):
+            top = MARGIN + index * (band + MARGIN)
+            box = (MARGIN, top, WIDTH - MARGIN, top + band)
+            draw.rectangle(box, outline="#8a8a8a", width=3)
+            slots.append(
+                {
+                    "name": name,
+                    "box": list(box),
+                    "max_chars": max(20, (WIDTH - 2 * MARGIN) // 7),
+                }
+            )
+
+        image.save(OUT / f"{template_id}.png")
+        (OUT / f"{template_id}.json").write_text(
+            json.dumps(
+                {
+                    "id": template_id,
+                    "image": f"{template_id}.png",
+                    "shape": shape,
+                    "slots": slots,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    print(f"wrote {len(TEMPLATES)} placeholder templates to {OUT}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Fill `TEMPLATES` with all 24 rows from the table below, copying each `id`,
+`shape`, and slot-name list verbatim. Then run:
+
+```bash
+uv run python scripts/make_placeholder_templates.py
+```
+
+The `shape` strings matter more than the images do — they are what the model
+actually selects on, and they must be right now even though the pictures are
+placeholders.
 
 The library spans eight rhetorical shapes rather than twenty-four different
 pictures, because selection quality depends on the model finding a shape that
 fits the topic. Twenty-four variations on comparison would be worth less than
 this spread.
+
+When the real images replace the placeholders, keep the ids and slot names
+identical — briefs, tests, and any committed run output all key on them.
 
 | id | shape | slots |
 |---|---|---|
@@ -2973,13 +3416,13 @@ mis-measurement; re-measure against the actual image file.
 - [ ] **Step 8: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_media_templates.py -v`
-Expected: PASS, 12 tests
+Expected: PASS, 13 tests
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add zeitgeist/media tests/test_media_templates.py
-git commit -m "feat: add template manifests, loader, validator, and 24 templates"
+git add zeitgeist/media scripts/make_placeholder_templates.py tests/test_media_templates.py
+git commit -m "feat: add template manifests, loader, validator, and 24 placeholders"
 ```
 
 ---
@@ -3097,6 +3540,19 @@ def test_missing_image_raises(tmp_path, template_dir):
         render_meme(
             _brief(top="a", bottom="b"), manifest, directory, tmp_path / "o.png", FONT
         )
+
+
+def test_blank_caption_leaves_that_area_untouched(tmp_path, template_dir):
+    """Exercises the early return. Without it, a whitespace caption draws a
+    stroke-outlined blank onto the template.
+    """
+    directory, manifest = template_dir
+    out = tmp_path / "out.png"
+    render_meme(_brief(top="   ", bottom="
+"), manifest, directory, out, FONT)
+    with Image.open(out) as rendered, Image.open(directory / "test.png") as blank:
+        difference = ImageChops.difference(rendered.convert("RGB"), blank)
+        assert ImageStat.Stat(difference).sum[0] == 0
 
 
 def test_output_is_reproducible(tmp_path, template_dir):
@@ -3308,7 +3764,7 @@ before committing — you are about to freeze this as the reference.
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_media_render.py -v`
-Expected: PASS, 8 tests
+Expected: PASS, 9 tests
 
 - [ ] **Step 6: Commit**
 
@@ -3404,6 +3860,20 @@ def test_returns_a_brief_with_the_topic_id_attached():
     assert brief.topic_id == "cats"
     assert brief.template_id == "drake"
     assert brief.caption_slots["preferred"] == "Cats"
+    # The spec keeps the rationale specifically for debugging bad captions.
+    assert brief.rationale == "Preference structure fits."
+
+
+def test_captions_are_stripped_before_rendering():
+    """Leading newlines are common in model output and would shift the text
+    off-centre inside its box.
+    """
+    provider = FakeLLMProvider(
+        [_choice(caption_slots={"rejected": "  Dogs ", "preferred": "Cats
+"})]
+    )
+    brief = generate_brief(_topic(), _templates(), provider)
+    assert brief.caption_slots == {"rejected": "Dogs", "preferred": "Cats"}
 
 
 def test_prompt_lists_every_template_id_shape_and_slots():
@@ -3619,7 +4089,7 @@ def _build_prompt(
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_media_brief.py -v`
-Expected: PASS, 10 tests
+Expected: PASS, 11 tests
 
 - [ ] **Step 5: Commit**
 
@@ -3660,7 +4130,7 @@ from zeitgeist.analysis.consolidate import ConsolidatedTopic, Consolidation
 from zeitgeist.analysis.extract import PostTags, TagExtraction
 from zeitgeist.analysis.sentiment import SentimentJudgement
 from zeitgeist.config import Settings
-from zeitgeist.llm.base import FakeLLMProvider
+from zeitgeist.llm.base import FakeLLMProvider, LLMError
 from zeitgeist.media.brief import BriefChoice
 from zeitgeist.models import Sentiment
 from zeitgeist.pipeline import Stage, run_pipeline
@@ -3779,6 +4249,56 @@ def test_resume_without_checkpoint_raises(settings, sample_posts):
             settings, StubSource(sample_posts), FakeLLMProvider(),
             _store(settings), "never-ran", start_at=Stage.GENERATE,
         )
+
+
+def test_a_failing_stage_degrades_rather_than_killing_the_run(settings, sample_posts):
+    """The spec's central error rule: fewer memes is a success, no output is
+    a failure. One topic's sentiment call fails; the other must still reach
+    a rendered PNG.
+    """
+    posts = sample_posts[:3]
+    provider = FakeLLMProvider(
+        [
+            TagExtraction(
+                assignments=[
+                    PostTags(post_id=post.source_id, tags=["cats"]) for post in posts
+                ]
+            ),
+            Consolidation(
+                topics=[
+                    ConsolidatedTopic(
+                        label="Cats", summary="Cat things.", tags=["cats"]
+                    ),
+                    ConsolidatedTopic(
+                        label="Dogs", summary="Dog things.", tags=["cats"]
+                    ),
+                ]
+            ),
+            LLMError("sentiment call failed"),
+            SentimentJudgement(
+                primary_sentiment=Sentiment.CUTE,
+                secondary_sentiments=[],
+                valence=0.8,
+                meme_potential=0.9,
+            ),
+            BriefChoice(
+                template_id="drake",
+                caption_slots={"rejected": "Dogs", "preferred": "Cats"},
+                rationale="Fits.",
+            ),
+        ]
+    )
+    run_dir = run_pipeline(
+        settings.model_copy(update={"topic_count": 2}),
+        StubSource(posts),
+        provider,
+        _store(settings),
+        "run1",
+    )
+
+    ranked = json.loads((run_dir / "ranked.json").read_text(encoding="utf-8"))
+    assert [entry["label"] for entry in ranked] == ["Dogs"]
+    assert len(list(run_dir.glob("*.png"))) == 1
 
 
 def test_checkpoints_are_valid_json(settings, sample_posts):
@@ -3936,7 +4456,7 @@ def _read(path: Path, schema: type) -> list:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_pipeline.py -v`
-Expected: PASS, 6 tests
+Expected: PASS, 7 tests
 
 - [ ] **Step 5: Write the failing CLI test**
 
@@ -4088,10 +4608,13 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             run_id=args.run_id or new_run_id(),
             start_at=start_at,
         )
+        summary = store.run_summary(args.run_id or run_dir.name)
     finally:
         store.close()
 
-    print(f"Run complete: {run_dir}")
+    memes = len(list(run_dir.glob("*.png")))
+    posts = (summary or {}).get("post_count", 0)
+    print(f"Run complete: {run_dir} ({posts} posts, {memes} memes)")
     return 0
 
 
