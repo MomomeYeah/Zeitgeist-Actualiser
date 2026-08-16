@@ -212,13 +212,33 @@ valence float from −1 to 1, and a `meme_potential` score from 0 to 1.
 
 ### Selection
 
-Final ranking is `trend_score × sentiment_weight × meme_potential`, with
-sentiment weights configured to favour positive labels.
+Final ranking is `trend_score × sentiment_weight × meme_potential`.
 
-Topics whose **primary** sentiment is `sad`, `scary`, or `outrage` are dropped
-entirely rather than down-weighted. The characteristic failure mode of an
-automated meme generator is making a joke out of a tragedy; a hard filter is a
-far more reliable control than a weight that a high trend score can overcome.
+Sentiment weights favour positive labels but do not exclude any of them. A
+sufficiently strong trend score can carry a negatively-flavoured topic into the
+final selection, which is the intended behaviour — the zeitgeist is not always
+cheerful, and a tool that only ever sees the cheerful half is not measuring it.
+
+Default weights, applied to the **primary** sentiment and configurable via
+`SENTIMENT_WEIGHTS`:
+
+| Sentiment | Weight |
+|---|---|
+| `heartwarming` | 1.30 |
+| `cute` | 1.25 |
+| `funny` | 1.25 |
+| `awe` | 1.20 |
+| `schadenfreude` | 1.00 |
+| `cringe` | 0.90 |
+| `mundane` | 0.70 |
+| `gross` | 0.70 |
+| `sad` | 0.60 |
+| `scary` | 0.60 |
+| `outrage` | 0.60 |
+
+The spread is deliberately moderate. At these values a negative topic needs
+roughly double the combined trend and meme-potential score of a positive one to
+outrank it — a real thumb on the scale, but not a veto.
 
 The top N topics (default 5) proceed to stage D.
 
@@ -231,8 +251,8 @@ continues with the remaining topics.
 
 ### Templates
 
-`media/templates/` holds roughly 8 classic meme template images, each with a
-JSON manifest describing its rhetorical shape and text box geometry:
+`media/templates/` holds **24** classic meme template images, each with a JSON
+manifest describing its rhetorical shape and text box geometry:
 
 ```json
 {
@@ -246,12 +266,28 @@ JSON manifest describing its rhetorical shape and text box geometry:
 }
 ```
 
-`box` is `[left, top, right, bottom]` in pixels.
+`box` is `[left, top, right, bottom]` in pixels, measured against that specific
+image file.
+
+The library should span a range of **rhetorical shapes**, not just a range of
+pictures — comparison, escalation, contrast, reveal, overconfidence,
+understatement, labelled-parts, and so on. Selection quality depends on the
+model finding a shape that genuinely fits the topic, so twenty-four templates
+covering eight shapes is worth more than twenty-four variations on comparison.
+
+Manifests are hand-authored: each one needs its boxes measured against its own
+image. Building the library is therefore a distinct chunk of implementation
+work, and the plan should treat it as such rather than folding it into the
+renderer step. A `validate-templates` CLI subcommand checks that every manifest
+parses, references an existing image, and has boxes falling inside that image's
+bounds — cheap to build and the fastest way to catch a mis-measured box.
 
 ### Brief generation (`media/brief.py`)
 
 The LLM receives the topic (label, summary, sentiment) plus every manifest's
-`id`, `shape`, and slot names, and returns a `MediaBrief`.
+`id`, `shape`, and slot names, and returns a `MediaBrief`. Twenty-four
+manifests is on the order of 2,000 tokens, so this stays a single call even on
+a local model with a modest context window.
 
 Because the model can only select from supplied `id`s and fill named slots, the
 output is fully validatable: a hallucinated template ID or a missing slot fails
@@ -390,5 +426,5 @@ grows by gaining files rather than by any file getting larger.
 | Velocity now, persist snapshots | Produces useful output on run one while accumulating the history that makes true rise-and-fall detection possible later, with no re-architecting |
 | Template memes over generative | The interesting work is structured template-matching; output is reliably legible, and text rendering in image models is not |
 | Scoring is pure Python | Reproducible and unit-testable, which an LLM's numeric judgment is not |
-| Hard filter on negative sentiment | A weight can be overcome by a high trend score; a filter cannot |
+| Sentiment weights, no exclusions | Preference for positive output without blinding the tool to half the zeitgeist; a strong enough trend still surfaces a negative topic |
 | No author field on `Post` | Not needed downstream, and avoids collecting personal data |
