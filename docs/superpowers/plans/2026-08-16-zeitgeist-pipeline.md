@@ -6,17 +6,28 @@
 
 **Architecture:** Four sequential stages (ingest → analyse → evaluate → generate), each taking typed Pydantic input, returning typed output, and checkpointing that output as JSON into a per-run directory. All LLM access goes through a single-method `LLMProvider` protocol so backends swap via config. Numeric trend scoring is pure Python, deliberately outside the LLM.
 
-**Tech Stack:** Python 3.11+, Pydantic v2, pydantic-settings, PRAW (Reddit), anthropic SDK, httpx (Ollama), Pillow (rendering), pytest.
+**Tech Stack:** Python 3.14, uv (environment, dependency, and interpreter management), ruff (lint + format), pytest, Pydantic v2, pydantic-settings, PRAW (Reddit), anthropic SDK, httpx (Ollama), Pillow (rendering).
 
 ## Global Constraints
 
-- **Python 3.11 or later.** `datetime.UTC` and `X | Y` union syntax are used throughout.
+### Tooling
+
+- **uv manages everything.** Never invoke `pip`, `python -m venv`, `virtualenv`, or a bare `python`/`pytest`. Dependencies are added with `uv add`, the environment is created by `uv sync`, and commands run through `uv run`.
+- **Every command in this plan runs under `uv run`.** Where a step says `uv run pytest ...`, that is the literal command — do not substitute a bare `pytest`, which will resolve against whatever interpreter happens to be on PATH.
+- **uv owns the interpreter.** `.python-version` pins the minor series (`3.14`); `uv python install` fetches the current patch release. Do not hard-code a patch version anywhere — it goes stale, and uv keeps it current for free.
+- **`uv.lock` is committed.** This is an application, not a library: the lockfile is what makes a run reproducible.
+- **ruff is the only linter and the only formatter.** No black, no isort, no flake8.
+- **pytest is the only test runner.** No unittest, no nose.
+
+### Code
+
+- **Python 3.14.** `datetime.UTC`, `X | Y` unions, and modern generics are used throughout.
 - **All datetimes are timezone-aware UTC.** Never use `datetime.utcnow()`; use `datetime.now(UTC)`.
 - **No network access in any test.** Every test uses `FakeLLMProvider` and committed fixtures.
 - **`Post` must never carry an author or username field.** Not needed downstream; avoids collecting personal data.
 - **Every LLM-facing schema is a Pydantic `BaseModel`.** Providers validate against it and retry once before raising.
 - **Stage A failure is fatal; all later stage failures degrade.** A run producing fewer memes than requested is a success.
-- **Line length 88, formatted with `ruff format`.**
+- **Line length 88.** `uv run ruff format .` and `uv run ruff check --fix .` must both be clean before every commit.
 - **Commit after every task.** Conventional commit prefixes (`feat:`, `test:`, `chore:`).
 
 ## File Structure
@@ -48,53 +59,103 @@
 ### Task 1: Project scaffold and domain models
 
 **Files:**
-- Create: `pyproject.toml`, `.gitignore`, `zeitgeist/__init__.py`, `zeitgeist/models.py`, `tests/__init__.py`
+- Create: `pyproject.toml`, `.python-version`, `uv.lock`, `.gitignore`, `zeitgeist/__init__.py`, `zeitgeist/models.py`, `tests/__init__.py`
 - Test: `tests/test_models.py`
 
 **Interfaces:**
 - Consumes: nothing
 - Produces: `Sentiment` (str enum), `Post`, `Topic`, `ScoredTopic`, `MediaBrief` — all Pydantic `BaseModel`. Field names exactly as written below; every later task depends on them.
 
-- [ ] **Step 1: Create `pyproject.toml`**
+- [ ] **Step 1: Install uv**
+
+Check first — it may already be present:
+
+```bash
+uv --version
+```
+
+If that fails, install it (Windows, PowerShell):
+
+```bash
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Then reopen the shell and confirm `uv --version` prints a version. Everything after this point goes through uv.
+
+- [ ] **Step 2: Pin the interpreter and let uv fetch it**
+
+```bash
+uv python install 3.14
+```
+
+Then create `.python-version` containing exactly:
+
+```
+3.14
+```
+
+Pinning the minor series rather than a patch is deliberate: uv resolves it to the newest 3.14.x available and keeps doing so, where a hard-coded patch would be stale within weeks.
+
+- [ ] **Step 3: Create `pyproject.toml`**
 
 ```toml
 [project]
 name = "zeitgeist"
 version = "0.1.0"
-requires-python = ">=3.11"
+description = "Finds what the internet is talking about and makes memes about it."
+requires-python = ">=3.14"
 dependencies = [
-    "pydantic>=2.7",
-    "pydantic-settings>=2.2",
-    "praw>=7.7",
+    "pydantic>=2.12",
+    "pydantic-settings>=2.6",
+    "praw>=7.8",
     "anthropic>=0.40",
-    "httpx>=0.27",
-    "pillow>=11.0,<12.0",
+    "httpx>=0.28",
+    "pillow>=11.3",
 ]
-
-[project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.scripts]
 zeitgeist = "zeitgeist.cli:main"
 
+[dependency-groups]
+dev = ["pytest>=8.3", "ruff>=0.8"]
+
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = ["uv_build>=0.9"]
+build-backend = "uv_build"
 
-[tool.setuptools.packages.find]
-include = ["zeitgeist*"]
-
-[tool.setuptools.package-data]
-zeitgeist = ["media/templates/*", "media/fonts/*"]
+[tool.uv.build-backend]
+module-name = "zeitgeist"
+# uv_build assumes a src/ layout by default; this project is flat, so the
+# module root is the project root. Omitting this fails the build with
+# "expected module at src/zeitgeist".
+module-root = ""
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 88
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
 ```
 
-- [ ] **Step 2: Create `.gitignore`**
+Dev tooling goes in `[dependency-groups]` (PEP 735) rather than `[project.optional-dependencies]`, because `uv sync` installs it by default and it never leaks into what a consumer of the package would install.
+
+Lower bounds are floors, not pins — uv resolves the newest compatible release and records the exact versions in `uv.lock`.
+
+- [ ] **Step 4: Create the environment**
+
+```bash
+uv sync
+```
+
+Expected: uv creates `.venv/`, resolves every dependency, and writes `uv.lock`.
+
+If resolution fails because a dependency has no 3.14 wheel yet, do not silently downgrade the project. Report which package failed, then change `.python-version` and `requires-python` to `3.13` as a fallback and note it — the rest of the plan is unaffected.
+
+- [ ] **Step 5: Create `.gitignore`**
 
 ```
 __pycache__/
@@ -108,11 +169,11 @@ data/
 *.egg-info/
 ```
 
-- [ ] **Step 3: Create empty `zeitgeist/__init__.py` and `tests/__init__.py`**
+- [ ] **Step 6: Create empty `zeitgeist/__init__.py` and `tests/__init__.py`**
 
 Both files are empty. Create them so the package and test suite are importable.
 
-- [ ] **Step 4: Write the failing test**
+- [ ] **Step 7: Write the failing test**
 
 Create `tests/test_models.py`:
 
@@ -195,12 +256,12 @@ def test_media_brief_requires_caption_slots():
     assert brief.caption_slots["preferred"] == "Cats"
 ```
 
-- [ ] **Step 5: Run test to verify it fails**
+- [ ] **Step 8: Run test to verify it fails**
 
-Run: `pytest tests/test_models.py -v`
+Run: `uv run pytest tests/test_models.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.models'`
 
-- [ ] **Step 6: Write `zeitgeist/models.py`**
+- [ ] **Step 9: Write `zeitgeist/models.py`**
 
 ```python
 """Domain models shared across every pipeline stage."""
@@ -276,16 +337,24 @@ class MediaBrief(BaseModel):
     rationale: str
 ```
 
-- [ ] **Step 7: Run tests to verify they pass**
+- [ ] **Step 10: Run tests to verify they pass**
 
-Run: `pytest tests/test_models.py -v`
+Run: `uv run pytest tests/test_models.py -v`
 Expected: PASS, 6 tests
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 11: Format and lint**
 
 ```bash
-git add pyproject.toml .gitignore zeitgeist tests
-git commit -m "feat: add project scaffold and domain models"
+uv run ruff format . && uv run ruff check --fix .
+```
+
+Expected: both clean. Run this before every commit from here on — later tasks say "format and lint" and mean exactly this command.
+
+- [ ] **Step 12: Commit**
+
+```bash
+git add pyproject.toml .python-version uv.lock .gitignore zeitgeist tests
+git commit -m "feat: add uv project scaffold and domain models"
 ```
 
 ---
@@ -351,7 +420,7 @@ def test_weight_for_falls_back_to_one_when_unset():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_config.py -v`
+Run: `uv run pytest tests/test_config.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.config'`
 
 - [ ] **Step 3: Write `zeitgeist/config.py`**
@@ -427,7 +496,7 @@ class Settings(BaseSettings):
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_config.py -v`
+Run: `uv run pytest tests/test_config.py -v`
 Expected: PASS, 5 tests
 
 - [ ] **Step 5: Create `.env.example`**
@@ -533,7 +602,7 @@ def test_queue_appends_after_construction():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_llm_base.py -v`
+Run: `uv run pytest tests/test_llm_base.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.llm'`
 
 - [ ] **Step 3: Create empty `zeitgeist/llm/__init__.py`**
@@ -615,7 +684,7 @@ class FakeLLMProvider:
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `pytest tests/test_llm_base.py -v`
+Run: `uv run pytest tests/test_llm_base.py -v`
 Expected: PASS, 6 tests
 
 - [ ] **Step 6: Commit**
@@ -717,7 +786,7 @@ def test_raises_when_no_tool_use_block_returned():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_llm_anthropic.py -v`
+Run: `uv run pytest tests/test_llm_anthropic.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.llm.anthropic'`
 
 - [ ] **Step 3: Write `zeitgeist/llm/anthropic.py`**
@@ -800,7 +869,7 @@ def _extract_tool_input(response: Any) -> dict | None:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_llm_anthropic.py -v`
+Run: `uv run pytest tests/test_llm_anthropic.py -v`
 Expected: PASS, 5 tests
 
 - [ ] **Step 5: Commit**
@@ -911,7 +980,7 @@ def test_raises_on_non_json_content():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_llm_ollama.py -v`
+Run: `uv run pytest tests/test_llm_ollama.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.llm.ollama'`
 
 - [ ] **Step 3: Write `zeitgeist/llm/ollama.py`**
@@ -985,7 +1054,7 @@ class OllamaProvider:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_llm_ollama.py -v`
+Run: `uv run pytest tests/test_llm_ollama.py -v`
 Expected: PASS, 5 tests
 
 - [ ] **Step 5: Write the failing test for the factory**
@@ -1025,7 +1094,7 @@ def test_anthropic_without_api_key_is_rejected():
 
 - [ ] **Step 6: Run test to verify it fails**
 
-Run: `pytest tests/test_llm_factory.py -v`
+Run: `uv run pytest tests/test_llm_factory.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.llm.factory'`
 
 - [ ] **Step 7: Write `zeitgeist/llm/factory.py`**
@@ -1051,7 +1120,7 @@ def build_provider(settings: Settings) -> LLMProvider:
 
 - [ ] **Step 8: Run all tests**
 
-Run: `pytest -v`
+Run: `uv run pytest -v`
 Expected: PASS, all tests
 
 - [ ] **Step 9: Commit**
@@ -1147,7 +1216,7 @@ def test_creates_parent_directory(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_store.py -v`
+Run: `uv run pytest tests/test_store.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.store'`
 
 - [ ] **Step 3: Write `zeitgeist/store.py`**
@@ -1244,7 +1313,7 @@ def _now() -> str:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_store.py -v`
+Run: `uv run pytest tests/test_store.py -v`
 Expected: PASS, 6 tests
 
 - [ ] **Step 5: Commit**
@@ -1404,7 +1473,7 @@ def test_no_posts_raises_source_error():
 
 - [ ] **Step 4: Run test to verify it fails**
 
-Run: `pytest tests/test_sources_reddit.py -v`
+Run: `uv run pytest tests/test_sources_reddit.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.sources.reddit'`
 
 - [ ] **Step 5: Write `zeitgeist/sources/reddit.py`**
@@ -1500,7 +1569,7 @@ def _to_post(submission: Any, fetched_at: datetime) -> Post:
 
 - [ ] **Step 6: Run tests to verify they pass**
 
-Run: `pytest tests/test_sources_reddit.py -v`
+Run: `uv run pytest tests/test_sources_reddit.py -v`
 Expected: PASS, 7 tests
 
 - [ ] **Step 7: Create the shared post fixture**
@@ -1563,7 +1632,7 @@ def test_fixture_posts_load_and_are_diverse(sample_posts):
 
 - [ ] **Step 10: Run tests to verify they pass**
 
-Run: `pytest tests/test_sources_reddit.py -v`
+Run: `uv run pytest tests/test_sources_reddit.py -v`
 Expected: PASS, 8 tests
 
 - [ ] **Step 11: Commit**
@@ -1690,7 +1759,7 @@ def test_empty_input_makes_no_calls():
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `pytest tests/test_analysis_extract.py -v`
+Run: `uv run pytest tests/test_analysis_extract.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.analysis.extract'`
 
 - [ ] **Step 4: Write `zeitgeist/analysis/extract.py`**
@@ -1785,7 +1854,7 @@ def _clean(tags: list[str]) -> list[str]:
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `pytest tests/test_analysis_extract.py -v`
+Run: `uv run pytest tests/test_analysis_extract.py -v`
 Expected: PASS, 7 tests
 
 - [ ] **Step 6: Commit**
@@ -1931,7 +2000,7 @@ def test_empty_input_makes_no_calls():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_analysis_consolidate.py -v`
+Run: `uv run pytest tests/test_analysis_consolidate.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.analysis.consolidate'`
 
 - [ ] **Step 3: Write `zeitgeist/analysis/consolidate.py`**
@@ -2052,7 +2121,7 @@ def _unique_slug(label: str, used: set[str]) -> str:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_analysis_consolidate.py -v`
+Run: `uv run pytest tests/test_analysis_consolidate.py -v`
 Expected: PASS, 11 tests
 
 - [ ] **Step 5: Commit**
@@ -2212,7 +2281,7 @@ def test_weights_are_configurable():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_analysis_score.py -v`
+Run: `uv run pytest tests/test_analysis_score.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.analysis.score'`
 
 - [ ] **Step 3: Write `zeitgeist/analysis/score.py`**
@@ -2327,7 +2396,7 @@ rule, without special-casing.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_analysis_score.py -v`
+Run: `uv run pytest tests/test_analysis_score.py -v`
 Expected: PASS, 10 tests
 
 - [ ] **Step 5: Commit**
@@ -2467,7 +2536,7 @@ def test_select_on_empty_input_returns_empty():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_analysis_sentiment.py -v`
+Run: `uv run pytest tests/test_analysis_sentiment.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.analysis.sentiment'`
 
 - [ ] **Step 3: Write `zeitgeist/analysis/sentiment.py`**
@@ -2567,7 +2636,7 @@ def _build_prompt(topic: Topic) -> str:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_analysis_sentiment.py -v`
+Run: `uv run pytest tests/test_analysis_sentiment.py -v`
 Expected: PASS, 10 tests
 
 - [ ] **Step 5: Commit**
@@ -2719,7 +2788,7 @@ def test_shipped_templates_number_twenty_four():
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `pytest tests/test_media_templates.py -v`
+Run: `uv run pytest tests/test_media_templates.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.media.templates'`
 
 - [ ] **Step 4: Write `zeitgeist/media/templates.py`**
@@ -2895,7 +2964,7 @@ this spread.
 
 - [ ] **Step 7: Run the validator against the real library**
 
-Run: `python -c "from pathlib import Path; from zeitgeist.media.templates import validate_templates; print(validate_templates(Path('zeitgeist/media/templates')) or 'all valid')"`
+Run: `uv run python -c "from pathlib import Path; from zeitgeist.media.templates import validate_templates; print(validate_templates(Path('zeitgeist/media/templates')) or 'all valid')"`
 Expected: `all valid`
 
 Fix any reported problem before continuing. A box outside bounds means a
@@ -2903,7 +2972,7 @@ mis-measurement; re-measure against the actual image file.
 
 - [ ] **Step 8: Run tests to verify they pass**
 
-Run: `pytest tests/test_media_templates.py -v`
+Run: `uv run pytest tests/test_media_templates.py -v`
 Expected: PASS, 12 tests
 
 - [ ] **Step 9: Commit**
@@ -2918,7 +2987,7 @@ git commit -m "feat: add template manifests, loader, validator, and 24 templates
 ### Task 13: Meme renderer
 
 **Files:**
-- Create: `zeitgeist/media/render.py`
+- Create: `zeitgeist/media/render.py`, `scripts/make_golden.py`
 - Test: `tests/test_media_render.py`, `tests/fixtures/golden/`
 
 **Interfaces:**
@@ -3040,7 +3109,7 @@ def test_output_is_reproducible(tmp_path, template_dir):
 
 
 def test_matches_the_golden_image(tmp_path, template_dir):
-    """Regenerate with: pytest -k golden --golden-update"""
+    """Regenerate with: uv run python scripts/make_golden.py"""
     directory, manifest = template_dir
     golden = PACKAGE_ROOT.parent / "tests" / "fixtures" / "golden" / "test_meme.png"
     out = tmp_path / "out.png"
@@ -3058,7 +3127,7 @@ def test_matches_the_golden_image(tmp_path, template_dir):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_media_render.py -v`
+Run: `uv run pytest tests/test_media_render.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.media.render'`
 
 - [ ] **Step 3: Write `zeitgeist/media/render.py`**
@@ -3163,33 +3232,74 @@ def _wrap(
 
 Run the renderer once by hand to produce the committed reference:
 
-```bash
-python -c "
+Create `scripts/make_golden.py`:
+
+```python
+"""Regenerates the committed golden render. Run after intentional layout changes."""
+
+import shutil
+import tempfile
 from pathlib import Path
+
 from PIL import Image
+
 from zeitgeist.config import PACKAGE_ROOT
 from zeitgeist.media.render import render_meme
 from zeitgeist.media.templates import TemplateManifest
 from zeitgeist.models import MediaBrief
 
-tmp = Path('.golden-tmp'); tmp.mkdir(exist_ok=True)
-Image.new('RGB', (400, 400), 'white').save(tmp / 'test.png')
-manifest = TemplateManifest(id='test', image='test.png', shape='a shape', slots=[
-    {'name': 'top', 'box': (10, 10, 390, 190), 'max_chars': 60},
-    {'name': 'bottom', 'box': (10, 210, 390, 390), 'max_chars': 60},
-])
-out = Path('tests/fixtures/golden/test_meme.png')
-out.parent.mkdir(parents=True, exist_ok=True)
-render_meme(
-    MediaBrief(topic_id='t', template_id='test',
-               caption_slots={'top': 'Trending topic', 'bottom': 'Obvious punchline'},
-               rationale='because'),
-    manifest, tmp, out, PACKAGE_ROOT / 'media' / 'fonts' / 'DejaVuSans-Bold.ttf')
-print('wrote', out)
-"
+MANIFEST = TemplateManifest(
+    id="test",
+    image="test.png",
+    shape="a shape",
+    slots=[
+        {"name": "top", "box": (10, 10, 390, 190), "max_chars": 60},
+        {"name": "bottom", "box": (10, 210, 390, 390), "max_chars": 60},
+    ],
+)
+
+
+def main() -> None:
+    out = Path("tests/fixtures/golden/test_meme.png")
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    scratch = Path(tempfile.mkdtemp())
+    try:
+        Image.new("RGB", (400, 400), "white").save(scratch / "test.png")
+        render_meme(
+            MediaBrief(
+                topic_id="t",
+                template_id="test",
+                caption_slots={
+                    "top": "Trending topic",
+                    "bottom": "Obvious punchline",
+                },
+                rationale="because",
+            ),
+            MANIFEST,
+            scratch,
+            out,
+            PACKAGE_ROOT / "media" / "fonts" / "DejaVuSans-Bold.ttf",
+        )
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    print(f"wrote {out}")
+
+
+if __name__ == "__main__":
+    main()
 ```
 
-Then remove the scratch directory: `rm -rf .golden-tmp`
+Then run it:
+
+```bash
+uv run python scripts/make_golden.py
+```
+
+A script rather than a one-liner, because this needs re-running every time the
+renderer's layout changes on purpose — and a throwaway shell one-liner is the
+kind of thing nobody can reproduce six months later.
 
 Open `tests/fixtures/golden/test_meme.png` and confirm both captions are
 centred inside their halves and legible. If they are not, fix the renderer
@@ -3197,13 +3307,13 @@ before committing — you are about to freeze this as the reference.
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `pytest tests/test_media_render.py -v`
+Run: `uv run pytest tests/test_media_render.py -v`
 Expected: PASS, 8 tests
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add zeitgeist/media/render.py tests/test_media_render.py tests/fixtures/golden
+git add zeitgeist/media/render.py scripts/make_golden.py tests/test_media_render.py tests/fixtures/golden
 git commit -m "feat: add deterministic Pillow meme renderer"
 ```
 
@@ -3366,7 +3476,7 @@ def test_blank_caption_triggers_retry():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_media_brief.py -v`
+Run: `uv run pytest tests/test_media_brief.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.media.brief'`
 
 - [ ] **Step 3: Write `zeitgeist/media/brief.py`**
@@ -3508,7 +3618,7 @@ def _build_prompt(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_media_brief.py -v`
+Run: `uv run pytest tests/test_media_brief.py -v`
 Expected: PASS, 10 tests
 
 - [ ] **Step 5: Commit**
@@ -3683,7 +3793,7 @@ def test_checkpoints_are_valid_json(settings, sample_posts):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_pipeline.py -v`
+Run: `uv run pytest tests/test_pipeline.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.pipeline'`
 
 - [ ] **Step 3: Write `zeitgeist/pipeline.py`**
@@ -3825,7 +3935,7 @@ def _read(path: Path, schema: type) -> list:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_pipeline.py -v`
+Run: `uv run pytest tests/test_pipeline.py -v`
 Expected: PASS, 6 tests
 
 - [ ] **Step 5: Write the failing CLI test**
@@ -3878,7 +3988,7 @@ def test_validate_templates_reports_problems(tmp_path, capsys):
 
 - [ ] **Step 6: Run test to verify it fails**
 
-Run: `pytest tests/test_cli.py -v`
+Run: `uv run pytest tests/test_cli.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.cli'`
 
 - [ ] **Step 7: Write `zeitgeist/cli.py`**
@@ -3998,7 +4108,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 8: Run the full suite**
 
-Run: `pytest -v`
+Run: `uv run pytest -v`
 Expected: PASS, all tests across every module
 
 - [ ] **Step 9: Write `README.md`**
@@ -4010,10 +4120,17 @@ Scrapes Reddit, works out what is trending, and generates memes about it.
 
 ## Setup
 
+Install [uv](https://docs.astral.sh/uv/), then:
+
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e ".[dev]"
+uv sync
+```
+
+That creates `.venv/`, installs the exact versions in `uv.lock`, and fetches
+the Python version named in `.python-version` if you do not have it. Then copy
+the config template:
+
+```bash
 copy .env.example .env
 ```
 
@@ -4024,7 +4141,7 @@ read-only access, so no user login is needed.
 ## Running
 
 ```bash
-zeitgeist run
+uv run zeitgeist run
 ```
 
 Output lands in `output/<run-id>/`: the four stage checkpoints as JSON, plus
@@ -4034,13 +4151,13 @@ Re-run only the meme generation against an existing run, which is how you tune
 caption prompts without re-scraping or paying for analysis again:
 
 ```bash
-zeitgeist run --run-id 20260816T120000Z --resume-from generate
+uv run zeitgeist run --run-id 20260816T120000Z --resume-from generate
 ```
 
 Check the template library after editing a manifest:
 
 ```bash
-zeitgeist validate-templates
+uv run zeitgeist validate-templates
 ```
 
 ## Using a local model
@@ -4058,7 +4175,7 @@ point of the provider abstraction.
 ## Tests
 
 ```bash
-pytest
+uv run pytest
 ```
 
 No test touches the network. Every LLM call goes through `FakeLLMProvider`.
@@ -4081,35 +4198,45 @@ outside the test suite.
 
 - [ ] **Full suite passes**
 
-Run: `pytest -v`
+Run: `uv run pytest -v`
 Expected: every test passes, no network calls
+
+- [ ] **Lint and format are clean**
+
+Run: `uv run ruff format --check . && uv run ruff check .`
+Expected: no diffs and no violations
+
+- [ ] **The lockfile is current**
+
+Run: `uv lock --check`
+Expected: reports the lockfile is up to date. If it does not, run `uv lock` and commit the result — a stale lockfile means the environment is not reproducible.
 
 - [ ] **Template library validates**
 
-Run: `zeitgeist validate-templates`
+Run: `uv run zeitgeist validate-templates`
 Expected: `All templates in ... are valid.`
 
 - [ ] **A real run produces memes**
 
-Run: `zeitgeist run --verbose`
+Run: `uv run zeitgeist run --verbose`
 Expected: `output/<run-id>/` contains `posts.json`, `topics.json`,
 `ranked.json`, `briefs.json`, and up to 5 PNGs. Open the PNGs — captions
 should be legible and inside their boxes.
 
 - [ ] **Resume works**
 
-Run: `zeitgeist run --run-id <that-run-id> --resume-from generate`
+Run: `uv run zeitgeist run --run-id <that-run-id> --resume-from generate`
 Expected: completes in seconds without re-scraping, and rewrites the PNGs.
 
 - [ ] **History accumulates**
 
-Run `zeitgeist run` a second time, then inspect `topics.json` from the second
+Run `uv run zeitgeist run` a second time, then inspect `topics.json` from the second
 run. Expected: `score_components.rank_delta` is non-zero for at least one
 topic that appeared in both runs.
 
 - [ ] **Local backend works**
 
 Set `LLM_PROVIDER=ollama` and `LLM_MODEL` to a pulled model, then run
-`zeitgeist run --verbose`. Expected: completes without changing any code.
+`uv run zeitgeist run --verbose`. Expected: completes without changing any code.
 Compare the topics and captions against an Anthropic run — that comparison is
 the point of the abstraction.
