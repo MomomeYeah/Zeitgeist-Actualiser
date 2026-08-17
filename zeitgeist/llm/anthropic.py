@@ -44,16 +44,19 @@ class AnthropicProvider:
             if system is not None:
                 kwargs["system"] = system
 
-            response = self._client.messages.create(**kwargs)
-            payload = _extract_tool_input(response)
-
-            if payload is None:
-                last_error = "no tool_use block in response"
+            try:
+                response = self._client.messages.create(**kwargs)
+                payload = _extract_tool_input(response)
+            except Exception as exc:
+                last_error = str(exc)
             else:
-                try:
-                    return schema.model_validate(payload)
-                except ValidationError as exc:
-                    last_error = str(exc)
+                if payload is None:
+                    last_error = "no tool_use block in response"
+                else:
+                    try:
+                        return schema.model_validate(payload)
+                    except ValidationError as exc:
+                        last_error = str(exc)
 
             attempt_prompt = (
                 f"{prompt}\n\nYour previous response failed validation:\n"

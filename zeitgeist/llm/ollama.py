@@ -35,23 +35,26 @@ class OllamaProvider:
                 messages.append({"role": "system", "content": system})
             messages.append({"role": "user", "content": attempt_prompt})
 
-            response = self._client.post(
-                f"{self.host}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "format": schema.model_json_schema(),
-                    "stream": False,
-                },
-                timeout=TIMEOUT_SECONDS,
-            )
-            response.raise_for_status()
-            content = response.json()["message"]["content"]
-
             try:
-                return schema.model_validate(json.loads(content))
-            except (json.JSONDecodeError, ValidationError) as exc:
+                response = self._client.post(
+                    f"{self.host}/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "format": schema.model_json_schema(),
+                        "stream": False,
+                    },
+                    timeout=TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                content = response.json()["message"]["content"]
+            except Exception as exc:
                 last_error = str(exc)
+            else:
+                try:
+                    return schema.model_validate(json.loads(content))
+                except (json.JSONDecodeError, ValidationError) as exc:
+                    last_error = str(exc)
 
             attempt_prompt = (
                 f"{prompt}\n\nYour previous response failed validation:\n"

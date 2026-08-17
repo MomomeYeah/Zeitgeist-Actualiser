@@ -26,7 +26,10 @@ class StubClient:
 
     def _create(self, **kwargs):
         self.requests.append(kwargs)
-        return self._responses.pop(0)
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def _provider(client) -> AnthropicProvider:
@@ -97,3 +100,23 @@ def test_raises_when_no_tool_use_block_returned():
     client = StubClient([SimpleNamespace(content=[]), SimpleNamespace(content=[])])
     with pytest.raises(LLMError):
         _provider(client).complete("prompt", Answer)
+
+
+def test_transport_failure_is_retried_and_can_recover():
+    """A connection drop on the first attempt must not escape raw — it gets
+    the same one retry a validation failure gets.
+    """
+    boom = RuntimeError("connection refused")
+    client = StubClient([boom, _tool_response({"value": "recovered"})])
+    assert _provider(client).complete("prompt", Answer).value == "recovered"
+
+
+def test_transport_failure_on_both_attempts_raises_llm_error():
+    """Exhausting the retry budget on transport errors must surface as
+    LLMError, not the raw exception, matching the validation-failure path.
+    """
+    boom = RuntimeError("connection refused")
+    client = StubClient([boom, boom])
+    with pytest.raises(LLMError, match="Answer"):
+        _provider(client).complete("prompt", Answer)
+    assert len(client.requests) == 2

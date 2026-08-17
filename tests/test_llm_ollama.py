@@ -114,11 +114,37 @@ def test_gives_up_after_exactly_two_attempts():
     assert len(client.requests) == 2
 
 
-def test_http_errors_are_not_swallowed_as_validation_failures():
-    """A stopped Ollama server should surface as a connection problem, not
-    be retried once and reported as a schema failure.
+def test_transport_failure_is_retried_and_can_recover():
+    """A connection drop on the first attempt must not escape raw — it gets
+    the same one retry a validation failure gets.
     """
     boom = RuntimeError("connection refused")
-    client = StubClient([StubResponse("", error=boom)])
-    with pytest.raises(RuntimeError, match="connection refused"):
+    client = StubClient([StubResponse("", error=boom), _ok({"value": "recovered"})])
+    assert _provider(client).complete("prompt", Answer).value == "recovered"
+
+
+def test_transport_failure_on_both_attempts_raises_llm_error():
+    """Exhausting the retry budget on a stopped Ollama server must surface
+    as LLMError, not the raw connection exception.
+    """
+    boom = RuntimeError("connection refused")
+    client = StubClient([StubResponse("", error=boom), StubResponse("", error=boom)])
+    with pytest.raises(LLMError, match="Answer"):
         _provider(client).complete("prompt", Answer)
+    assert len(client.requests) == 2
+
+
+def test_error_shaped_response_is_retried_not_a_raw_keyerror():
+    """A malformed body (e.g. an error payload with no message.content) must
+    be treated like any other retryable failure, not crash with KeyError.
+    """
+
+    class ErrorShapedResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"error": "model not found"}
+
+    client = StubClient([ErrorShapedResponse(), _ok({"value": "recovered"})])
+    assert _provider(client).complete("prompt", Answer).value == "recovered"
