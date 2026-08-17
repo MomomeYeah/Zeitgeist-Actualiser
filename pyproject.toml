@@ -35,6 +35,10 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 88
 target-version = "py314"
+# docs/ holds the plan and design-spec Markdown that later tasks' briefs are
+# mechanically extracted from. ruff's formatter rewrites fenced Python code
+# blocks in Markdown by default, which would silently alter those briefs.
+exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
