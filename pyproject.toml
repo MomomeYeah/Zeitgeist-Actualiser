@@ -1,0 +1,40 @@
+[project]
+name = "zeitgeist"
+version = "0.1.0"
+description = "Finds what the internet is talking about and makes memes about it."
+requires-python = ">=3.14"
+dependencies = [
+    "pydantic>=2.12",
+    "pydantic-settings>=2.6",
+    "praw>=7.8",
+    "anthropic>=0.40",
+    "httpx>=0.28",
+    "pillow>=11.3",
+]
+
+[project.scripts]
+zeitgeist = "zeitgeist.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.3", "ruff>=0.8"]
+
+[build-system]
+requires = ["uv_build>=0.9"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "zeitgeist"
+# uv_build assumes a src/ layout by default; this project is flat, so the
+# module root is the project root. Omitting this fails the build with
+# "expected module at src/zeitgeist".
+module-root = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
