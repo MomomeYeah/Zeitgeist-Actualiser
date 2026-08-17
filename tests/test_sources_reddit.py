@@ -1,5 +1,6 @@
 import logging
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 import pytest
 
@@ -145,6 +146,22 @@ def test_all_subreddits_failing_still_raises_source_error():
     source = _source({"all": FailingListing()})
     with pytest.raises(SourceError, match="no posts"):
         source.fetch(limit=10)
+
+
+def test_mapping_bug_in_to_post_propagates_not_swallowed():
+    """A genuine bug in the mapping path (_to_post) must crash loudly,
+    not be caught, logged as a subreddit skip, and silently return fewer posts.
+    This catches regressions where mapping gets wrapped in try-except.
+    """
+    listing = StubListing([StubSubmission("a1", "Cat opens door")])
+    source = _source({"all": listing})
+
+    # Force _to_post to raise to simulate a bug in the mapping path
+    with patch("zeitgeist.sources.reddit._to_post") as mock_to_post:
+        mock_to_post.side_effect = ValueError("simulated mapping bug")
+        # The exception must propagate, not be caught and silently skipped
+        with pytest.raises(ValueError, match="simulated mapping bug"):
+            source.fetch(limit=10)
 
 
 def test_fixture_meets_the_preconditions_later_tests_assume(sample_posts):

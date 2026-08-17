@@ -65,15 +65,23 @@ class RedditSource:
             # run; only "nothing worked at all" (checked below) is fatal.
             try:
                 listing = self._reddit.subreddit(name)
-                for stream in (listing.hot, listing.rising):
-                    for submission in stream(limit=per_listing):
-                        if submission.id in seen:
-                            continue
-                        seen[submission.id] = _to_post(submission, fetched_at)
-                        if len(seen) >= limit:
-                            return list(seen.values())
+                fetched = [
+                    submission
+                    for stream in (listing.hot, listing.rising)
+                    for submission in stream(limit=per_listing)
+                ]
             except Exception as exc:
                 log.warning("Skipping r/%s: %s", name, exc)
+                continue
+
+            # Mapping is pure: a bug here must crash, not look like an
+            # unreachable subreddit.
+            for submission in fetched:
+                if submission.id in seen:
+                    continue
+                seen[submission.id] = _to_post(submission, fetched_at)
+                if len(seen) >= limit:
+                    return list(seen.values())
 
         if not seen:
             raise SourceError("Reddit returned no posts")
