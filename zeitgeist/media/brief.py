@@ -114,7 +114,10 @@ def _validate(
 def _build_prompt(topic: ScoredTopic, templates: dict[str, TemplateManifest]) -> str:
     library = "\n".join(
         f"- id={manifest.id} | shape: {manifest.shape} | "
-        f"slots: {', '.join(slot.name for slot in manifest.slots)}"
+        "slots: "
+        + ", ".join(
+            f"{slot.name} (max {slot.max_chars} chars)" for slot in manifest.slots
+        )
         for manifest in templates.values()
     )
     return (

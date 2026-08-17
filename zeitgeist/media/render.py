@@ -83,6 +83,20 @@ def _draw_slot(
             break
 
     block_height = line_height * len(lines)
+    if block_height > height:
+        # max_chars is meant to keep captions short enough to fit, but the
+        # model is only ever told the budget (see _build_prompt in
+        # media/brief.py) — nothing stops it exceeding it. Failing loudly
+        # here matches the project's contract everywhere else: _render_all
+        # catches RenderError per brief, so one over-long caption costs one
+        # meme rather than silently drawing outside the box.
+        raise RenderError(
+            f"Caption for slot {slot.name!r} does not fit within its "
+            f"{width}x{height} box even at the minimum font size "
+            f"({MIN_FONT_SIZE}px); needs {len(lines)} lines of height "
+            f"{line_height:.1f}px"
+        )
+
     y = top + (height - block_height) / 2
 
     for line in lines:

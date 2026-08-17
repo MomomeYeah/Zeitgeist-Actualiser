@@ -92,6 +92,21 @@ def test_prompt_includes_topic_sentiment():
     assert "cute" in provider.calls[0].prompt.lower()
 
 
+def test_prompt_tells_the_model_each_slots_max_chars_budget():
+    """max_chars is validated on the manifest and enforced by the renderer,
+    but the model is never told the budget unless the prompt says so — it
+    can only guess at a length that will fit.
+    """
+    provider = FakeLLMProvider([_choice()])
+    generate_brief(_topic(), _templates(), provider)
+    prompt = provider.calls[0].prompt
+    assert "rejected" in prompt and "60" in prompt
+    # Confirms the number is attached to its slot, not just present anywhere.
+    rejected_index = prompt.index("rejected")
+    nearby = prompt[rejected_index : rejected_index + 40]
+    assert "60" in nearby
+
+
 def test_hallucinated_template_id_triggers_retry():
     provider = FakeLLMProvider([_choice(template_id="invented"), _choice()])
     brief = generate_brief(_topic(), _templates(), provider)

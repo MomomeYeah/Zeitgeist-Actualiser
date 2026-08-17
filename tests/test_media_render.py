@@ -62,6 +62,22 @@ def test_long_text_stays_inside_its_box(tmp_path, template_dir):
         assert ImageStat.Stat(below).stddev[0] == pytest.approx(0.0, abs=1.0)
 
 
+def test_caption_that_cannot_fit_even_at_minimum_font_size_raises(
+    tmp_path, template_dir
+):
+    """An absurdly long caption (well past max_chars) must fail loudly
+    rather than draw outside its box. Previously a 2000-character caption on
+    this 380x180 box would render ~34 lines spanning y = -124..324 — off
+    the box and off the top of the image — with no error and no log line.
+    """
+    directory, manifest = template_dir
+    out = tmp_path / "out.png"
+    with pytest.raises(RenderError, match="top"):
+        render_meme(
+            _brief(top="word " * 400, bottom="short"), manifest, directory, out, FONT
+        )
+
+
 def test_missing_slot_raises(tmp_path, template_dir):
     directory, manifest = template_dir
     with pytest.raises(RenderError, match="bottom"):
