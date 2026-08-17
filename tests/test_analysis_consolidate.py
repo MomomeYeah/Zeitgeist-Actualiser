@@ -118,6 +118,18 @@ def test_matches_returned_tags_case_insensitively():
     topics = consolidate({"p1": ["cats"]}, provider)
     assert topics[0].post_ids == ["p1"]
 
+    # Also test the reverse: stored tags that are not normalized,
+    # with model echoing lowercase.
+    provider = FakeLLMProvider(
+        [
+            Consolidation(
+                topics=[ConsolidatedTopic(label="Cats", summary="", tags=["cats"])]
+            )
+        ]
+    )
+    topics = consolidate({"p1": ["Cats"], "p2": [" CATS "]}, provider)
+    assert sorted(topics[0].post_ids) == ["p1", "p2"]
+
 
 def test_failure_returns_empty_list():
     provider = FakeLLMProvider([LLMError("reduce failed")])

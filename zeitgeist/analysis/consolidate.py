@@ -62,7 +62,9 @@ def consolidate(
     for entry in consolidation.topics:
         wanted = {tag.strip().lower() for tag in entry.tags}
         post_ids = sorted(
-            post_id for post_id, tags in tags_by_post.items() if wanted & set(tags)
+            post_id
+            for post_id, tags in tags_by_post.items()
+            if wanted & {t.strip().lower() for t in tags}
         )
         if not post_ids:
             log.debug("Dropping topic %r: no posts matched its tags", entry.label)
