@@ -52,7 +52,6 @@
 | `zeitgeist/media/brief.py` | Topic → template choice + captions |
 | `zeitgeist/media/render.py` | Pillow compositing |
 | `zeitgeist/media/templates/` | 24 template images + JSON manifests |
-| `zeitgeist/media/fonts/` | Vendored DejaVuSans-Bold.ttf |
 
 ---
 
@@ -556,7 +555,9 @@ class Settings(BaseSettings):
 
     sentiment_weights: dict[Sentiment, float] = DEFAULT_SENTIMENT_WEIGHTS
 
-    font_path: Path = PACKAGE_ROOT / "media" / "fonts" / "DejaVuSans-Bold.ttf"
+    # None means "use the scalable font Pillow ships"; set it to a real .ttf
+    # (e.g. C:/Windows/Fonts/impact.ttf) for the authentic meme look.
+    font_path: Path | None = None
     templates_dir: Path = PACKAGE_ROOT / "media" / "templates"
     output_dir: Path = Path("output")
     db_path: Path = Path("data") / "zeitgeist.db"
@@ -3006,7 +3007,7 @@ git commit -m "feat: add sentiment judgement and weighted selection"
 ### Task 12: Template manifests, loader, and validator
 
 **Files:**
-- Create: `zeitgeist/media/__init__.py`, `zeitgeist/media/templates.py`, `scripts/make_placeholder_templates.py`, `zeitgeist/media/templates/*.json`, `zeitgeist/media/templates/*.png`, `zeitgeist/media/fonts/DejaVuSans-Bold.ttf`
+- Create: `zeitgeist/media/__init__.py`, `zeitgeist/media/templates.py`, `scripts/make_placeholder_templates.py`, `zeitgeist/media/templates/*.json`, `zeitgeist/media/templates/*.png`
 - Test: `tests/test_media_templates.py`, `tests/fixtures/templates/`
 
 **Interfaces:**
@@ -3268,22 +3269,28 @@ def validate_templates(directory: Path) -> list[str]:
     return problems
 ```
 
-- [ ] **Step 5: Vendor the font**
+- [ ] **Step 5: Point the font setting at Pillow's bundled font**
 
-Download DejaVu Sans Bold and save it to `zeitgeist/media/fonts/DejaVuSans-Bold.ttf`.
+No font is vendored. Pillow ships a scalable font of its own, reachable via
+`ImageFont.load_default(size=N)`, which returns a real `FreeTypeFont`. Using it
+means no binary in the repo, no redistribution question, and no download — and
+golden-image tests stay reproducible because `uv.lock` pins the Pillow version.
 
-Source: https://github.com/dejavu-fonts/dejavu-fonts/releases — take
-`DejaVuSans-Bold.ttf` from the `ttf/` directory of the release archive.
+Change the `font_path` default in `zeitgeist/config.py` to make the bundled
+font the default and a real font file an optional override:
 
-It is vendored rather than resolved from system fonts so that golden-image
-tests are reproducible across machines. Its licence (Bitstream Vera / Arev,
-permissive with attribution) allows redistribution; record that in
-`zeitgeist/media/fonts/LICENCE.txt` alongside the file, copying the licence
-text from the release archive.
+```python
+    # None means "use the scalable font Pillow ships"; set it to a real .ttf
+    # (e.g. C:/Windows/Fonts/impact.ttf) for the authentic meme look.
+    font_path: Path | None = None
+```
 
-If you prefer the authentic meme look, set `FONT_PATH` to
-`C:\Windows\Fonts\impact.ttf` in `.env` — but leave the vendored default in
-place, because the golden tests depend on it.
+Nothing else in `config.py` changes, and no existing test asserts on
+`font_path`. Task 13's renderer resolves `None` to the bundled font.
+
+If you want the authentic meme look later, set `FONT_PATH` in `.env` to
+`C:/Windows/Fonts/impact.ttf`. Leave the default as `None`, because the golden
+test depends on the bundled font being what renders.
 
 - [ ] **Step 6: Build the 24-template library**
 
@@ -3435,7 +3442,8 @@ git commit -m "feat: add template manifests, loader, validator, and 24 placehold
 
 **Interfaces:**
 - Consumes: `MediaBrief` (Task 1), `TemplateManifest`, `Slot` (Task 12)
-- Produces: `render_meme(brief, manifest, templates_dir, out_path, font_path) -> Path` and `RenderError(Exception)`
+- Produces: `render_meme(brief, manifest, templates_dir, out_path, font_path=None) -> Path`, `resolve_font(font_path, size) -> ImageFont.FreeTypeFont`, and `RenderError(Exception)`.
+  `font_path=None` means "use the scalable font Pillow ships" via `ImageFont.load_default(size=...)`; a supplied path is loaded with `ImageFont.truetype`.
 
 Deterministic, no LLM involvement. Text is word-wrapped, then the font shrinks
 until the block fits its box, and is drawn with a stroke outline so it stays
@@ -3460,7 +3468,7 @@ from zeitgeist.media.render import RenderError, render_meme
 from zeitgeist.media.templates import TemplateManifest
 from zeitgeist.models import MediaBrief
 
-FONT = PACKAGE_ROOT / "media" / "fonts" / "DejaVuSans-Bold.ttf"
+FONT = None  # Pillow's bundled scalable font; see resolve_font
 
 
 @pytest.fixture
@@ -3609,12 +3617,28 @@ class RenderError(Exception):
     """Raised when a brief cannot be drawn onto its template."""
 
 
+def resolve_font(font_path: Path | None, size: int) -> ImageFont.FreeTypeFont:
+    """Load the caption font at `size`.
+
+    `None` means the scalable font Pillow ships with, which keeps the repo
+    free of a vendored binary and keeps golden renders reproducible because
+    uv.lock pins the Pillow version. A supplied path overrides it — set
+    FONT_PATH to a real .ttf for a different look.
+    """
+    if font_path is None:
+        return ImageFont.load_default(size=size)
+    try:
+        return ImageFont.truetype(str(font_path), size)
+    except OSError as exc:
+        raise RenderError(f"Could not load font {font_path}: {exc}") from exc
+
+
 def render_meme(
     brief: MediaBrief,
     manifest: TemplateManifest,
     templates_dir: Path,
     out_path: Path,
-    font_path: Path,
+    font_path: Path | None = None,
 ) -> Path:
     slot_names = {slot.name for slot in manifest.slots}
     given = set(brief.caption_slots)
@@ -3642,7 +3666,7 @@ def render_meme(
 
 
 def _draw_slot(
-    draw: ImageDraw.ImageDraw, slot: Slot, text: str, font_path: Path
+    draw: ImageDraw.ImageDraw, slot: Slot, text: str, font_path: Path | None
 ) -> None:
     left, top, right, bottom = slot.box
     width, height = right - left, bottom - top
@@ -3651,7 +3675,7 @@ def _draw_slot(
         return
 
     for size in range(MAX_FONT_SIZE, MIN_FONT_SIZE - 1, -2):
-        font = ImageFont.truetype(str(font_path), size)
+        font = resolve_font(font_path, size)
         lines = _wrap(draw, text, font, width)
         line_height = size * LINE_SPACING
         if line_height * len(lines) <= height:
@@ -3735,7 +3759,7 @@ def main() -> None:
             MANIFEST,
             scratch,
             out,
-            PACKAGE_ROOT / "media" / "fonts" / "DejaVuSans-Bold.ttf",
+            None,
         )
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
