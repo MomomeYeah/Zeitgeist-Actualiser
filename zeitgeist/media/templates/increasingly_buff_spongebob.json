@@ -1,0 +1,37 @@
+{
+  "id": "increasingly_buff_spongebob",
+  "image": "increasingly_buff_spongebob.png",
+  "shape": "the same thing escalating to an extreme",
+  "slots": [
+    {
+      "name": "stage1",
+      "box": [
+        20,
+        20,
+        780,
+        260
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "stage2",
+      "box": [
+        20,
+        280,
+        780,
+        520
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "stage3",
+      "box": [
+        20,
+        540,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}

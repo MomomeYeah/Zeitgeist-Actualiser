@@ -1,0 +1,17 @@
+{
+  "id": "disaster_girl",
+  "image": "disaster_girl.png",
+  "shape": "quiet satisfaction at chaos you caused",
+  "slots": [
+    {
+      "name": "caption",
+      "box": [
+        20,
+        20,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}

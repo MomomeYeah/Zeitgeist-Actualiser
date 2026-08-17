@@ -1,0 +1,17 @@
+{
+  "id": "change_my_mind",
+  "image": "change_my_mind.png",
+  "shape": "a provocative thesis stated flatly and defended",
+  "slots": [
+    {
+      "name": "thesis",
+      "box": [
+        20,
+        20,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}

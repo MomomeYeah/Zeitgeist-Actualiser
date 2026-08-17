@@ -1,0 +1,27 @@
+{
+  "id": "roll_safe",
+  "image": "roll_safe.png",
+  "shape": "misguided reasoning presented as cleverness",
+  "slots": [
+    {
+      "name": "top",
+      "box": [
+        20,
+        20,
+        780,
+        390
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "bottom",
+      "box": [
+        20,
+        410,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}

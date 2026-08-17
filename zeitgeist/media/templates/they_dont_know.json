@@ -1,0 +1,17 @@
+{
+  "id": "they_dont_know",
+  "image": "they_dont_know.png",
+  "shape": "imagined superiority while standing alone",
+  "slots": [
+    {
+      "name": "thought",
+      "box": [
+        20,
+        20,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}

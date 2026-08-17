@@ -1,0 +1,47 @@
+{
+  "id": "gru_plan",
+  "image": "gru_plan.png",
+  "shape": "a plan whose final step reveals it backfiring",
+  "slots": [
+    {
+      "name": "step1",
+      "box": [
+        20,
+        20,
+        780,
+        195
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "step2",
+      "box": [
+        20,
+        215,
+        780,
+        390
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "step3",
+      "box": [
+        20,
+        410,
+        780,
+        585
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "step4",
+      "box": [
+        20,
+        605,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}

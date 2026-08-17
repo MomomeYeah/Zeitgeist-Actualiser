@@ -1,0 +1,47 @@
+{
+  "id": "anakin_padme",
+  "image": "anakin_padme.png",
+  "shape": "a confident claim meeting a horrified realisation",
+  "slots": [
+    {
+      "name": "claim",
+      "box": [
+        20,
+        20,
+        780,
+        195
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "question",
+      "box": [
+        20,
+        215,
+        780,
+        390
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "silence",
+      "box": [
+        20,
+        410,
+        780,
+        585
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "repeat",
+      "box": [
+        20,
+        605,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "id": "spiderman_pointing",
+  "image": "spiderman_pointing.png",
+  "shape": "two identical things accusing each other",
+  "slots": [
+    {
+      "name": "left",
+      "box": [
+        20,
+        20,
+        780,
+        390
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "right",
+      "box": [
+        20,
+        410,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}

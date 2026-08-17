@@ -1,0 +1,17 @@
+{
+  "id": "first_time",
+  "image": "first_time.png",
+  "shape": "weary recognition of a familiar ordeal",
+  "slots": [
+    {
+      "name": "caption",
+      "box": [
+        20,
+        20,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}

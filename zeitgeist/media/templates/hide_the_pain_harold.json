@@ -1,0 +1,27 @@
+{
+  "id": "hide_the_pain_harold",
+  "image": "hide_the_pain_harold.png",
+  "shape": "smiling through quiet discomfort",
+  "slots": [
+    {
+      "name": "top",
+      "box": [
+        20,
+        20,
+        780,
+        390
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "bottom",
+      "box": [
+        20,
+        410,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}

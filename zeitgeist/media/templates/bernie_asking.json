@@ -1,0 +1,17 @@
+{
+  "id": "bernie_asking",
+  "image": "bernie_asking.png",
+  "shape": "asking once again for a modest thing",
+  "slots": [
+    {
+      "name": "request",
+      "box": [
+        20,
+        20,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}

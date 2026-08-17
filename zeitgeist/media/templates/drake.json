@@ -1,0 +1,27 @@
+{
+  "id": "drake",
+  "image": "drake.png",
+  "shape": "rejecting option A in favour of preferred option B",
+  "slots": [
+    {
+      "name": "rejected",
+      "box": [
+        20,
+        20,
+        780,
+        390
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "preferred",
+      "box": [
+        20,
+        410,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}

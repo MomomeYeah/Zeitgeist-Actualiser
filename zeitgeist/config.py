@@ -49,7 +49,9 @@ class Settings(BaseSettings):
 
     sentiment_weights: dict[Sentiment, float] = DEFAULT_SENTIMENT_WEIGHTS
 
-    font_path: Path = PACKAGE_ROOT / "media" / "fonts" / "DejaVuSans-Bold.ttf"
+    # None means "use the scalable font Pillow ships"; set it to a real .ttf
+    # (e.g. C:/Windows/Fonts/impact.ttf) for the authentic meme look.
+    font_path: Path | None = None
     templates_dir: Path = PACKAGE_ROOT / "media" / "templates"
     output_dir: Path = Path("output")
     db_path: Path = Path("data") / "zeitgeist.db"

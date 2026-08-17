@@ -1,0 +1,27 @@
+{
+  "id": "always_has_been",
+  "image": "always_has_been.png",
+  "shape": "a mundane truth revealed as having always been so",
+  "slots": [
+    {
+      "name": "realisation",
+      "box": [
+        20,
+        20,
+        780,
+        390
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "response",
+      "box": [
+        20,
+        410,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}

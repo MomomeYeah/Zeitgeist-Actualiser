@@ -1,0 +1,27 @@
+{
+  "id": "buff_doge_vs_cheems",
+  "image": "buff_doge_vs_cheems.png",
+  "shape": "a confident past self against a feeble present one",
+  "slots": [
+    {
+      "name": "strong",
+      "box": [
+        20,
+        20,
+        780,
+        390
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "weak",
+      "box": [
+        20,
+        410,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}

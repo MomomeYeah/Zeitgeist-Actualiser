@@ -1,0 +1,27 @@
+{
+  "id": "woman_yelling_at_cat",
+  "image": "woman_yelling_at_cat.png",
+  "shape": "a furious accusation meeting an unbothered response",
+  "slots": [
+    {
+      "name": "accuser",
+      "box": [
+        20,
+        20,
+        780,
+        390
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "responder",
+      "box": [
+        20,
+        410,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}

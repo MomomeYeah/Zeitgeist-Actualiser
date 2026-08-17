@@ -1,0 +1,27 @@
+{
+  "id": "this_is_fine",
+  "image": "this_is_fine.png",
+  "shape": "insisting all is well amid visible disaster",
+  "slots": [
+    {
+      "name": "situation",
+      "box": [
+        20,
+        20,
+        780,
+        390
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "denial",
+      "box": [
+        20,
+        410,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}

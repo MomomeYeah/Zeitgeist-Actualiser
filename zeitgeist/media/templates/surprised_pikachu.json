@@ -1,0 +1,27 @@
+{
+  "id": "surprised_pikachu",
+  "image": "surprised_pikachu.png",
+  "shape": "shock at an entirely predictable consequence",
+  "slots": [
+    {
+      "name": "setup",
+      "box": [
+        20,
+        20,
+        780,
+        390
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "consequence",
+      "box": [
+        20,
+        410,
+        780,
+        780
+      ],
+      "max_chars": 108
+    }
+  ]
+}
