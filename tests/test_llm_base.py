@@ -43,3 +43,21 @@ def test_queued_exception_is_raised():
     provider = FakeLLMProvider([LLMError("model exploded")])
     with pytest.raises(LLMError, match="model exploded"):
         provider.complete("p", Answer)
+
+
+def test_call_recorded_when_queue_is_empty():
+    """Catches append moved below guard; later tasks read calls for failures."""
+    provider = FakeLLMProvider()
+    with pytest.raises(AssertionError):
+        provider.complete("failed prompt", Answer)
+    assert len(provider.calls) == 1
+    assert provider.calls[0].prompt == "failed prompt"
+
+
+def test_call_recorded_when_exception_is_raised():
+    """Catches append moved below guard; later tasks read calls for failures."""
+    provider = FakeLLMProvider([LLMError("boom")])
+    with pytest.raises(LLMError):
+        provider.complete("another failed prompt", Answer)
+    assert len(provider.calls) == 1
+    assert provider.calls[0].prompt == "another failed prompt"
