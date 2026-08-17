@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime
 
 import pytest
@@ -27,6 +28,18 @@ class StubListing:
 
     def rising(self, limit=None):
         return iter(self._submissions[:limit])
+
+
+class FailingListing:
+    """Stands in for a banned, private, or misspelled subreddit: PRAW is
+    lazy, so the error only surfaces once the listing is actually iterated.
+    """
+
+    def hot(self, limit=None):
+        raise Exception("received 403 HTTP response")
+
+    def rising(self, limit=None):
+        raise Exception("received 403 HTTP response")
 
 
 class StubReddit:
@@ -113,6 +126,25 @@ def test_blank_body_becomes_none_rather_than_empty_string(selftext):
 def test_no_posts_raises_source_error():
     with pytest.raises(SourceError, match="no posts"):
         _source({"all": StubListing([])}).fetch(limit=10)
+
+
+def test_a_failing_subreddit_is_skipped_and_others_still_yield_posts(caplog):
+    """One banned/private/misspelled entry in SUBREDDITS must not abort the
+    whole run — Stage A is fatal only when *nothing* worked.
+    """
+    good = StubListing([StubSubmission("a1", "Good post")])
+    source = _source({"all": good, "banned": FailingListing()}, subreddits=["banned"])
+    with caplog.at_level(logging.WARNING):
+        posts = source.fetch(limit=10)
+
+    assert [post.source_id for post in posts] == ["a1"]
+    assert "banned" in caplog.text
+
+
+def test_all_subreddits_failing_still_raises_source_error():
+    source = _source({"all": FailingListing()})
+    with pytest.raises(SourceError, match="no posts"):
+        source.fetch(limit=10)
 
 
 def test_fixture_meets_the_preconditions_later_tests_assume(sample_posts):

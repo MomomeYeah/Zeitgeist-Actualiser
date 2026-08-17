@@ -4,6 +4,7 @@ Pulls `hot` (what is currently large) and `rising` (Reddit's own early
 signal), so the scorer sees things that have not already peaked.
 """
 
+import logging
 import math
 from datetime import UTC, datetime
 from typing import Any
@@ -11,6 +12,8 @@ from typing import Any
 from zeitgeist.config import Settings
 from zeitgeist.models import Post
 from zeitgeist.sources.base import SourceError
+
+log = logging.getLogger(__name__)
 
 BODY_EXCERPT_CHARS = 500
 
@@ -56,14 +59,21 @@ class RedditSource:
 
         seen: dict[str, Post] = {}
         for name in names:
-            listing = self._reddit.subreddit(name)
-            for stream in (listing.hot, listing.rising):
-                for submission in stream(limit=per_listing):
-                    if submission.id in seen:
-                        continue
-                    seen[submission.id] = _to_post(submission, fetched_at)
-                    if len(seen) >= limit:
-                        return list(seen.values())
+            # PRAW is lazy: subreddit() never raises, but iterating hot/rising
+            # does — for a banned, private, or misspelled name, on the first
+            # `next()`. One bad entry in SUBREDDITS must not abort the whole
+            # run; only "nothing worked at all" (checked below) is fatal.
+            try:
+                listing = self._reddit.subreddit(name)
+                for stream in (listing.hot, listing.rising):
+                    for submission in stream(limit=per_listing):
+                        if submission.id in seen:
+                            continue
+                        seen[submission.id] = _to_post(submission, fetched_at)
+                        if len(seen) >= limit:
+                            return list(seen.values())
+            except Exception as exc:
+                log.warning("Skipping r/%s: %s", name, exc)
 
         if not seen:
             raise SourceError("Reddit returned no posts")
