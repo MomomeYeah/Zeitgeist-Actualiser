@@ -46,13 +46,14 @@ def extract_tags(
 
     for start in range(0, len(posts), batch_size):
         batch = posts[start : start + batch_size]
+        # Built outside the try: a bug here must crash loudly, not be
+        # misreported as a failed batch and silently skipped.
+        prompt = _build_prompt(batch)
         try:
-            extraction = provider.complete(
-                _build_prompt(batch), TagExtraction, system=EXTRACT_SYSTEM
-            )
-        except Exception:
+            extraction = provider.complete(prompt, TagExtraction, system=EXTRACT_SYSTEM)
+        except Exception as exc:
             log.warning(
-                "Tag extraction failed for batch starting at %d; skipping", start
+                "Tag extraction failed for batch starting at %d: %s", start, exc
             )
             continue
 

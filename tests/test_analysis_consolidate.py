@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from zeitgeist.analysis.consolidate import (
@@ -134,6 +136,16 @@ def test_matches_returned_tags_case_insensitively():
 def test_failure_returns_empty_list():
     provider = FakeLLMProvider([LLMError("reduce failed")])
     assert consolidate({"p1": ["cats"]}, provider) == []
+
+
+def test_failure_logs_the_exception_detail(caplog):
+    """A static warning with no exception text gives no clue whether the
+    reduce stage failed on auth, schema, or timeout.
+    """
+    provider = FakeLLMProvider([LLMError("reduce failed")])
+    with caplog.at_level(logging.WARNING):
+        consolidate({"p1": ["cats"]}, provider)
+    assert "reduce failed" in caplog.text
 
 
 def test_empty_input_makes_no_calls():

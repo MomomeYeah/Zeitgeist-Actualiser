@@ -1,3 +1,7 @@
+import logging
+
+import pytest
+
 from zeitgeist.analysis.extract import PostTags, TagExtraction, extract_tags
 from zeitgeist.llm.base import FakeLLMProvider, LLMError
 
@@ -75,6 +79,39 @@ def test_failed_batch_is_skipped_not_fatal(sample_posts):
     )
     tags = extract_tags(posts, provider, batch_size=3)
     assert tags == {posts[3].source_id: ["kept"]}
+
+
+def test_failed_batch_logs_the_exception_detail(sample_posts, caplog):
+    """A static 'skipping' message with no exception text gives no clue
+    whether a failure during a live run was auth, schema, or timeout.
+    """
+    posts = sample_posts[:6]
+    provider = FakeLLMProvider(
+        [
+            LLMError("batch one exploded"),
+            TagExtraction(assignments=[]),
+        ]
+    )
+    with caplog.at_level(logging.WARNING):
+        extract_tags(posts, provider, batch_size=3)
+    assert "batch one exploded" in caplog.text
+
+
+def test_prompt_formatting_bug_is_not_swallowed_as_a_failed_batch(
+    sample_posts, monkeypatch
+):
+    """_build_prompt must run outside the try/except around the provider
+    call, so a bug in prompt formatting is a real crash rather than being
+    misreported as just another failed batch.
+    """
+
+    def boom(batch):
+        raise ValueError("prompt bug")
+
+    monkeypatch.setattr("zeitgeist.analysis.extract._build_prompt", boom)
+    provider = FakeLLMProvider([TagExtraction(assignments=[])])
+    with pytest.raises(ValueError, match="prompt bug"):
+        extract_tags(sample_posts[:3], provider, batch_size=40)
 
 
 def test_unknown_post_ids_from_model_are_discarded(sample_posts):

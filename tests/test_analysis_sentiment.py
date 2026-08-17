@@ -1,3 +1,5 @@
+import logging
+
 from zeitgeist.analysis.sentiment import SentimentJudgement, judge_topics, select
 from zeitgeist.config import DEFAULT_SENTIMENT_WEIGHTS
 from zeitgeist.llm.base import FakeLLMProvider, LLMError
@@ -83,6 +85,45 @@ def test_failed_topic_is_dropped_and_run_continues():
     provider = FakeLLMProvider([LLMError("nope"), _judgement(Sentiment.CUTE)])
     scored = judge_topics([_topic("dropped"), _topic("kept")], provider)
     assert [t.id for t in scored] == ["kept"]
+
+
+def test_score_components_survive_onto_the_scored_topic():
+    """score_components crosses Topic -> ScoredTopic via
+    **topic.model_dump(); a refactor to manual field listing would drop the
+    entire scoring stage's output silently, since nothing else checks it.
+    """
+    topic = _topic("cats").model_copy(
+        update={"score_components": {"base": 0.5, "rank_delta": 0.1}}
+    )
+    provider = FakeLLMProvider([_judgement(Sentiment.CUTE)])
+    scored = judge_topics([topic], provider)[0]
+    assert scored.score_components == {"base": 0.5, "rank_delta": 0.1}
+
+
+def test_select_handles_a_weights_dict_missing_some_sentiments():
+    """weights.get(sentiment, 1.0) is the live partial-weights safety net.
+    The only existing coverage of that fallback is Settings.weight_for,
+    which production code never calls — select is what actually runs.
+    """
+    topics = [
+        _scored("has_weight", Sentiment.FUNNY, trend=0.5),
+        _scored("no_weight", Sentiment.SAD, trend=0.5),
+    ]
+    partial_weights = {Sentiment.FUNNY: 2.0}  # SAD deliberately absent
+    picked = select(topics, partial_weights, top_n=2)
+    assert len(picked) == 2
+    # SAD falls back to neutral (1.0); FUNNY's weight of 2.0 ranks it first.
+    assert picked[0].id == "has_weight"
+
+
+def test_failed_topic_logs_the_exception_detail(caplog):
+    """A static 'dropping' message with no exception text gives no clue
+    whether the judgement call failed on auth, schema, or timeout.
+    """
+    provider = FakeLLMProvider([LLMError("sentiment call failed")])
+    with caplog.at_level(logging.WARNING):
+        judge_topics([_topic("dropped")], provider)
+    assert "sentiment call failed" in caplog.text
 
 
 def test_select_prefers_positive_sentiment_at_equal_trend():

@@ -52,8 +52,8 @@ def consolidate(
         consolidation = provider.complete(
             _build_prompt(vocabulary), Consolidation, system=CONSOLIDATE_SYSTEM
         )
-    except Exception:
-        log.warning("Tag consolidation failed; no topics produced")
+    except Exception as exc:
+        log.warning("Tag consolidation failed; no topics produced: %s", exc)
         return []
 
     topics: list[Topic] = []

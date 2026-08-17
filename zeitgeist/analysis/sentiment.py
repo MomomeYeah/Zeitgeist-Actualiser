@@ -43,8 +43,10 @@ def judge_topics(topics: list[Topic], provider: LLMProvider) -> list[ScoredTopic
             judgement = provider.complete(
                 _build_prompt(topic), SentimentJudgement, system=SENTIMENT_SYSTEM
             )
-        except Exception:
-            log.warning("Sentiment judgement failed for %r; dropping", topic.label)
+        except Exception as exc:
+            log.warning(
+                "Sentiment judgement failed for %r; dropping: %s", topic.label, exc
+            )
             continue
 
         scored.append(
