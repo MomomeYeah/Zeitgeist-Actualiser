@@ -63,6 +63,47 @@ def test_no_history_gives_zero_rank_delta():
     assert scored[0].score_components["rank_delta"] == 0.0
 
 
+def test_no_history_defaults_to_own_base_not_zero():
+    """Discriminates ``previous_scores.get(label, bases[i])`` (correct) from
+    the tempting-looking simplification ``previous_scores.get(label, 0.0)``
+    (buggy). Both give ``rank_delta == 0.0`` for a single no-history topic
+    (test_no_history_gives_zero_rank_delta above can't tell them apart), and
+    both preserve topic *ordering* in every arrangement tried, so this test
+    asserts the raw component value of a three-topic run instead.
+
+    Three topics are required: min-max normalisation over two values always
+    collapses to exactly {0.0, 1.0}, which erases an absolute offset in one
+    topic's raw_delta. A third topic leaves a middle value that differs
+    between the two implementations.
+
+    Hand-derived from the brief's scoring definition (verified with a
+    standalone calculation outside the module under test):
+      - posts: a=200, b=100, c=300, all comments=10, hours=1, distinct
+        single-post channels -> comment_velocity and channel_spread are
+        identical across all three topics, so both normalise to 0.0 and drop
+        out of `base` entirely. Only upvote_velocity drives `base`.
+      - raw_uv = [200, 100, 300] -> uv_norm = [0.5, 0.0, 1.0]
+      - base = 0.4 * uv_norm = [0.2, 0.0, 0.4]  (new, riser, faller)
+      - previous_scores = {"Riser": -0.6, "Faller": 0.8}; "New" has no entry
+      - correct: raw_delta = [0.2-0.2, 0.0-(-0.6), 0.4-0.8] = [0.0, 0.6, -0.4]
+        normalised (range 1.0, low -0.4) = [0.4, 1.0, 0.0]
+      - buggy (default 0.0 instead of own base): raw_delta =
+        [0.2-0.0, 0.6, -0.4] = [0.2, 0.6, -0.4], normalised = [0.6, 1.0, 0.0]
+    So the correct implementation yields rank_delta == 0.4 for "new"; the
+    buggy one yields ~0.6. Asserting the exact literal 0.4 catches the
+    regression that the other tests in this file miss.
+    """
+    posts = [
+        _post("a", 200, 10, "x", hours=1),
+        _post("b", 100, 10, "y", hours=1),
+        _post("c", 300, 10, "z", hours=1),
+    ]
+    topics = [_topic("new", ["a"]), _topic("riser", ["b"]), _topic("faller", ["c"])]
+    previous = {"Riser": -0.6, "Faller": 0.8}
+    scored = {t.id: t for t in score_topics(topics, posts, NOW, previous)}
+    assert scored["new"].score_components["rank_delta"] == 0.4
+
+
 def test_rising_topic_beats_falling_topic_with_equal_base():
     posts = [
         _post("a", 100, 10, "cats", hours=2),
