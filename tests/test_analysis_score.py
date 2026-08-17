@@ -84,7 +84,11 @@ def test_no_history_defaults_to_own_base_not_zero():
         out of `base` entirely. Only upvote_velocity drives `base`.
       - raw_uv = [200, 100, 300] -> uv_norm = [0.5, 0.0, 1.0]
       - base = 0.4 * uv_norm = [0.2, 0.0, 0.4]  (new, riser, faller)
-      - previous_scores = {"Riser": -0.6, "Faller": 0.8}; "New" has no entry
+      - previous_scores = {"riser": -0.6, "faller": 0.8}; "New" has no entry.
+        Keys are slugify(label) — score_topics looks up history that way so
+        that a label differing only in case/punctuation across runs still
+        matches. "Riser" and "Faller" (title-cased by `_topic`) are looked
+        up as "riser"/"faller", which is exactly what this dict provides.
       - correct: raw_delta = [0.2-0.2, 0.0-(-0.6), 0.4-0.8] = [0.0, 0.6, -0.4]
         normalised (range 1.0, low -0.4) = [0.4, 1.0, 0.0]
       - buggy (default 0.0 instead of own base): raw_delta =
@@ -99,7 +103,7 @@ def test_no_history_defaults_to_own_base_not_zero():
         _post("c", 300, 10, "z", hours=1),
     ]
     topics = [_topic("new", ["a"]), _topic("riser", ["b"]), _topic("faller", ["c"])]
-    previous = {"Riser": -0.6, "Faller": 0.8}
+    previous = {"riser": -0.6, "faller": 0.8}
     scored = {t.id: t for t in score_topics(topics, posts, NOW, previous)}
     assert scored["new"].score_components["rank_delta"] == 0.4
 
@@ -110,7 +114,7 @@ def test_rising_topic_beats_falling_topic_with_equal_base():
         _post("b", 100, 10, "dogs", hours=2),
     ]
     topics = [_topic("riser", ["a"]), _topic("faller", ["b"])]
-    previous = {"Riser": 0.0, "Faller": 1.0}
+    previous = {"riser": 0.0, "faller": 1.0}
     scored = {t.id: t for t in score_topics(topics, posts, NOW, previous)}
     assert scored["riser"].trend_score > scored["faller"].trend_score
 

@@ -6,6 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from zeitgeist.analysis.consolidate import slugify
 from zeitgeist.models import Post, Topic
 
 MIN_AGE_HOURS = 0.5
@@ -25,7 +26,12 @@ def score_topics(
     previous_scores: dict[str, float],
     weights: ScoreWeights | None = None,
 ) -> list[Topic]:
-    """Attach a trend score and its component breakdown to each topic."""
+    """Attach a trend score and its component breakdown to each topic.
+
+    `previous_scores` is keyed by ``slugify(label)`` (see
+    ``Store.previous_scores``), not the raw label, so a topic relabelled
+    with different case or punctuation across runs still finds its history.
+    """
     weights = weights or ScoreWeights()
     by_id = {post.source_id: post for post in posts}
 
@@ -60,7 +66,7 @@ def score_topics(
     ]
 
     raw_delta = [
-        bases[i] - previous_scores.get(topic.label, bases[i])
+        bases[i] - previous_scores.get(slugify(topic.label), bases[i])
         for i, (topic, _) in enumerate(live)
     ]
     delta = _normalise(raw_delta)

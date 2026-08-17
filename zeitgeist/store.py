@@ -4,6 +4,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+from zeitgeist.analysis.consolidate import slugify
 from zeitgeist.models import Topic
 
 SCHEMA = """
@@ -53,15 +54,24 @@ class Store:
         self._conn.commit()
 
     def record_topics(self, run_id: str, topics: list[Topic]) -> None:
+        # Keyed on slugify(label), not the raw label: labels are free text
+        # the model regenerates every run, so "Shelter Dog Adoption" and
+        # "shelter dog adoption" must be treated as the same topic across
+        # runs or rank_delta never finds a match against real data. This
+        # fixes case and punctuation drift only, not wording drift — a
+        # genuinely reworded label ("Rescue Dog Adoptions") still misses.
         self._conn.executemany(
             "INSERT OR REPLACE INTO topics "
             "(run_id, label, trend_score, created_at) VALUES (?, ?, ?, ?)",
-            [(run_id, t.label, t.trend_score, _now()) for t in topics],
+            [(run_id, slugify(t.label), t.trend_score, _now()) for t in topics],
         )
         self._conn.commit()
 
     def previous_scores(self, exclude_run_id: str) -> dict[str, float]:
-        """Each label's score from the most recent prior run containing it."""
+        """Each label-slug's score from the most recent prior run containing
+        it. Keys are slugify(label) (see record_topics); callers must look
+        up with the same normalisation, which score_topics does.
+        """
         rows = self._conn.execute(
             """
             SELECT t.label, t.trend_score

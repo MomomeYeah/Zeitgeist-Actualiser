@@ -1,3 +1,4 @@
+from zeitgeist.analysis.consolidate import slugify
 from zeitgeist.models import Topic
 from zeitgeist.store import Store
 
@@ -29,7 +30,9 @@ def test_records_and_reads_back_topic_scores(tmp_path):
     store.record_topics("run1", [_topic("Cats", 0.8)])
     store.finish_run("run1", status="ok", post_count=10)
 
-    assert store.previous_scores(exclude_run_id="run2") == {"Cats": 0.8}
+    # Keyed on slugify(label), not the raw label: see
+    # test_relabelled_topic_is_still_matched_across_runs below.
+    assert store.previous_scores(exclude_run_id="run2") == {"cats": 0.8}
 
 
 def test_current_run_is_excluded_from_its_own_history(tmp_path):
@@ -47,7 +50,7 @@ def test_most_recent_prior_run_wins(tmp_path):
         store.record_topics(run_id, [_topic("Cats", score)])
         store.finish_run(run_id, status="ok", post_count=10)
 
-    assert store.previous_scores(exclude_run_id="run4") == {"Cats": 0.9}
+    assert store.previous_scores(exclude_run_id="run4") == {"cats": 0.9}
 
 
 def test_each_label_tracks_its_own_history(tmp_path):
@@ -63,7 +66,43 @@ def test_each_label_tracks_its_own_history(tmp_path):
     store.record_topics("run2", [_topic("Cats", 0.7)])
     store.finish_run("run2", status="ok", post_count=10)
 
-    assert store.previous_scores(exclude_run_id="run3") == {"Cats": 0.7, "Dogs": 0.9}
+    assert store.previous_scores(exclude_run_id="run3") == {"cats": 0.7, "dogs": 0.9}
+
+
+def test_relabelled_topic_is_still_matched_across_runs(tmp_path):
+    """Labels are free text the LLM regenerates every run, so the same
+    subject often comes back with different casing or punctuation. A topic
+    recorded as "Shelter Dog Adoption" must still be found by a later run
+    that labels the same subject "shelter dog adoption" — otherwise
+    rank_delta (25% of trend_score) is inert against real data, since every
+    label would look brand new every run.
+    """
+    store = _store(tmp_path)
+    store.start_run("run1")
+    store.record_topics("run1", [_topic("Shelter Dog Adoption", 0.8)])
+    store.finish_run("run1", status="ok", post_count=10)
+
+    scores = store.previous_scores(exclude_run_id="run2")
+    assert scores.get(slugify("shelter dog adoption")) == 0.8
+
+
+def test_previous_scores_ignores_the_excluded_runs_own_history_in_the_max(tmp_path):
+    """Guards the correlated subquery's own `t2.run_id != ?` exclusion. If
+    that exclusion were removed, the excluded run — being the newest run
+    for this label — would set the subquery's MAX(started_at) to its own
+    timestamp, which no non-excluded row can match, silently dropping the
+    label from the result instead of falling back to the older run's score.
+    """
+    store = _store(tmp_path)
+    store.start_run("run1")
+    store.record_topics("run1", [_topic("Cats", 0.2)])
+    store.finish_run("run1", status="ok", post_count=10)
+
+    store.start_run("run2")
+    store.record_topics("run2", [_topic("Cats", 0.99)])
+    store.finish_run("run2", status="ok", post_count=10)
+
+    assert store.previous_scores(exclude_run_id="run2") == {"cats": 0.2}
 
 
 def test_finish_run_records_the_outcome(tmp_path):
