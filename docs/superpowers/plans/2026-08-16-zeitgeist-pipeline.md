@@ -2,6 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status: implemented and merged.** All 15 tasks landed on 2026-08-17; the
+> suite finished at 180 tests, above the per-task counts below. Those counts
+> were correct when each task was written; several tasks later gained
+> regression tests during review, and a whole-branch review added more. This
+> document is kept as the planning record — `git log` is the record of what
+> was actually built.
+
 **Goal:** Build a one-off CLI that scrapes Reddit, identifies trending topics via an LLM map-reduce, ranks them by sentiment, and renders image memes.
 
 **Architecture:** Four sequential stages (ingest → analyse → evaluate → generate), each taking typed Pydantic input, returning typed output, and checkpointing that output as JSON into a per-run directory. All LLM access goes through a single-method `LLMProvider` protocol so backends swap via config. Numeric trend scoring is pure Python, deliberately outside the LLM.
