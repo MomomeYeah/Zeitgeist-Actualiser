@@ -89,10 +89,6 @@ def test_sources_defaults_to_lemmy_only():
     assert _bare_settings().sources == ["lemmy"]
 
 
-def test_reddit_runs_without_credentials_when_disabled():
-    assert _bare_settings(sources="lemmy").reddit_client_id == ""
-
-
 def test_enabling_reddit_without_credentials_is_rejected():
     """The failure has to name the missing variables: 'validation error' on
     a field the user never set is not an actionable message.
@@ -258,23 +254,81 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+from zeitgeist.config import Settings
 from zeitgeist.sources.base import SourceError
 from zeitgeist.sources.lemmy import LemmySource
 
 
+# Safely in the past. A fixture dated "today" makes the
+# `fetched_at > created_at` assertion pass or fail depending on the hour
+# the suite happens to run.
+PUBLISHED = "2026-01-15T09:00:00.123456Z"
+
+
 def _view(ap_id, title, score=10, comments=2, community="cats", body=""):
+    """Mirrors a real lemmy.world post view, including fields the mapper
+    ignores. Captured from the live API on 2026-08-18.
+
+    Trimming this to only what `_to_post` reads today would let a later
+    change reference a field that was never in the test data — the tests
+    would pass while the real payload broke.
+    """
     return {
         "post": {
-            "ap_id": f"https://lemmy.world/post/{ap_id}",
+            "id": 50804462,
             "name": title,
+            "url": "https://i.example.test/photo.jpeg",
             "body": body,
-            "published": "2026-08-18T09:00:00.123456Z",
+            "creator_id": 1234,
+            "community_id": 99,
+            "removed": False,
+            "locked": False,
+            "published": PUBLISHED,
+            "deleted": False,
+            "nsfw": False,
+            "ap_id": f"https://lemmy.world/post/{ap_id}",
+            "local": True,
+            "language_id": 37,
+            "featured_community": False,
+            "featured_local": False,
+            "url_content_type": "image/jpeg",
+            "thumbnail_url": "https://lemmy.world/pictrs/image/abc.webp",
         },
-        "counts": {"score": score, "comments": comments},
+        "creator": {"id": 1234, "name": "someone", "local": True},
         "community": {
+            "id": 99,
             "name": community,
+            "title": community.title(),
+            "removed": False,
+            "published": PUBLISHED,
+            "deleted": False,
+            "nsfw": False,
             "actor_id": f"https://lemmy.world/c/{community}",
+            "local": True,
+            "hidden": False,
+            "posting_restricted_to_mods": False,
+            "instance_id": 1,
+            "visibility": "Public",
         },
+        "counts": {
+            "post_id": 50804462,
+            "comments": comments,
+            "score": score,
+            "upvotes": score + 2,
+            "downvotes": 2,
+            "published": PUBLISHED,
+            "newest_comment_time": PUBLISHED,
+        },
+        "subscribed": "NotSubscribed",
+        "saved": False,
+        "read": False,
+        "hidden": False,
+        "creator_banned_from_community": False,
+        "banned_from_community": False,
+        "creator_is_moderator": False,
+        "creator_is_admin": False,
+        "creator_blocked": False,
+        "unread_comments": 0,
     }
 
 
@@ -290,16 +344,27 @@ class StubResponse:
 
 
 class StubClient:
-    """Returns one canned page per (sort, page); anything unlisted is empty."""
+    """Serves one canned page per (sort, page); anything unlisted is empty."""
+
+    # Without the empty-page break, _fetch_sort loops forever: the suite
+    # would hang rather than fail, and a hang names no cause. Turn it into
+    # an assertion failure that does.
+    RUNAWAY_CALLS = 20
 
     def __init__(self, pages):
         self._pages = pages
         self.calls = []
+        self.urls = []
 
     def get(self, url, params):
+        if len(self.calls) >= self.RUNAWAY_CALLS:
+            raise AssertionError(
+                "runaway paging: _fetch_sort never breaks on an empty page"
+            )
         self.calls.append(params)
-        key = (params["sort"], params["page"])
-        return StubResponse({"posts": self._pages.get(key, [])})
+        self.urls.append(url)
+        page = self._pages.get((params["sort"], params["page"]), [])
+        return StubResponse({"posts": page})
 
 
 class FailingClient:
@@ -329,7 +394,7 @@ def test_maps_views_onto_posts():
     assert post.score == 99
     assert post.comment_count == 7
     assert post.permalink == "https://lemmy.world/post/a1"
-    assert post.created_at == datetime(2026, 8, 18, 9, 0, 0, 123456, tzinfo=UTC)
+    assert post.created_at == datetime(2026, 1, 15, 9, 0, 0, 123456, tzinfo=UTC)
     assert post.fetched_at > post.created_at
 
 
@@ -347,9 +412,9 @@ def test_created_at_is_timezone_aware_when_the_instance_omits_the_zone():
     would raise there instead of here.
     """
     view = _view("a1", "T")
-    view["post"]["published"] = "2026-08-18T09:00:00"
+    view["post"]["published"] = "2026-01-15T09:00:00"
     post = _source({("Hot", 1): [view]}).fetch(limit=10)[0]
-    assert post.created_at.tzinfo is not None
+    assert post.created_at == datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
 
 
 def test_deduplicates_across_hot_and_scaled():
@@ -382,12 +447,46 @@ def test_pages_until_the_budget_is_met():
 
 
 def test_stops_paging_on_an_empty_page():
-    """Without this the loop would spin on a listing shorter than the
-    budget until the request count ran away.
+    """A listing shorter than the budget must end the loop, not keep asking.
+    Exact counts, hand-derived: Hot serves one post then an empty page (2
+    calls), Scaled is empty from the start (1 call).
     """
     source = _source({("Hot", 1): [_view("a1", "Only one")]})
-    source.fetch(limit=500)
-    assert len(source._client.calls) <= 4
+    posts = source.fetch(limit=500)
+    assert len(posts) == 1
+    assert len(source._client.calls) == 3
+
+
+def test_requests_go_to_the_configured_instance():
+    """The instance is the one piece of config that decides which network
+    is scraped; a dropped or double-slashed base URL is invisible until a
+    real request is made.
+    """
+    source = LemmySource(
+        instance="https://sh.itjust.works/",
+        client=StubClient({("Hot", 1): [_view("a1", "T")]}),
+    )
+    source.fetch(limit=1)
+    assert source._client.urls[0] == "https://sh.itjust.works/api/v3/post/list"
+
+
+def test_from_settings_wires_config_into_the_request():
+    """from_settings is plumbing, so it fails silently: a dropped
+    include_nsfw or a mis-assigned instance only shows up in the request.
+    """
+    settings = Settings(
+        _env_file=None,
+        anthropic_api_key="key",
+        sources="lemmy",
+        lemmy_instance="https://lemmy.ml",
+        lemmy_include_nsfw=True,
+    )
+    source = LemmySource.from_settings(settings)
+    source._client = StubClient({("Hot", 1): [_view("a1", "T")]})
+    source.fetch(limit=1)
+
+    assert source._client.urls[0] == "https://lemmy.ml/api/v3/post/list"
+    assert source._client.calls[0]["show_nsfw"] == "true"
 
 
 def test_respects_the_limit():
@@ -718,13 +817,6 @@ def test_combines_posts_from_every_source():
     assert platforms == {"lemmy", "reddit"}
 
 
-def test_name_reports_what_actually_ran():
-    composite = CompositeSource(
-        [StubSource("lemmy", []), StubSource("reddit", [])]
-    )
-    assert composite.name == "lemmy,reddit"
-
-
 def test_divides_the_budget_across_sources():
     """A single source must not spend the whole POST_LIMIT and starve the
     others of their share.
@@ -894,25 +986,28 @@ def test_every_known_source_has_a_builder():
 
 
 def test_build_source_builds_only_the_enabled_sources():
+    """A disabled platform must not be constructed at all: RedditSource's
+    __init__ builds a praw client, so building it anyway would demand
+    credentials the user was told they do not need.
+    """
     # _env_file=None so a local .env enabling reddit cannot change the result.
     settings = Settings(_env_file=None, anthropic_api_key="key", sources="lemmy")
-    composite = build_source(settings)
-    assert composite.name == "lemmy"
+    assert [type(source) for source in build_source(settings)._sources] == [LemmySource]
 
 
-def test_build_source_passes_lemmy_settings_through():
+def test_build_source_preserves_the_configured_order():
+    """The budget is split per source in order, so a registry that reordered
+    them would silently change which platform gets the remainder.
+    """
     settings = Settings(
         _env_file=None,
         anthropic_api_key="key",
-        sources="lemmy",
-        lemmy_instance="https://sh.itjust.works/",
-        lemmy_include_nsfw=True,
+        reddit_client_id="id",
+        reddit_client_secret="secret",
+        sources="lemmy,reddit",
     )
-    source = build_source(settings)._sources[0]
-    assert isinstance(source, LemmySource)
-    # Trailing slash stripped, or every request URL would double it.
-    assert source._instance == "https://sh.itjust.works"
-    assert source._include_nsfw is True
+    names = [source.name for source in build_source(settings)._sources]
+    assert names == ["lemmy", "reddit"]
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
