@@ -1,9 +1,16 @@
 import logging
+from datetime import UTC, datetime
 
 import pytest
 
-from zeitgeist.analysis.extract import PostTags, TagExtraction, extract_tags
+from zeitgeist.analysis.extract import (
+    PostTags,
+    TagExtraction,
+    _build_prompt,
+    extract_tags,
+)
 from zeitgeist.llm.base import FakeLLMProvider, LLMError
+from zeitgeist.models import Post
 
 
 def test_returns_tags_keyed_by_post_id(sample_posts):
@@ -43,6 +50,27 @@ def test_prompt_carries_the_title_and_the_id_the_model_must_echo(sample_posts):
     assert post.title in prompt
     assert post.source_id in prompt
     assert post.channel in prompt
+
+
+def test_channel_rendered_without_platform_prefix():
+    """Platform-neutral channel rendering: Lemmy posts show as memes@lemmy.world,
+    not r/memes@lemmy.world. A platform-specific prefix would be misleading.
+    """
+    post = Post(
+        platform="lemmy",
+        source_id="p999",
+        title="Test Lemmy post",
+        body_excerpt=None,
+        permalink="https://lemmy.world/c/memes",
+        score=100,
+        comment_count=5,
+        created_at=datetime(2026, 8, 16, 12, 0, tzinfo=UTC),
+        fetched_at=datetime(2026, 8, 16, 12, 0, tzinfo=UTC),
+        channel="memes@lemmy.world",
+    )
+    prompt = _build_prompt([post])
+    assert "memes@lemmy.world" in prompt
+    assert "r/memes@lemmy.world" not in prompt
 
 
 def test_caps_tags_per_post(sample_posts):

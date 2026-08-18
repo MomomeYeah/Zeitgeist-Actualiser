@@ -66,9 +66,7 @@ def extract_tags(
 
 
 def _build_prompt(batch: list[Post]) -> str:
-    lines = [
-        f"- id={post.source_id} | r/{post.channel} | {post.title}" for post in batch
-    ]
+    lines = [f"- id={post.source_id} | {post.channel} | {post.title}" for post in batch]
     listing = "\n".join(lines)
     return (
         "Label each of these posts with its topics.\n\n"
