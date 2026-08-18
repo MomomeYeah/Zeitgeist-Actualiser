@@ -100,11 +100,12 @@ class LemmySource:
                 break
             collected.extend(views)
             page += 1
-        # Not trimmed to `budget`: that's a per-listing paging target, not a
-        # hard cap. fetch() enforces the real global limit as it dedups, so
-        # trimming here would discard views this listing has to spare when
-        # the other listing comes up short.
-        return collected
+        # Trimmed to `budget`, a real per-listing share, not just a paging
+        # target: pages are 50 at a time, so an unaligned budget can overshoot
+        # by up to 49. Left untrimmed, a well-stocked Hot would swallow that
+        # overshoot into the global limit before Scaled is ever asked —
+        # crowding out the rising signal Scaled exists to surface.
+        return collected[:budget]
 
 
 def _to_post(view: dict[str, Any], fetched_at: datetime) -> Post:
