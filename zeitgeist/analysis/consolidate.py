@@ -15,6 +15,13 @@ from zeitgeist.models import Topic
 
 log = logging.getLogger(__name__)
 
+# Every canonical topic must echo its input tags verbatim, so this is
+# the one reply in the pipeline whose size grows with the run: ~300
+# posts yield ~700 distinct tags and ~6k output tokens, well past the
+# provider default. Budgets above 16k must be streamed, which the
+# Anthropic provider always does.
+CONSOLIDATE_MAX_TOKENS = 32768
+
 CONSOLIDATE_SYSTEM = (
     "You merge a messy vocabulary of topic tags into a clean set of canonical "
     "topics. Fold synonyms, near-duplicates, plurals, and differing "
@@ -50,7 +57,10 @@ def consolidate(
 
     try:
         consolidation = provider.complete(
-            _build_prompt(vocabulary), Consolidation, system=CONSOLIDATE_SYSTEM
+            _build_prompt(vocabulary),
+            Consolidation,
+            system=CONSOLIDATE_SYSTEM,
+            max_tokens=CONSOLIDATE_MAX_TOKENS,
         )
     except Exception as exc:
         log.warning("Tag consolidation failed; no topics produced: %s", exc)

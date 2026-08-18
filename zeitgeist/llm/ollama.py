@@ -25,7 +25,14 @@ class OllamaProvider:
         self.host = host.rstrip("/")
         self.model = model
 
-    def complete(self, prompt: str, schema: type[M], *, system: str | None = None) -> M:
+    def complete(
+        self,
+        prompt: str,
+        schema: type[M],
+        *,
+        system: str | None = None,
+        max_tokens: int | None = None,
+    ) -> M:
         attempt_prompt = prompt
         last_error: str | None = None
 
@@ -35,15 +42,22 @@ class OllamaProvider:
                 messages.append({"role": "system", "content": system})
             messages.append({"role": "user", "content": attempt_prompt})
 
+            body: dict[str, Any] = {
+                "model": self.model,
+                "messages": messages,
+                "format": schema.model_json_schema(),
+                "stream": False,
+            }
+            if max_tokens is not None:
+                # Ollama spells the output cap num_predict. Left
+                # unset it uses the model's own default rather than
+                # an arbitrary one of ours.
+                body["options"] = {"num_predict": max_tokens}
+
             try:
                 response = self._client.post(
                     f"{self.host}/api/chat",
-                    json={
-                        "model": self.model,
-                        "messages": messages,
-                        "format": schema.model_json_schema(),
-                        "stream": False,
-                    },
+                    json=body,
                     timeout=TIMEOUT_SECONDS,
                 )
                 response.raise_for_status()

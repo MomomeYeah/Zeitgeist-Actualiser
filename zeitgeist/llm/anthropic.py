@@ -24,19 +24,27 @@ class AnthropicProvider:
         # Public: the factory wires these from Settings, and tests assert it.
         self.model = model
 
-    def complete(self, prompt: str, schema: type[M], *, system: str | None = None) -> M:
+    def complete(
+        self,
+        prompt: str,
+        schema: type[M],
+        *,
+        system: str | None = None,
+        max_tokens: int | None = None,
+    ) -> M:
         tool = {
             "name": TOOL_NAME,
             "description": schema.__doc__ or f"Return a {schema.__name__}.",
             "input_schema": schema.model_json_schema(),
         }
+        budget = MAX_TOKENS if max_tokens is None else max_tokens
         attempt_prompt = prompt
         last_error: str | None = None
 
         for _ in range(2):
             kwargs: dict[str, Any] = {
                 "model": self.model,
-                "max_tokens": MAX_TOKENS,
+                "max_tokens": budget,
                 "tools": [tool],
                 "tool_choice": {"type": "tool", "name": TOOL_NAME},
                 "messages": [{"role": "user", "content": attempt_prompt}],
@@ -45,11 +53,30 @@ class AnthropicProvider:
                 kwargs["system"] = system
 
             try:
-                response = self._client.messages.create(**kwargs)
-                payload = _extract_tool_input(response)
+                # Always stream: the SDK refuses a non-streaming
+                # request whose budget it estimates could outrun the
+                # ten minute HTTP timeout, which rules out the budgets
+                # the reduce stage needs.
+                with self._client.messages.stream(**kwargs) as stream:
+                    response = stream.get_final_message()
             except Exception as exc:
                 last_error = str(exc)
             else:
+                # A reply cut off at the budget still carries a
+                # tool_use block, but its half-written JSON is
+                # unparseable so the input arrives empty — which
+                # pydantic reports as a missing field, and which no
+                # rephrasing fixes. Only stop_reason tells the two
+                # apart, and a retry would truncate identically.
+                if getattr(response, "stop_reason", None) == "max_tokens":
+                    raise LLMError(
+                        f"Anthropic truncated its {schema.__name__} "
+                        f"response at max_tokens={budget}. The reply "
+                        "did not fit the budget; raise it for this "
+                        "call rather than retrying."
+                    )
+
+                payload = _extract_tool_input(response)
                 if payload is None:
                     last_error = "no tool_use block in response"
                 else:
