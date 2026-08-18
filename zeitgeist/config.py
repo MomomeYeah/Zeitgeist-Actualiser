@@ -1,10 +1,10 @@
 """Runtime configuration, loaded from environment and `.env`."""
 
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from zeitgeist.models import Sentiment
 
@@ -51,8 +51,11 @@ class Settings(BaseSettings):
     llm_model: str = "claude-sonnet-5"
     ollama_host: str = "http://localhost:11434"
 
-    sources: list[str] = ["lemmy"]
-    subreddits: list[str] = []
+    # NoDecode: pydantic-settings otherwise JSON-decodes any list-typed env
+    # value before validators run, so a plain CSV string like "lemmy,reddit"
+    # raises SettingsError before `_split_csv` ever sees it.
+    sources: Annotated[list[str], NoDecode] = ["lemmy"]
+    subreddits: Annotated[list[str], NoDecode] = []
     post_limit: int = 500
     topic_count: int = 5
 

@@ -3,9 +3,12 @@ from datetime import UTC, datetime
 
 import pytest
 
+from zeitgeist.config import KNOWN_SOURCES, Settings
 from zeitgeist.models import Post
+from zeitgeist.sources import BUILDERS, build_source
 from zeitgeist.sources.base import SourceError
 from zeitgeist.sources.composite import CompositeSource
+from zeitgeist.sources.lemmy import LemmySource
 
 
 def _post(platform, source_id, channel="cats"):
@@ -108,3 +111,36 @@ def test_every_source_returning_nothing_raises_source_error():
 def test_building_with_no_sources_is_rejected():
     with pytest.raises(ValueError, match="at least one"):
         CompositeSource([])
+
+
+def test_every_known_source_has_a_builder():
+    """Settings validates SOURCES against KNOWN_SOURCES while build_source
+    indexes BUILDERS. If they drift, a name accepted at startup raises a
+    KeyError once the run is already under way.
+    """
+    assert set(BUILDERS) == set(KNOWN_SOURCES)
+
+
+def test_build_source_builds_only_the_enabled_sources():
+    """A disabled platform must not be constructed at all: RedditSource's
+    __init__ builds a praw client, so building it anyway would demand
+    credentials the user was told they do not need.
+    """
+    # _env_file=None so a local .env enabling reddit cannot change the result.
+    settings = Settings(_env_file=None, anthropic_api_key="key", sources="lemmy")
+    assert [type(source) for source in build_source(settings)._sources] == [LemmySource]
+
+
+def test_build_source_preserves_the_configured_order():
+    """The budget is split per source in order, so a registry that reordered
+    them would silently change which platform gets the remainder.
+    """
+    settings = Settings(
+        _env_file=None,
+        anthropic_api_key="key",
+        reddit_client_id="id",
+        reddit_client_secret="secret",
+        sources="lemmy,reddit",
+    )
+    names = [source.name for source in build_source(settings)._sources]
+    assert names == ["lemmy", "reddit"]

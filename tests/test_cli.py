@@ -45,8 +45,7 @@ def test_validate_templates_reports_problems(tmp_path, capsys):
 
 
 def _set_minimal_settings_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("REDDIT_CLIENT_ID", "id")
-    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("SOURCES", "lemmy")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
     monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
     monkeypatch.setenv("DB_PATH", str(tmp_path / "data" / "z.db"))

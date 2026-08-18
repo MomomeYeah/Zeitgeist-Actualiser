@@ -9,8 +9,8 @@ from zeitgeist.config import PACKAGE_ROOT, Settings
 from zeitgeist.llm.factory import build_provider
 from zeitgeist.media.templates import TemplateError, validate_templates
 from zeitgeist.pipeline import Stage, new_run_id, run_pipeline
+from zeitgeist.sources import build_source
 from zeitgeist.sources.base import SourceError
-from zeitgeist.sources.reddit import RedditSource
 from zeitgeist.store import Store
 
 
@@ -84,7 +84,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         try:
             run_dir = run_pipeline(
                 settings=settings,
-                source=RedditSource.from_settings(settings),
+                source=build_source(settings),
                 provider=build_provider(settings),
                 store=store,
                 run_id=args.run_id or new_run_id(),
