@@ -42,6 +42,11 @@ SOURCES=lemmy,reddit
 Enabling `reddit` without both credentials fails at startup with a message
 naming the missing variables.
 
+Trend scoring does not yet normalise scores across platforms, and Reddit's
+run orders of magnitude higher than Lemmy's. Running both together will rank
+Reddit-heavy topics too highly rather than raise an error, so treat mixed
+sources as experimental until that lands.
+
 ## Running
 
 ```bash

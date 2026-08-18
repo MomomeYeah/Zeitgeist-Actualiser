@@ -25,6 +25,10 @@ BODY_EXCERPT_CHARS = 500
 PAGE_SIZE = 50
 SORTS = ("Hot", "Scaled")
 TIMEOUT_SECONDS = 30.0
+# Some instances sit behind a CDN that filters the default httpx UA. Static
+# rather than configurable: unlike Reddit's, this API needs no per-app
+# identity, just something that is not the bare library default.
+USER_AGENT = "zeitgeist-actualiser/0.1"
 
 
 class LemmySource:
@@ -38,7 +42,9 @@ class LemmySource:
     ) -> None:
         self._instance = instance.rstrip("/")
         self._include_nsfw = include_nsfw
-        self._client = client or httpx.Client(timeout=TIMEOUT_SECONDS)
+        self._client = client or httpx.Client(
+            timeout=TIMEOUT_SECONDS, headers={"User-Agent": USER_AGENT}
+        )
 
     @classmethod
     def from_settings(cls, settings: Settings) -> LemmySource:
@@ -48,8 +54,10 @@ class LemmySource:
         )
 
     def fetch(self, limit: int) -> list[Post]:
-        # Divide the budget across listings, not listing *pairs*: Hot and
-        # Scaled overlap heavily, so halving again would undersample.
+        # Split the budget evenly between the two listings. Hot and Scaled
+        # overlap heavily, so dedup typically removes a meaningful share of
+        # what each contributes — a run yields fewer than `limit` unique
+        # posts more often than not. `limit` is an upper bound, not a target.
         per_sort = max(1, math.ceil(limit / len(SORTS)))
         fetched_at = datetime.now(UTC)
 

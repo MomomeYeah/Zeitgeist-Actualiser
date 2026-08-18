@@ -23,6 +23,7 @@ class CompositeSource:
         self.name = ",".join(source.name for source in sources)
 
     def fetch(self, limit: int) -> list[Post]:
+        log.info("Fetching from sources: %s", self.name)
         per_source = max(1, math.ceil(limit / len(self._sources)))
 
         # Keyed by platform as well as id: source_id is only unique within a
@@ -30,11 +31,16 @@ class CompositeSource:
         # top up would double the request count for a marginal gain.
         seen: dict[tuple[str, str], Post] = {}
         for source in self._sources:
-            # A source can raise anything its client library defines, so the
-            # guard is broad. One platform down must not lose the others.
+            # Each source converts its own recoverable failures (transport
+            # errors, an empty listing) into SourceError and lets everything
+            # else escape — that is the contract in base.py. So SourceError
+            # is the only exception a source can raise that means "this
+            # platform is down"; anything else is a bug in that source (e.g.
+            # a mapping error from a changed payload) and must crash here
+            # rather than be logged as an unreachable platform.
             try:
                 posts = source.fetch(limit=per_source)
-            except Exception as exc:
+            except SourceError as exc:
                 log.warning("Skipping source %s: %s", source.name, exc)
                 continue
 

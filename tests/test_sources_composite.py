@@ -43,6 +43,32 @@ class FailingSource:
         raise SourceError("platform unreachable")
 
 
+class BuggySource:
+    """Raises something other than SourceError, e.g. a mapping bug."""
+
+    name = "buggy"
+
+    def fetch(self, limit):
+        raise KeyError("posts")
+
+
+class StubLemmyClient:
+    """Returns a payload missing 'posts', the same shape a changed Lemmy API
+    would send. Mirrors StubClient/StubResponse in tests/test_sources_lemmy.py.
+    """
+
+    def get(self, url, params):
+        return _MalformedResponse()
+
+
+class _MalformedResponse:
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {"unexpected": []}
+
+
 def test_combines_posts_from_every_source():
     composite = CompositeSource(
         [
@@ -101,6 +127,31 @@ def test_a_failing_source_is_skipped_and_others_still_yield_posts(caplog):
 def test_all_sources_failing_raises_source_error():
     with pytest.raises(SourceError, match="No source"):
         CompositeSource([FailingSource(), FailingSource()]).fetch(limit=10)
+
+
+def test_a_non_source_error_propagates_rather_than_being_swallowed():
+    """Only SourceError means 'this platform is down'. Anything else is a
+    bug in that source (e.g. a mapping error) and must crash the run, not
+    be logged as an unreachable platform and skipped like FailingSource is.
+    """
+    composite = CompositeSource(
+        [BuggySource(), StubSource("lemmy", [_post("lemmy", "l1")])]
+    )
+    with pytest.raises(KeyError):
+        composite.fetch(limit=10)
+
+
+def test_malformed_payload_from_a_real_source_crashes_through_the_composite():
+    """The gap between the two unit suites: LemmySource alone is proven to
+    crash on a malformed payload (test_sources_lemmy.py), and CompositeSource
+    alone is proven to only catch SourceError (above) — but nothing proved
+    the two compose correctly until now. build_source always wraps even a
+    single source in a CompositeSource, so this is the path a real run takes.
+    """
+    lemmy = LemmySource(instance="https://lemmy.world", client=StubLemmyClient())
+    composite = CompositeSource([lemmy])
+    with pytest.raises(KeyError):
+        composite.fetch(limit=10)
 
 
 def test_every_source_returning_nothing_raises_source_error():
