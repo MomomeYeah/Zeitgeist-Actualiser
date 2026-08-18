@@ -3,6 +3,7 @@ import logging
 import pytest
 
 from zeitgeist.analysis.consolidate import (
+    CONSOLIDATE_MAX_TOKENS,
     ConsolidatedTopic,
     Consolidation,
     consolidate,
@@ -152,3 +153,14 @@ def test_empty_input_makes_no_calls():
     provider = FakeLLMProvider()
     assert consolidate({}, provider) == []
     assert provider.calls == []
+
+
+def test_asks_for_a_token_budget_that_fits_the_whole_vocabulary():
+    """Every canonical topic echoes its input tags verbatim, so the reply
+    grows with the vocabulary — a 300-post run needs several thousand output
+    tokens. On the provider default the reply is cut off, the truncated tool
+    call arrives as an empty object, and the run produces no topics at all.
+    """
+    provider = FakeLLMProvider([Consolidation(topics=[])])
+    consolidate({"p1": ["dogs"]}, provider)
+    assert provider.calls[0].max_tokens == CONSOLIDATE_MAX_TOKENS

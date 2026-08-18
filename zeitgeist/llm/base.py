@@ -23,8 +23,22 @@ class LLMProvider(Protocol):
     name: str
 
     def complete(
-        self, prompt: str, schema: type[M], *, system: str | None = None
-    ) -> M: ...
+        self,
+        prompt: str,
+        schema: type[M],
+        *,
+        system: str | None = None,
+        max_tokens: int | None = None,
+    ) -> M:
+        """Return a validated ``schema`` instance.
+
+        ``max_tokens`` bounds the reply. It belongs to the caller
+        rather than the provider because response size is a property
+        of the schema: a stage whose output grows with its input needs
+        a budget the default cannot cover. None means the provider's
+        own default.
+        """
+        ...
 
 
 @dataclass
@@ -32,6 +46,7 @@ class LLMCall:
     prompt: str
     system: str | None
     schema: type[BaseModel]
+    max_tokens: int | None = None
 
 
 @dataclass
@@ -46,8 +61,22 @@ class FakeLLMProvider:
     name: str = "fake"
     calls: list[LLMCall] = field(default_factory=list)
 
-    def complete(self, prompt: str, schema: type[M], *, system: str | None = None) -> M:
-        self.calls.append(LLMCall(prompt=prompt, system=system, schema=schema))
+    def complete(
+        self,
+        prompt: str,
+        schema: type[M],
+        *,
+        system: str | None = None,
+        max_tokens: int | None = None,
+    ) -> M:
+        self.calls.append(
+            LLMCall(
+                prompt=prompt,
+                system=system,
+                schema=schema,
+                max_tokens=max_tokens,
+            )
+        )
         if not self.responses:
             raise AssertionError(
                 f"FakeLLMProvider: no queued response for {schema.__name__}"
