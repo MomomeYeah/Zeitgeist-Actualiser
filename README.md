@@ -1,6 +1,6 @@
 # Zeitgeist Actualiser
 
-Scrapes Reddit, works out what is trending, and generates memes about it.
+Scrapes social platforms, works out what is trending, and generates memes about it.
 
 ## Setup
 
@@ -18,9 +18,29 @@ the config template:
 copy .env.example .env
 ```
 
-Fill in `.env`. Reddit credentials come from
-https://www.reddit.com/prefs/apps — create a **script** app; the pipeline uses
-read-only access, so no user login is needed.
+Fill in `.env`. The only value you must supply is `ANTHROPIC_API_KEY` (or
+switch to Ollama, below). `SOURCES` picks the platforms to scrape.
+
+### Sources
+
+`SOURCES=lemmy` is the default and needs no credentials — Lemmy's API is
+public and unauthenticated. `LEMMY_INSTANCE` chooses the instance to query;
+because instances federate, one already returns posts from across the
+network. `LEMMY_INCLUDE_NSFW` maps to the API's own `show_nsfw` flag and is
+off by default.
+
+Reddit is implemented and tested but ships disabled. Reddit's
+[Responsible Builder Policy](https://support.reddithelp.com/hc/en-us/articles/42728983564564-Responsible-Builder-Policy)
+requires approved access before using the Data API, and the self-serve route
+at `/prefs/apps` no longer issues credentials. If you are granted access, set
+`REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` and add it to the list:
+
+```
+SOURCES=lemmy,reddit
+```
+
+Enabling `reddit` without both credentials fails at startup with a message
+naming the missing variables.
 
 ## Running
 
