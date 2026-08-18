@@ -490,8 +490,32 @@ def test_from_settings_wires_config_into_the_request():
 
 
 def test_respects_the_limit():
-    pages = {("Hot", 1): [_view(f"h{n}", f"T{n}") for n in range(50)]}
+    """Both listings are seeded: the per-listing budget is a real cap, so a
+    single populated listing could not reach the limit on its own.
+    """
+    pages = {
+        ("Hot", 1): [_view(f"h{n}", f"T{n}") for n in range(50)],
+        ("Scaled", 1): [_view(f"s{n}", f"U{n}") for n in range(50)],
+    }
     assert len(_source(pages).fetch(limit=5)) == 5
+
+
+def test_budget_split_holds_even_when_a_page_overshoots_it():
+    """60 is not a multiple of 50, so each listing's second page overshoots
+    its share by 10. Without a per-listing cap, a well-stocked Hot would
+    consume that overshoot into the global limit before Scaled is asked for
+    its share — crowding out the rising signal Scaled exists to surface.
+    """
+    pages = {
+        ("Hot", 1): [_view(f"h{n}", f"T{n}") for n in range(50)],
+        ("Hot", 2): [_view(f"h{n}", f"T{n}") for n in range(50, 100)],
+        ("Scaled", 1): [_view(f"s{n}", f"V{n}") for n in range(50)],
+        ("Scaled", 2): [_view(f"s{n}", f"V{n}") for n in range(50, 100)],
+    }
+    posts = _source(pages).fetch(limit=120)
+    from_hot = sum(1 for post in posts if "/post/h" in post.source_id)
+    from_scaled = sum(1 for post in posts if "/post/s" in post.source_id)
+    assert (from_hot, from_scaled) == (60, 60)
 
 
 def test_requests_never_exceed_the_page_size_cap():
@@ -713,6 +737,7 @@ def _to_post(view: dict[str, Any], fetched_at: datetime) -> Post:
         score=counts["score"],
         comment_count=counts["comments"],
         created_at=_parse_published(post["published"]),
+        fetched_at=fetched_at,
         channel=_channel(view["community"]),
     )
 
