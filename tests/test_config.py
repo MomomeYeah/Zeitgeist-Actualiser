@@ -31,6 +31,21 @@ def test_subreddits_parse_from_env_strings(raw, expected):
     assert _settings(subreddits=raw).subreddits == expected
 
 
+def test_subreddits_parse_from_a_real_env_var(monkeypatch):
+    """pydantic-settings JSON-decodes list-typed fields before validators
+    run when the value comes from a real env var, so a plain CSV string
+    here would raise SettingsError unless the field opts out of that
+    pre-decode. The kwargs-based tests above go through InitSettingsSource,
+    which never JSON-decodes, so they cannot catch a regression here.
+    """
+    monkeypatch.setenv("SUBREDDITS", "cats,aww")
+    monkeypatch.setenv("REDDIT_CLIENT_ID", "id")
+    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
+    settings = Settings(_env_file=None)
+    assert settings.subreddits == ["cats", "aww"]
+
+
 def test_every_sentiment_has_a_default_weight():
     """A sentiment added to the enum without a weight would silently score
     as neutral, quietly defeating the preference for positive topics.
@@ -67,6 +82,18 @@ def test_sources_parse_from_env_strings(raw, expected):
     keys, so case must not decide whether a platform runs.
     """
     assert _settings(sources=raw).sources == expected
+
+
+def test_sources_parse_from_a_real_env_var(monkeypatch):
+    """Same JSON-pre-decode hazard as subreddits above, checked through the
+    real env-var path rather than the InitSettingsSource kwargs path.
+    """
+    monkeypatch.setenv("SOURCES", "lemmy,reddit")
+    monkeypatch.setenv("REDDIT_CLIENT_ID", "id")
+    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
+    settings = Settings(_env_file=None)
+    assert settings.sources == ["lemmy", "reddit"]
 
 
 def test_sources_defaults_to_lemmy_only():
