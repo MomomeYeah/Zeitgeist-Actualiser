@@ -12,6 +12,15 @@ class LLMError(Exception):
     """Raised when a provider cannot return a valid structured response."""
 
 
+class ContextLimitError(LLMError):
+    """Raised when a reply was cut off because it outgrew the space for it.
+
+    Separate from its parent because the recovery differs: no rephrasing
+    or retry helps, since the same request truncates identically. The
+    caller has to give the reply more room or ask for less of it.
+    """
+
+
 class LLMProvider(Protocol):
     """Every stage needs the same thing: a validated structured object.
 

@@ -4,7 +4,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from zeitgeist.llm.base import LLMError
+from zeitgeist.llm.base import ContextLimitError, LLMError
 
 M = TypeVar("M", bound=BaseModel)
 
@@ -69,7 +69,7 @@ class AnthropicProvider:
                 # rephrasing fixes. Only stop_reason tells the two
                 # apart, and a retry would truncate identically.
                 if getattr(response, "stop_reason", None) == "max_tokens":
-                    raise LLMError(
+                    raise ContextLimitError(
                         f"Anthropic truncated its {schema.__name__} "
                         f"response at max_tokens={budget}. The reply "
                         "did not fit the budget; raise it for this "
