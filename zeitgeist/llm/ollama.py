@@ -11,11 +11,30 @@ M = TypeVar("M", bound=BaseModel)
 
 TIMEOUT_SECONDS = 300.0
 
+# Ollama loads a model at OLLAMA_CONTEXT_LENGTH (4096 by default) no
+# matter how much context the model itself supports, so the window is
+# stated per call rather than inherited from whatever the server was
+# started with.
+DEFAULT_NUM_CTX = 8192
+
+# num_predict is a cap on the reply, but the reply shares the window
+# with the prompt. A stage asking for a big reply needs room for both,
+# and this is the slice left for the prompt.
+PROMPT_RESERVE_TOKENS = 4096
+
 
 class OllamaProvider:
     name = "ollama"
 
-    def __init__(self, host: str, model: str, client: Any = None) -> None:
+    def __init__(
+        self,
+        host: str,
+        model: str,
+        client: Any = None,
+        *,
+        think: bool | None = False,
+        num_ctx: int = DEFAULT_NUM_CTX,
+    ) -> None:
         if client is None:
             import httpx
 
@@ -24,6 +43,12 @@ class OllamaProvider:
         # Public: the factory wires these from Settings, and tests assert it.
         self.host = host.rstrip("/")
         self.model = model
+        # Thinking is off because these stages want a filled-in schema, not
+        # reasoning: a thinking model spends the window on reasoning tokens
+        # and is cut off mid-thought, returning empty content. None omits
+        # the key for a backend that rejects it outright.
+        self._think = think
+        self._num_ctx = num_ctx
 
     def complete(
         self,
@@ -48,11 +73,18 @@ class OllamaProvider:
                 "format": schema.model_json_schema(),
                 "stream": False,
             }
+            if self._think is not None:
+                body["think"] = self._think
+
+            # Ollama spells the output cap num_predict. Left unset the
+            # reply is bounded only by the window.
+            options: dict[str, Any] = {"num_ctx": self._num_ctx}
             if max_tokens is not None:
-                # Ollama spells the output cap num_predict. Left
-                # unset it uses the model's own default rather than
-                # an arbitrary one of ours.
-                body["options"] = {"num_predict": max_tokens}
+                options["num_predict"] = max_tokens
+                options["num_ctx"] = max(
+                    self._num_ctx, max_tokens + PROMPT_RESERVE_TOKENS
+                )
+            body["options"] = options
 
             try:
                 response = self._client.post(

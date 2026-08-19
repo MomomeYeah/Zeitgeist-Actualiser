@@ -4,7 +4,11 @@ import pytest
 from pydantic import BaseModel
 
 from zeitgeist.llm.base import LLMError
-from zeitgeist.llm.ollama import OllamaProvider
+from zeitgeist.llm.ollama import (
+    DEFAULT_NUM_CTX,
+    PROMPT_RESERVE_TOKENS,
+    OllamaProvider,
+)
 
 
 class Answer(BaseModel):
@@ -147,4 +151,51 @@ def test_error_shaped_response_is_retried_not_a_raw_keyerror():
             return {"error": "model not found"}
 
     client = StubClient([ErrorShapedResponse(), _ok({"value": "recovered"})])
+    assert _provider(client).complete("prompt", Answer).value == "recovered"
+
+
+def test_thinking_is_disabled_by_default():
+    """A thinking model spends its whole context window on reasoning tokens
+    and gets cut off before emitting any JSON, returning empty content.
+    """
+    client = StubClient([_ok({"value": "hello"})])
+    _provider(client).complete("prompt", Answer)
+    assert client.requests[0][1]["think"] is False
+
+
+def test_thinking_key_is_omitted_when_set_to_none():
+    """Escape hatch for a backend that rejects `think` outright."""
+    client = StubClient([_ok({"value": "hello"})])
+    OllamaProvider(host="http://h", model="m", client=client, think=None).complete(
+        "prompt", Answer
+    )
+    assert "think" not in client.requests[0][1]
+
+
+def test_sets_an_explicit_context_window():
+    """Ollama defaults to 4096 regardless of what the model supports, so the
+    window has to be stated rather than inherited from the server.
+    """
+    client = StubClient([_ok({"value": "hello"})])
+    _provider(client).complete("prompt", Answer)
+    assert client.requests[0][1]["options"]["num_ctx"] == DEFAULT_NUM_CTX
+
+
+def test_context_window_grows_to_hold_the_reply_budget():
+    """num_predict cannot exceed the context window: a 32k reply budget in a
+    4096-token window silently truncates instead of erroring.
+    """
+    client = StubClient([_ok({"value": "hello"})])
+    _provider(client).complete("prompt", Answer, max_tokens=32768)
+
+    options = client.requests[0][1]["options"]
+    assert options["num_predict"] == 32768
+    assert options["num_ctx"] == 32768 + PROMPT_RESERVE_TOKENS
+
+
+def test_empty_content_is_retried_rather_than_crashing():
+    """The observed failure: a truncated reply arrives as 200 OK with
+    message.content set to the empty string.
+    """
+    client = StubClient([StubResponse(""), _ok({"value": "recovered"})])
     assert _provider(client).complete("prompt", Answer).value == "recovered"
