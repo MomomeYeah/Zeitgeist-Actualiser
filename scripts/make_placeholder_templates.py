@@ -35,7 +35,7 @@ TEMPLATES: list[tuple[str, str, list[str]]] = [
     (
         "increasingly_buff_spongebob",
         "the same thing escalating to an extreme",
-        ["stage1", "stage2", "stage3"],
+        ["stage1", "stage2", "stage3", "stage4"],
     ),
     (
         "panik_kalm_panik",
