@@ -3,7 +3,7 @@ import json
 import pytest
 from pydantic import BaseModel
 
-from zeitgeist.llm.base import LLMError
+from zeitgeist.llm.base import ContextLimitError, LLMError
 from zeitgeist.llm.ollama import (
     DEFAULT_NUM_CTX,
     PROMPT_RESERVE_TOKENS,
@@ -18,16 +18,25 @@ class Answer(BaseModel):
 class StubResponse:
     """Ollama replies with the model's text in message.content."""
 
-    def __init__(self, content: str, error: Exception | None = None):
+    def __init__(
+        self,
+        content: str,
+        error: Exception | None = None,
+        done_reason: str = "stop",
+    ):
         self._content = content
         self._error = error
+        self._done_reason = done_reason
 
     def raise_for_status(self):
         if self._error is not None:
             raise self._error
 
     def json(self):
-        return {"message": {"content": self._content}}
+        return {
+            "message": {"content": self._content},
+            "done_reason": self._done_reason,
+        }
 
 
 class StubClient:
@@ -199,3 +208,39 @@ def test_empty_content_is_retried_rather_than_crashing():
     """
     client = StubClient([StubResponse(""), _ok({"value": "recovered"})])
     assert _provider(client).complete("prompt", Answer).value == "recovered"
+
+
+def test_truncated_reply_raises_a_context_limit_error_without_retrying():
+    """done_reason="length" means the reply outgrew the space for it. The
+    retry appends the failure to the prompt, making it longer, so it
+    truncates identically, and each attempt costs minutes on a local model.
+    """
+    client = StubClient([StubResponse("", done_reason="length"), _ok({"value": "x"})])
+    with pytest.raises(ContextLimitError):
+        _provider(client).complete("prompt", Answer)
+    assert len(client.requests) == 1, "retrying a truncated reply cannot help"
+
+
+def test_context_limit_error_names_the_window_and_the_schema():
+    """The bare JSONDecodeError this replaces said only "line 1 column 1
+    (char 0)", which reads like malformed output, not a cut-off reply.
+    """
+    client = StubClient([StubResponse("", done_reason="length")])
+    with pytest.raises(ContextLimitError) as excinfo:
+        _provider(client).complete("prompt", Answer)
+
+    message = str(excinfo.value)
+    assert "Answer" in message
+    assert str(DEFAULT_NUM_CTX) in message
+
+
+def test_context_limit_error_reports_the_reply_budget_when_one_was_set():
+    client = StubClient([StubResponse("", done_reason="length")])
+    with pytest.raises(ContextLimitError) as excinfo:
+        _provider(client).complete("prompt", Answer, max_tokens=32768)
+    assert "32768" in str(excinfo.value)
+
+
+def test_a_context_limit_error_is_still_an_llm_error():
+    """Stages degrade on LLMError; truncation must not escape that handling."""
+    assert issubclass(ContextLimitError, LLMError)

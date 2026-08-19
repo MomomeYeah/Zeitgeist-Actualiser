@@ -5,7 +5,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from zeitgeist.llm.base import LLMError
+from zeitgeist.llm.base import ContextLimitError, LLMError
 
 M = TypeVar("M", bound=BaseModel)
 
@@ -93,10 +93,20 @@ class OllamaProvider:
                     timeout=TIMEOUT_SECONDS,
                 )
                 response.raise_for_status()
-                content = response.json()["message"]["content"]
+                payload = response.json()
+                content = payload["message"]["content"]
             except Exception as exc:
                 last_error = str(exc)
             else:
+                # A reply that ran out of room arrives as 200 OK with
+                # content empty or half-written, which json.loads reports
+                # as a parse error at char 0 as though the model had
+                # emitted prose. Only done_reason tells the two apart,
+                # and the retry sends a longer prompt, so it truncates
+                # in exactly the same place.
+                if payload.get("done_reason") == "length":
+                    raise ContextLimitError(_truncation_message(schema, options))
+
                 try:
                     return schema.model_validate(json.loads(content))
                 except (json.JSONDecodeError, ValidationError) as exc:
@@ -108,3 +118,13 @@ class OllamaProvider:
             )
 
         raise LLMError(f"Ollama did not return a valid {schema.__name__}: {last_error}")
+
+
+def _truncation_message(schema: type[BaseModel], options: dict[str, Any]) -> str:
+    budget = options.get("num_predict")
+    asked_for = "" if budget is None else f" with num_predict={budget}"
+    return (
+        f"Ollama truncated its {schema.__name__} response: the reply did "
+        f"not fit num_ctx={options['num_ctx']}{asked_for}. Give it a larger "
+        "window or a smaller request rather than retrying."
+    )

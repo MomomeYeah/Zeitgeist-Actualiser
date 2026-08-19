@@ -4,7 +4,7 @@ import pytest
 from pydantic import BaseModel
 
 from zeitgeist.llm.anthropic import MAX_TOKENS, AnthropicProvider
-from zeitgeist.llm.base import LLMError
+from zeitgeist.llm.base import ContextLimitError, LLMError
 
 
 class Answer(BaseModel):
@@ -171,3 +171,12 @@ def test_caller_can_raise_the_token_budget_for_a_larger_schema():
     client = StubClient([_tool_response({"value": "hello"})])
     _provider(client).complete("prompt", Answer, max_tokens=32768)
     assert client.requests[0]["max_tokens"] == 32768
+
+
+def test_truncation_raises_the_same_error_type_as_the_ollama_backend():
+    """Truncation is a property of the request, not of the backend: a caller
+    handling it should not have to ask which provider it is talking to.
+    """
+    client = StubClient([_truncated_response()])
+    with pytest.raises(ContextLimitError):
+        _provider(client).complete("prompt", Answer)
