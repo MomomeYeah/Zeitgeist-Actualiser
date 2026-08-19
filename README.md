@@ -69,6 +69,44 @@ Check the template library after editing a manifest:
 uv run zeitgeist validate-templates
 ```
 
+## Running a local model
+
+Install Ollama, and run a model locally:
+
+```
+ollama run qwen3.5
+```
+
+To view model details, run:
+
+```
+$ ollama show qwen3.5
+  Model
+    architecture        qwen35    
+    parameters          9.7B      
+    context length      262144    
+    embedding length    4096      
+    quantization        Q4_K_M    
+    requires            0.17.1    
+
+  Capabilities
+    completion    
+    vision        
+    tools         
+    thinking      
+
+  Parameters
+    presence_penalty    1.5     
+    temperature         1       
+    top_k               20      
+    top_p               0.95    
+
+  License
+    Apache License               
+    Version 2.0, January 2004    
+    ...
+```
+
 ## Using a local model
 
 Install Ollama, pull a model, then set in `.env`:
