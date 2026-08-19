@@ -173,7 +173,7 @@ def test_caller_can_raise_the_token_budget_for_a_larger_schema():
     assert client.requests[0]["max_tokens"] == 32768
 
 
-def test_truncation_raises_the_same_error_type_as_the_ollama_backend():
+def test_truncation_raises_a_context_limit_error():
     """Truncation is a property of the request, not of the backend: a caller
     handling it should not have to ask which provider it is talking to.
     """
