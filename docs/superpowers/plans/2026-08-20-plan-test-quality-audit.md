@@ -19,6 +19,7 @@
 - Plans of 15 tasks or fewer get one reviewer. Larger plans are split into contiguous ranges of at most 15 tasks, one reviewer each, dispatched in parallel.
 - The audit runs after `writing-plans` completes its self-review, before the execution handoff. It is skipped only when the plan contains no test code.
 - **No pytest tests over document text.** Documents that instruct agents are tested by the consuming agent's behaviour (Task 3), never by asserting their contents. A test that greps `SKILL.md` for a phrase proves only that the source is the source.
+- **Durable references only.** Neither deliverable cites an individual test, a line number, a test count, or a commit hash. Those rot silently — nothing checks them, so a drifted citation misleads the reviewer instead of failing loudly — and they tie the documents to this repository for no gain. Where a number carries weight, give the command that recomputes it. Stable paths (`tests/conftest.py`), architectural facts, and toolchain facts are durable and may be named. References to superpowers skills are fine: the shortfall in those skills is what drives this work.
 - Definition of Done applies to every task: `uv run ruff check .`, `uv run ruff format --check .`, `uv run ty check`, `uv run pytest` must pass before a task is complete.
 
 **Note on this plan:** it contains no `def test_` bodies, so by the skill's own rule the audit does not apply to it. That is the intended behaviour, not an oversight.
@@ -44,20 +45,16 @@ The split follows the superpowers convention (`subagent-driven-development/` kee
 - Consumes: nothing from earlier tasks.
 - Produces: a prompt template with the placeholders `[MODEL]`, `[PLAN_FILE]`, `[A]`, `[B]`. Task 2's `SKILL.md` refers to this file by the relative name `reviewer-prompt.md` and requires every placeholder to be filled at dispatch.
 
-- [ ] **Step 1: Verify the factual claims this document will make**
+- [ ] **Step 1: Verify the two durable references this document will make**
 
-The prompt cites specific files, line numbers, and counts. Wrong citations would send the reviewer to the wrong place, so confirm each before writing them.
+The prompt deliberately makes no reference to individual tests, line numbers, or counts — those rot silently as the suite changes, and nothing would catch a citation that has drifted onto the wrong line. It refers only to facts that outlive edits to any single test. Confirm both:
 
 ```bash
 ls ~/.claude/plugins/cache/*/superpowers/*/skills/test-driven-development/writing-good-tests.md
-sed -n '12,15p;19,25p' tests/test_sources_lemmy.py
-ls tests/test_*.py | wc -l
-grep -c "patch(" tests/*.py | grep -v ":0"
+grep -n "autouse\|delenv" tests/conftest.py
 ```
 
-Expected: the glob resolves to exactly one path; lines 12-15 are the comment explaining `PUBLISHED` is "safely in the past" plus the constant itself; lines 19-25 are the `_view` docstring explaining the fixture mirrors ignored fields; 19 test files; exactly two files containing `patch(` (`test_sources_lemmy.py`, `test_sources_reddit.py`), one call each.
-
-If any claim does not hold, correct the number in Step 2 rather than writing the stale one.
+Expected: the glob resolves to exactly one path; `tests/conftest.py` contains an autouse fixture that deletes environment variables. If the conftest no longer strips the environment, the hermeticity convention in Step 2 is describing something that is no longer true — fix the convention, not the check.
 
 - [ ] **Step 2: Write the prompt template**
 
@@ -104,33 +101,40 @@ Subagent (general-purpose):
 
     ## Project Conventions
 
-    These come from the existing suite and bind in addition to the rubric.
+    These bind in addition to the rubric. They are stated as durable rules
+    rather than as citations to particular tests, so this prompt does not
+    rot as the suite changes.
 
-    **Hermetic by construction.** `tests/conftest.py` strips every
-    environment variable `Settings` reads, via an autouse fixture. A test
-    whose outcome depends on the ambient environment or on the wall clock
-    is a defect, not a flake. See `tests/test_sources_lemmy.py:12-15`: a
-    fixture dated "today" makes a `fetched_at > created_at` assertion pass
-    or fail depending on the hour the suite runs.
+    **Hermetic by construction.** `tests/conftest.py` strips the
+    environment variables the settings object reads, via an autouse
+    fixture, so a result never depends on who is running the suite. A test
+    whose outcome depends on the ambient environment, on the wall clock, or
+    on the order tests run in is a defect, not a flake. Fixtures carrying
+    timestamps use fixed dates: a fixture dated relative to "now" makes any
+    comparison against the current time pass or fail depending on the hour
+    the suite happens to run.
 
-    **Fixtures mirror the real payload completely.** The `_view` helper at
-    `tests/test_sources_lemmy.py:19-25` reproduces a live lemmy.world post
-    view including fields the mapper ignores. Trimming a fixture to what
-    the code reads today lets a later change reference a field that was
+    **Fixtures mirror the real payload completely.** A fixture standing in
+    for an external API response reproduces the real structure in full,
+    including fields the code under test ignores today. Trimming it to what
+    the code currently reads lets a later change reference a field that was
     never in the test data — the test passes while the real payload breaks.
 
-    **Mocks are rare and justified.** 19 test files contain 2 `patch()`
-    calls, both injecting a fault that cannot be produced otherwise. That
-    is the baseline. A new mock must name the real behaviour it replaces
-    and why the real thing will not do.
+    **Mocks are rare and must justify themselves.** This suite tests
+    against real objects and hand-built fakes almost everywhere; the few
+    patches that exist inject faults that cannot be produced any other way.
+    A new mock in a plan must name the real behaviour it replaces and why
+    the real thing will not do. If you want the current baseline rather
+    than this description, measure it: `grep -rl "patch(" tests/`.
 
-    **Table-driven with literal expectations.** `@pytest.mark.parametrize`
-    with hand-derived `want` values. An expectation computed by the code
-    under test passes no matter what that code does.
+    **Table-driven with literal expectations.**
+    `@pytest.mark.parametrize` with hand-derived `want` values is the
+    preferred shape. An expectation computed by the code under test passes
+    no matter what that code does.
 
-    **Tests are type-checked.** `ty check` covers `tests/`, so test code in
-    a plan must satisfy it — PEP 695 generics (`def f[T: Bound](...)`), not
-    `typing.TypeVar`.
+    **Tests are type-checked.** The type checker covers `tests/` as part of
+    this project's definition of done, so test code in a plan must satisfy
+    it — PEP 695 generics (`def f[T: Bound](...)`), not `typing.TypeVar`.
 
     ## What To Do
 
@@ -201,16 +205,17 @@ Subagent (general-purpose):
   For a single-reviewer plan, the plan's first and last task numbers.
 ````
 
-- [ ] **Step 3: Verify every reference in the written document resolves**
+- [ ] **Step 3: Verify the document names no individual test, line number, or count**
 
-A reference the reviewer cannot follow is a dead prompt. Check the two that point outside this file:
+The conventions must survive edits to any single test. A citation to a specific test is a silent staleness bug, and it also ties the prompt to this repository for no gain.
 
 ```bash
-ls ~/.claude/plugins/cache/*/superpowers/*/skills/test-driven-development/writing-good-tests.md
-sed -n '12,15p;19,25p' tests/test_sources_lemmy.py
+grep -nE "\.py:[0-9]|[0-9]+ test files|test_[a-z_]+\.py" .claude/skills/reviewing-plan-tests/reviewer-prompt.md
 ```
 
-Expected: the glob resolves; both line ranges land on the text the prompt claims. Do not add a test that asserts the prompt file's contents — the prompt is tested by reviewer behaviour in Task 3.
+Expected: no matches. The prompt's two remaining repo references — `tests/conftest.py` and the `grep -rl "patch(" tests/` calibration command — are a stable path and a recomputation command, neither of which the pattern catches and neither of which goes stale. If the grep does return a hit, replace the citation with the durable rule it was illustrating.
+
+Do not add a test that asserts the prompt file's contents. The prompt is tested by reviewer behaviour in Task 3.
 
 - [ ] **Step 4: Run the Definition of Done**
 
@@ -253,16 +258,15 @@ description: Use when an implementation plan containing test code has been draft
 
 ## Why This Exists
 
-Implementation plans in this repo carry literal test code — 176 `def test_`
-bodies across `docs/superpowers/plans/`. Execution transcribes them
-verbatim, so a weak test in the plan becomes a weak test in the suite.
+Implementation plans carry literal test code, and execution transcribes it
+verbatim. A weak test in the plan becomes a weak test in the suite.
 
 The rubric that catches weak tests, `writing-good-tests.md`, is reachable
 from exactly one place in the superpowers plugin: the
 `test-driven-development` skill, whose trigger is "before writing
-implementation code". That fires a phase after plan tests are written. Both
-plans in this repo that contained test code needed a post-hoc pass against
-the rubric afterwards — `c9fd700` and `0d4d4cd`. This skill makes that pass
+implementation code". That fires a phase after plan tests are written, so
+the rubric arrives too late to shape them. Every plan here that contained
+test code has needed a post-hoc pass against it. This skill makes that pass
 routine instead of remembered.
 
 ## When To Run
@@ -306,8 +310,10 @@ Rewriting a test can change a signature that a neighbouring task's
 it. Check the names and types every amended test touches against the tasks
 that consume them.
 
-Commit the revisions separately from the plan itself, so the audit's effect
-stays legible in history — `0d4d4cd` is the model.
+Commit the revisions separately from the plan itself, and list the findings
+you applied in the commit message. That keeps the audit's effect legible in
+history, and it leaves behind an answer key for anyone later measuring
+whether this gate is working.
 ```
 
 - [ ] **Step 2: Verify the skill is discoverable and its references resolve**
@@ -315,10 +321,10 @@ stays legible in history — `0d4d4cd` is the model.
 ```bash
 head -5 .claude/skills/reviewing-plan-tests/SKILL.md
 ls .claude/skills/reviewing-plan-tests/reviewer-prompt.md
-git log --oneline -1 c9fd700 && git log --oneline -1 0d4d4cd
+grep -nE "\.py:[0-9]|[0-9]+ \`def test_\`|\b[0-9a-f]{7}\b" .claude/skills/reviewing-plan-tests/SKILL.md
 ```
 
-Expected: frontmatter opens with `---`, carries `name: reviewing-plan-tests` and a `description:`; the sibling prompt file exists; both cited commits resolve in this repository.
+Expected: frontmatter opens with `---`, carries `name: reviewing-plan-tests` and a `description:`; the sibling prompt file exists; the third command returns no matches, confirming the controller cites no line numbers, test counts, or commit hashes that would go stale.
 
 - [ ] **Step 3: Wire it into CLAUDE.md**
 

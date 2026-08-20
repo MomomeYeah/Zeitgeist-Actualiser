@@ -100,31 +100,45 @@ update. If the glob does not resolve, the reviewer invokes
 `Skill(superpowers:test-driven-development)` and follows the link in its
 body.
 
-**Rubric, layer 2 — project conventions.** Codified from what the existing
-suite already demonstrates, so the skill carries knowledge upstream cannot:
+**Rubric, layer 2 — project conventions.** Derived from what the existing
+suite demonstrates, so the skill carries knowledge upstream cannot, but
+stated as durable rules rather than as citations to particular tests:
 
-- *Hermetic by construction.* `tests/conftest.py` strips every environment
-  variable `Settings` reads, via an autouse fixture. A test whose outcome
-  depends on ambient environment or on the wall clock is a defect, not a
-  flake. `tests/test_sources_lemmy.py:12-15` records the reasoning: a fixture
-  dated "today" makes a `fetched_at > created_at` assertion pass or fail
-  depending on the hour the suite runs.
-- *Fixtures mirror the real payload completely.* The `_view` helper at
-  `tests/test_sources_lemmy.py:19-25` reproduces a live lemmy.world post view
-  including fields the mapper ignores. Its docstring states why: trimming a
-  fixture to what the code reads today lets a later change reference a field
-  that was never in the test data, so the test passes while the real payload
-  breaks.
-- *Mocks are rare and justified.* 19 test files contain 2 `patch()` calls,
-  both injecting a fault that cannot be produced otherwise (see
-  `test_mapping_bug_in_to_post_propagates_not_swallowed`). That is the
-  baseline. A new mock must name the real behaviour it replaces and why the
-  real thing will not do.
+- *Hermetic by construction.* `tests/conftest.py` strips the environment
+  variables the settings object reads, via an autouse fixture, so a result
+  never depends on who runs the suite. A test whose outcome depends on the
+  ambient environment, the wall clock, or test ordering is a defect, not a
+  flake. Fixtures carrying timestamps use fixed dates.
+- *Fixtures mirror the real payload completely.* A fixture standing in for an
+  external API response reproduces the real structure in full, including
+  fields the code under test ignores today. Trimming it lets a later change
+  reference a field that was never in the test data — the test passes while
+  the real payload breaks.
+- *Mocks are rare and must justify themselves.* The suite tests against real
+  objects and hand-built fakes almost everywhere; the few patches that exist
+  inject faults that cannot be produced any other way. A new mock must name
+  the real behaviour it replaces and why the real thing will not do. The
+  current baseline is measured, not quoted: `grep -rl "patch(" tests/`.
 - *Table-driven with literal expectations.* `@pytest.mark.parametrize` with
   hand-derived `want` values. An expectation computed by the code under test
   passes no matter what that code does.
-- *Tests are type-checked.* `ty check` covers `tests/`, so test code in a
-  plan must satisfy it — PEP 695 generics, not `typing.TypeVar`.
+- *Tests are type-checked.* The type checker covers `tests/` as part of the
+  Definition of Done, so test code in a plan must satisfy it — PEP 695
+  generics, not `typing.TypeVar`.
+
+**Durable references only.** Neither `SKILL.md` nor `reviewer-prompt.md`
+cites an individual test, a line number, a test count, or a commit hash.
+Such references rot silently — nothing checks them, so a citation that has
+drifted onto the wrong line misleads the reviewer rather than failing
+loudly — and they tie the documents to this repository for no gain. Where a
+number would carry real weight, the documents give the command that
+recomputes it instead: a count goes stale, the command that produces it does
+not. Stable paths (`tests/conftest.py`), architectural facts, and toolchain
+facts are durable and may be named.
+
+This dated spec is the exception, and deliberately so: it is a historical
+record of the evidence at design time, not a living instruction. Specific
+counts and commit hashes belong here and nowhere else.
 
 **Output contract.** Findings only. The reviewer does not edit the plan. For
 each finding: plan location (task, step, line), the test's name, the rubric
@@ -197,9 +211,14 @@ Mitigated by the `Skill(superpowers:test-driven-development)` fallback, and
 by the project layer being independently useful if the upstream file cannot
 be found at all.
 
-**The project layer drifts from the suite.** The conventions cite specific
-files and counts, which will age. They are cheap to re-derive and the
-citations make staleness visible rather than silent.
+**The project layer drifts from the suite.** Mitigated by construction: the
+conventions name no individual test, line number, or count, so ordinary edits
+to the suite cannot invalidate them. What remains is a slower drift — a
+convention could outlive the practice it describes, as the hermeticity rule
+would if `conftest.py` stopped stripping the environment. That is why Task 1
+verifies the conftest behaviour rather than the prose, and the residual risk
+is accepted: a convention that has become merely aspirational still points in
+the right direction, where a stale line number points at the wrong line.
 
 ## Validation
 
