@@ -106,16 +106,16 @@ suite already demonstrates, so the skill carries knowledge upstream cannot:
 - *Hermetic by construction.* `tests/conftest.py` strips every environment
   variable `Settings` reads, via an autouse fixture. A test whose outcome
   depends on ambient environment or on the wall clock is a defect, not a
-  flake. `tests/test_sources_lemmy.py:15` records the reasoning: a fixture
+  flake. `tests/test_sources_lemmy.py:12-15` records the reasoning: a fixture
   dated "today" makes a `fetched_at > created_at` assertion pass or fail
   depending on the hour the suite runs.
-- *Fixtures mirror the real payload completely.* The `_view` helper in
-  `tests/test_sources_lemmy.py` reproduces a live lemmy.world post view
+- *Fixtures mirror the real payload completely.* The `_view` helper at
+  `tests/test_sources_lemmy.py:19-25` reproduces a live lemmy.world post view
   including fields the mapper ignores. Its docstring states why: trimming a
   fixture to what the code reads today lets a later change reference a field
   that was never in the test data, so the test passes while the real payload
   breaks.
-- *Mocks are rare and justified.* 21 test files contain 2 `patch()` calls,
+- *Mocks are rare and justified.* 19 test files contain 2 `patch()` calls,
   both injecting a fault that cannot be produced otherwise (see
   `test_mapping_bug_in_to_post_propagates_not_swallowed`). That is the
   baseline. A new mock must name the real behaviour it replaces and why the
