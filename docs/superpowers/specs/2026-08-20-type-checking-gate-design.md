@@ -86,14 +86,18 @@ files accounts for 44 of them.
 - Fix all 59 `ty` diagnostics at their root cause
 - Add `CLAUDE.md` with a Definition of Done
 - Add a blocking Stop hook in `.claude/settings.json`
+- Add a GitHub Actions workflow running the same checks on push and PR
 - Move `.claude/worktrees/` from `.git/info/exclude` into `.gitignore`
 
 ### Out of scope
 
-- **GitHub Actions CI.** Considered and deliberately deferred. The Stop hook
-  covers agent work, which is the stated problem. CI remains the obvious
-  next step if human commits start bypassing the gate.
-- **pre-commit.** Same reasoning; it would duplicate the hook for now.
+- **pre-commit.** With both a Stop hook and CI in place, a third enforcement
+  layer would duplicate them for little gain, and `--no-verify` makes it the
+  weakest of the three.
+- **A multi-OS CI matrix.** Development happens on Windows, so a single
+  `ubuntu-latest` runner adds the platform signal that local work cannot,
+  which is the useful half. Adding `windows-latest` would mostly re-test
+  what the developer already exercises.
 - **basedpyright.** Rejected: it splits the toolchain, and its false
   positives on `render.py` would become gate failures requiring suppression
   comments on correct code.
@@ -263,23 +267,34 @@ being contorted to satisfy a false positive.
 
 ### CLAUDE.md
 
-The repo has no CLAUDE.md. It gains one, whose core is a Definition of Done:
+Enforcement is three layers over **one identical command set**. If the
+layers can disagree about what "passing" means, they reproduce the exact
+problem this spec exists to solve, so the four commands below are the single
+definition, referenced by all three layers.
 
 ```
-A task is not complete until all three pass:
-
-    uv run ruff check .
-    uv run ty check
-    uv run pytest
+uv run ruff check .
+uv run ruff format --check .
+uv run ty check
+uv run pytest
 ```
 
-Also documents the toolchain choice, points at this spec for rationale, and
-carries the existing `ruff format` convention from the earlier plan docs so
-the conventions live in one discoverable place.
+`ruff format --check` is included deliberately. The earlier plan docs
+establish `uv run ruff format .` as a pre-commit convention, but nothing
+verifies it. Leaving it out would mean CI accepts formatting the convention
+rejects. The tree is currently clean — 49 files already formatted — so this
+costs nothing to adopt now.
+
+### CLAUDE.md
+
+The repo has no CLAUDE.md. It gains one, whose core is a Definition of Done
+naming those four commands: a task is not complete until all four pass. It
+also documents the toolchain choice and points at this spec for rationale,
+so the conventions live in one discoverable place.
 
 ### Stop hook
 
-`.claude/settings.json` gains a Stop hook running those three commands and
+`.claude/settings.json` gains a Stop hook running the four commands and
 blocking completion on a non-zero exit. Measured cost: ruff 0.5s, ty 0.6s,
 pytest 12.2s across 243 tests — roughly 14s, cheap enough to run on every
 task.
@@ -288,9 +303,50 @@ The hook is the mechanical half and CLAUDE.md is the explanatory half.
 Neither replaces the other: the hook cannot say *why*, and the instruction
 cannot enforce.
 
-Scope note: the gate covers lint and tests as well as types. A gate that
-lets an agent declare success on failing tests is the wrong shape, and all
-three together cost 14s.
+Scope note: the gate covers lint, formatting, and tests as well as types. A
+gate that lets an agent declare success on failing tests is the wrong shape,
+and all four together cost 14s.
+
+### GitHub Actions
+
+The remote is `github.com/MomomeYeah/Zeitgeist-Actualiser`. A single
+workflow at `.github/workflows/ci.yml` runs on push to `main` and on every
+pull request, with a concurrency group cancelling superseded runs.
+
+```yaml
+- uses: astral-sh/setup-uv@v6
+  with:
+    enable-cache: true
+- run: uv sync --locked
+- run: uv run ruff check .
+- run: uv run ruff format --check .
+- run: uv run ty check
+- run: uv run pytest
+```
+
+Three properties matter here.
+
+`uv sync --locked` fails rather than silently updating when `uv.lock` has
+drifted from `pyproject.toml`. That is what makes the pinned `ty` version a
+real guarantee: CI runs the same build as the developer's editor, or it
+fails loudly.
+
+Every check runs through `uv run`, so CI executes the binaries resolved from
+the locked environment — not separately installed copies that could drift to
+different versions.
+
+No secrets are needed. `tests/conftest.py` has an autouse fixture stripping
+every environment variable `Settings` reads, so the suite is hermetic and a
+bare runner with no `.env` is the cleanest case rather than a broken one.
+
+CI does not replace the Stop hook. The hook gives an agent feedback in
+seconds and prevents a red tree being declared complete; CI is the durable
+backstop that also covers human commits, direct pushes, and any environment
+where the hook does not run. The layers overlap on purpose.
+
+Runner is `ubuntu-latest` on Python 3.14, from `.python-version` via `uv`.
+Since development is on Windows, this adds a cross-platform signal — the
+code writes files and manipulates paths, so Linux is worth exercising.
 
 ### .gitignore
 
@@ -304,8 +360,8 @@ worktree directories as untracked noise.
 The tooling is configuration, so it is verified by observing its behaviour
 rather than by unit tests.
 
-1. **Baseline.** From a cold `uv sync`, confirm `uv run ruff check .`,
-   `uv run ty check`, and `uv run pytest` all pass.
+1. **Baseline.** From a cold `uv sync`, confirm all four Definition of Done
+   commands pass.
 2. **The rule is actually on.** Confirm `ty` reads `[tool.ty.rules]` from
    `pyproject.toml` — add a deliberate possibly-unbound reference, confirm
    it is reported as an *error*, then revert.
@@ -319,6 +375,13 @@ rather than by unit tests.
 5. **No behaviour change.** All 243 tests pass before and after the fixes.
    The changes are annotations and narrowing; any test change signals an
    accidental behaviour change.
+6. **CI goes green, then proves it can go red.** Confirm the workflow passes
+   on a pushed branch, then push a deliberate type error and confirm the run
+   fails at the `ty check` step. A workflow never observed failing has not
+   been shown to check anything.
+7. **The lockfile guard works.** Confirm `uv sync --locked` fails when
+   `pyproject.toml` is edited without relocking — this is what keeps CI on
+   the same pinned `ty` as the editor.
 
 ## Risks
 
@@ -353,10 +416,19 @@ comments to correct code in `render.py`.
 CLI and is closed-source, so the parity requirement is unsatisfiable by
 construction.
 
-**Why a hook rather than CI first.** The stated problem is agents declaring
-tasks complete on a red tree. A Stop hook addresses that directly and gives
-feedback in seconds. CI addresses a different, real problem — human commits
-— and is the natural follow-up rather than a competitor.
+**Why both a hook and CI.** They solve adjacent problems and neither
+subsumes the other. The Stop hook addresses the stated problem — agents
+declaring tasks complete on a red tree — with feedback in seconds, but it
+only runs inside Claude Code sessions on this machine. CI covers human
+commits, direct pushes, other contributors, and anywhere the hook is absent,
+at the cost of minutes rather than seconds. Running the same four commands
+in both means the overlap is redundancy rather than divergence.
+
+**Why one command set rather than per-layer tuning.** It is tempting to run
+a cheaper subset in the hook and everything in CI. That would recreate the
+original failure: two tools disagreeing about what "passing" means, training
+people to trust whichever is more convenient. At 14s the full set is cheap
+enough that the tuning saves nothing worth the ambiguity.
 
 **Why fix rather than suppress.** 43 of 59 came from three lines, and the
 fix is a more accurate annotation. Suppressing would have hidden the real
