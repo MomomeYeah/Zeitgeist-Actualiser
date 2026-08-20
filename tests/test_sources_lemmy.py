@@ -230,12 +230,10 @@ def test_requests_go_to_the_configured_instance():
     is scraped; a dropped or double-slashed base URL is invisible until a
     real request is made.
     """
-    source = LemmySource(
-        instance="https://sh.itjust.works/",
-        client=StubClient({("Hot", 1): [_view("a1", "T")]}),
-    )
+    client = StubClient({("Hot", 1): [_view("a1", "T")]})
+    source = LemmySource(instance="https://sh.itjust.works/", client=client)
     source.fetch(limit=1)
-    assert source._client.urls[0] == "https://sh.itjust.works/api/v3/post/list"
+    assert client.urls[0] == "https://sh.itjust.works/api/v3/post/list"
 
 
 def test_from_settings_wires_config_into_the_request():
