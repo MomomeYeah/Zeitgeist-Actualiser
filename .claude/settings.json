@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "timeout": 300,
+            "statusMessage": "Checking lint, format, types, tests",
+            "command": "out=$( { uv sync --locked && uv run ruff check . && uv run ruff format --check . && uv run ty check && uv run pytest ; } 2>&1 ) || { printf '%s\\n' \"$out\" >&2; echo 'Definition of Done failed. Fix the failures above before completing this task.' >&2; exit 2; }"
+          }
+        ]
+      }
+    ]
+  }
+}

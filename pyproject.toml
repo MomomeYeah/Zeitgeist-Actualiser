@@ -16,7 +16,10 @@ dependencies = [
 zeitgeist = "zeitgeist.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8.3", "ruff>=0.8"]
+# ty is pre-1.0 and its rule defaults shift between releases; the upper bound
+# plus uv.lock makes a version change a deliberate, reviewable act rather
+# than something a routine `uv sync` can spring on a green tree.
+dev = ["pytest>=8.3", "ruff>=0.8", "ty>=0.0.73,<0.1"]
 
 [build-system]
 requires = ["uv_build>=0.9"]
@@ -42,3 +45,9 @@ exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ty.rules]
+# ty ships this rule disabled by default, citing false-positive volume.
+# Enabling it adds zero findings to this codebase and closes the one gap
+# Pylance covered that ty otherwise would not. See the design spec.
+possibly-unresolved-reference = "error"

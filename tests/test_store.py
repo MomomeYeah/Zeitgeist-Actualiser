@@ -119,6 +119,7 @@ def test_finish_run_records_the_outcome(tmp_path):
 
     store.finish_run("run1", status="ok", post_count=42)
     summary = store.run_summary("run1")
+    assert summary is not None
     assert summary["status"] == "ok"
     assert summary["post_count"] == 42
     assert summary["finished_at"] is not None

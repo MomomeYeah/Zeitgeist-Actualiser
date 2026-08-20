@@ -1,4 +1,6 @@
 import json
+from collections.abc import Sequence
+from typing import Any
 
 import pytest
 from pydantic import BaseModel
@@ -44,7 +46,9 @@ class StubClient:
     as valid output — no subclassing needed per case.
     """
 
-    def __init__(self, responses: list[StubResponse]):
+    # Sequence[Any], not list[StubResponse]: tests stage malformed bodies
+    # with purpose-built local classes, and list is invariant.
+    def __init__(self, responses: Sequence[Any]):
         self._responses = list(responses)
         self.requests = []
 

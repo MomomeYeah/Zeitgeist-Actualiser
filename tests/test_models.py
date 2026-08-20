@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -21,8 +22,8 @@ POST_FIELDS = {
 }
 
 
-def _post(**overrides) -> Post:
-    defaults = dict(
+def _post(**overrides: Any) -> Post:
+    defaults: dict[str, Any] = dict(
         platform="reddit",
         source_id="abc123",
         title="Cat learns to open door",
@@ -37,8 +38,8 @@ def _post(**overrides) -> Post:
     return Post(**{**defaults, **overrides})
 
 
-def _scored(**overrides) -> ScoredTopic:
-    defaults = dict(
+def _scored(**overrides: Any) -> ScoredTopic:
+    defaults: dict[str, Any] = dict(
         id="cats",
         label="Cats",
         summary="Cat things.",

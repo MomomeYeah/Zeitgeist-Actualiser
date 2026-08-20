@@ -179,7 +179,9 @@ def test_build_source_builds_only_the_enabled_sources():
     """
     # _env_file=None so a local .env enabling reddit cannot change the result.
     settings = Settings(_env_file=None, anthropic_api_key="key", sources="lemmy")
-    assert [type(source) for source in build_source(settings)._sources] == [LemmySource]
+    composite = build_source(settings)
+    assert isinstance(composite, CompositeSource)
+    assert [type(source) for source in composite._sources] == [LemmySource]
 
 
 def test_build_source_preserves_the_configured_order():
@@ -193,5 +195,7 @@ def test_build_source_preserves_the_configured_order():
         reddit_client_secret="secret",
         sources="lemmy,reddit",
     )
-    names = [source.name for source in build_source(settings)._sources]
+    composite = build_source(settings)
+    assert isinstance(composite, CompositeSource)
+    names = [source.name for source in composite._sources]
     assert names == ["lemmy", "reddit"]

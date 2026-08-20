@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 
 from zeitgeist.llm.base import FakeLLMProvider, LLMError
@@ -47,8 +49,8 @@ def _topic(tid: str = "cats") -> ScoredTopic:
     )
 
 
-def _choice(**overrides) -> BriefChoice:
-    defaults = dict(
+def _choice(**overrides: Any) -> BriefChoice:
+    defaults: dict[str, Any] = dict(
         template_id="drake",
         caption_slots={"rejected": "Dogs", "preferred": "Cats"},
         rationale="Preference structure fits.",
