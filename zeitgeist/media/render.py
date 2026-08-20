@@ -2,6 +2,7 @@
 
 import textwrap
 from pathlib import Path
+from typing import cast
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -27,7 +28,11 @@ def resolve_font(font_path: Path | None, size: int) -> ImageFont.FreeTypeFont:
     FONT_PATH to a real .ttf for a different look.
     """
     if font_path is None:
-        return ImageFont.load_default(size=size)
+        # load_default is typed FreeTypeFont | ImageFont because it returns
+        # the bitmap ImageFont when size is omitted. Passing size selects the
+        # scalable FreeType face, which is what the return type promises and
+        # what draw.textlength needs.
+        return cast(ImageFont.FreeTypeFont, ImageFont.load_default(size=size))
     try:
         return ImageFont.truetype(str(font_path), size)
     except OSError as exc:

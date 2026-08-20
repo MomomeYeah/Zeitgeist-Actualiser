@@ -7,6 +7,7 @@ partial artifacts to inspect.
 
 import json
 import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -120,12 +121,14 @@ def _render_all(
     return count
 
 
-def _write(path: Path, models: list[BaseModel]) -> None:
+# Sequence rather than list: list is invariant, so a list[Post] is not a
+# list[BaseModel] and every call site was rejected. _write only iterates.
+def _write(path: Path, models: Sequence[BaseModel]) -> None:
     payload = [model.model_dump(mode="json") for model in models]
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def _read(path: Path, schema: type) -> list:
+def _read[T: BaseModel](path: Path, schema: type[T]) -> list[T]:
     if not path.is_file():
         raise FileNotFoundError(f"Missing checkpoint: {path}")
     raw = json.loads(path.read_text(encoding="utf-8"))

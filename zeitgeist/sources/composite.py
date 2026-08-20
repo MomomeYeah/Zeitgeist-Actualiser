@@ -6,6 +6,7 @@ platform never changes run_pipeline.
 
 import logging
 import math
+from collections.abc import Sequence
 
 from zeitgeist.models import Post
 from zeitgeist.sources.base import Source, SourceError
@@ -14,7 +15,9 @@ log = logging.getLogger(__name__)
 
 
 class CompositeSource:
-    def __init__(self, sources: list[Source]) -> None:
+    # Sequence, not list: list is invariant, so a list of any concrete
+    # Source implementation was rejected at the call site.
+    def __init__(self, sources: Sequence[Source]) -> None:
         if not sources:
             raise ValueError("CompositeSource needs at least one source")
         self._sources = sources
