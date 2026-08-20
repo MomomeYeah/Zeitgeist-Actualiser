@@ -133,6 +133,3 @@ def _read[T: BaseModel](path: Path, schema: type[T]) -> list[T]:
         raise FileNotFoundError(f"Missing checkpoint: {path}")
     raw = json.loads(path.read_text(encoding="utf-8"))
     return [schema.model_validate(entry) for entry in raw]
-
-
-q: int = "wrong"
