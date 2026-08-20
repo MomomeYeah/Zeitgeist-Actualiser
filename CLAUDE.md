@@ -20,6 +20,18 @@ same four commands on pushes to `main` and on every pull request. Both the
 Stop hook and CI run `uv sync --locked` before the four commands, so a stale
 lockfile fails fast.
 
+## Test quality
+
+Test code written into an implementation plan is real test code. Execution
+transcribes it verbatim, so a weak test in the plan becomes a weak test in
+the suite.
+
+A plan containing test code is not finished until those tests have been
+audited: use the `reviewing-plan-tests` skill, which dispatches a fresh
+reviewer over every test in the plan and reports findings for the planner
+to apply. This gate is separate from the Definition of Done above — that
+one is machine-checked, this one is not.
+
 ## Toolchain
 
 - **uv** manages the environment. `uv.lock` pins exact versions; run
