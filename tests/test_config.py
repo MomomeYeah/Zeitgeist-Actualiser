@@ -1,11 +1,13 @@
+from typing import Any
+
 import pytest
 
 from zeitgeist.config import DEFAULT_SENTIMENT_WEIGHTS, Settings
 from zeitgeist.models import Sentiment
 
 
-def _settings(**overrides) -> Settings:
-    defaults = dict(
+def _settings(**overrides: Any) -> Settings:
+    defaults: dict[str, Any] = dict(
         reddit_client_id="id",
         reddit_client_secret="secret",
         anthropic_api_key="key",
