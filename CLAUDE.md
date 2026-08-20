@@ -16,7 +16,9 @@ uv run pytest
 
 Do not report a task as finished, and do not open a pull request, until you
 have run them and seen them pass. A Stop hook enforces this, and CI runs the
-same four commands on every push and pull request.
+same four commands on pushes to `main` and on every pull request. Both the
+Stop hook and CI run `uv sync --locked` before the four commands, so a stale
+lockfile fails fast.
 
 ## Toolchain
 
