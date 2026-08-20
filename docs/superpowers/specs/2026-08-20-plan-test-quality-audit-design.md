@@ -21,6 +21,11 @@ carry 176 `def test_` bodies:
 Execution transcribes those bodies. A weak test in the plan becomes a weak
 test in the suite.
 
+The leak is systematic, not incidental. Both plans containing test code
+needed a post-hoc pass against the rubric, each recorded as its own commit —
+`c9fd700` for the pipeline plan, `0d4d4cd` for pluggable-sources. The third
+plan contains no test code and needed no such pass.
+
 `writing-good-tests.md` has exactly one inbound reference in the whole
 superpowers plugin: `skills/test-driven-development/SKILL.md:206`. Nothing
 else points at it. So the rubric is reachable only through the TDD skill,
@@ -200,15 +205,42 @@ citations make staleness visible rather than silent.
 
 `writing-good-tests.md` holds that documents instructing agents are tested by
 the consuming agent's behaviour, never by grepping their text. So this change
-is validated behaviourally:
+is validated behaviourally — and git history supplies a ready-made answer key.
 
-Run the new audit cold over `docs/superpowers/plans/2026-08-18-pluggable-sources.md`
-(38 tests) — a plan whose test weaknesses were already found by hand in a
-previous session. Compare the findings against those known problems.
+The manual re-check that motivated this work is isolated in a single commit,
+`0d4d4cd docs: revise plan tests against writing-good-tests`, whose message
+itemises its six findings on the pluggable-sources plan:
 
-- Surfaces the known problems: the gate works.
-- Surfaces none of them: the gate does not work, and the skill needs
-  rewriting rather than shipping.
+1. A fixture dated the same day as the run, making the
+   `fetched_at > created_at` assertion time-dependent
+2. An incomplete Lemmy payload fixture that did not mirror the real API
+3. A runaway-paging hang, converted into a named failure
+4. Assertions on private attributes rather than on request URLs
+5. and 6. Two change detectors
 
-Findings beyond the known set are not failures; they are the expected upside
-of a fresh reader with the rubric in hand.
+The validation is therefore a held-out replay:
+
+1. Extract the plan as originally authored, before the manual pass:
+   `git show 5ed6747:docs/superpowers/plans/2026-08-18-pluggable-sources.md`
+2. Run the audit over that version, cold.
+3. Score the findings against the six above.
+
+**The plan at `HEAD` must not be used.** Those fixes are already applied
+there, so an audit would correctly find little and the result would say
+nothing about whether the gate works.
+
+**Scoring.** Recall against the six known findings is the measure. Findings
+beyond them are not failures — they are the expected upside of a fresh reader
+with the rubric in hand — but they cannot be scored, because `0d4d4cd` is one
+approved pass, not exhaustive truth.
+
+**What the key is and is not.** `0d4d4cd` was itself produced by an agent
+performing the re-check on request. Matching it shows the gate reproduces a
+pass that today happens only when asked for by hand, which is precisely the
+goal. It does not show the gate finds every real defect.
+
+**Second corpus, if the first is inconclusive.** `c9fd700 Rework plan tests
+for value` is the equivalent pass over the 138-test pipeline plan, replayable
+from `c999046`. Richer sample, noisier key: it bundles changes that are not
+test-quality fixes — models forbidding undeclared fields, placeholder
+template images — so those need separating out before scoring.
