@@ -7,3 +7,4 @@ output/
 data/
 .pytest_cache/
 *.egg-info/
+.superpowers/
