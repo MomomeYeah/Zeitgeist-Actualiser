@@ -279,6 +279,12 @@ fixes are already applied there, so an audit would correctly find little.
 **This section records what the replay actually showed, including the ways it
 went wrong.** The gate shipped; it did not pass the bar it was given.
 
+The reviewers' verbatim output is kept under
+`docs/superpowers/evidence/2026-08-20-plan-test-quality-audit/`, so every
+number below can be checked against the run that produced it rather than
+taken on trust. That directory's README maps each run to the prompt version
+it exercised.
+
 ### Results
 
 Three valid cold runs, each a fresh reviewer over the same pre-pass plan, on
