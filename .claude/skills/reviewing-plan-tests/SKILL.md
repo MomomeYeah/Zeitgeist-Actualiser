@@ -47,6 +47,25 @@ reader can hold.
 
 Use the prompt template in `reviewer-prompt.md`, filling every placeholder.
 
+## Known Limitation: Change Detectors
+
+Held-out replay against a plan whose defects were already known found this
+gate to be a strong independent defect-finder and an unreliable detector of
+one specific category: **change detectors** — tests only an intentional
+decision could break. Across repeated cold runs it surfaced every other
+category of known defect at least once and this one never.
+
+So read the reviewer's report as incomplete on that axis. After applying the
+findings, walk the plan's tests yourself asking the one question the gate
+reliably skips: *if this test failed, would that mean a bug, or only that
+someone changed their mind?* A test that asserts a formatting choice, a
+joined string, a default the code is free to change, or a value the plan
+itself decides, is a candidate. The remedy is usually deletion.
+
+The blind spot is durable rather than incidental — three prompt revisions,
+each fixing a real and separately verified defect, left it unchanged. Assume
+it is still there.
+
 ## Applying the Findings
 
 The reviewer reports; you apply. For each finding, either apply the

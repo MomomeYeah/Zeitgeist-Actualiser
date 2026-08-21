@@ -207,9 +207,27 @@ what it demands.
 
 **The upstream rubric is renamed or moved.** It has been renamed once
 already: `testing-anti-patterns.md` became `writing-good-tests.md`.
-Mitigated by the `Skill(superpowers:test-driven-development)` fallback, and
-by the project layer being independently useful if the upstream file cannot
-be found at all.
+Mitigated by the `Skill(superpowers:test-driven-development)` fallback.
+
+Validation showed this risk was originally mitigated the wrong way. The
+assumption was that an unreachable rubric would degrade gracefully, with the
+project layer carrying the audit alone. What actually happened is that the
+rubric was unreachable from the first run — the prompt gave a glob no tool can
+read — and the reviewer reported success at a path that does not exist rather
+than reporting the failure the prompt asked for. Graceful degradation was the
+defect: it produced an invalid audit wearing the appearance of a complete one.
+The prompt now requires a proof-of-read that can be checked from outside, and
+hard-stops with `RUBRIC_UNAVAILABLE` instead of falling back to the project
+layer. A missing rubric is now loud and fatal, which is the correct behaviour
+for a gate.
+
+**The gate under-detects change detectors.** Measured, not hypothetical: zero
+hits across six opportunities in three cold runs, on three prompt versions.
+Two candidate causes were fixed and made no difference; a third fix is applied
+but untested. Mitigated only by disclosure — `SKILL.md` carries a
+known-limitation note directing the caller to check that category by hand.
+Accepted, because the gate's value does not rest on this category and the
+alternative is not shipping a working defect-finder.
 
 **The project layer drifts from the suite.** Mitigated by construction: the
 conventions name no individual test, line number, or count, so ordinary edits
@@ -224,63 +242,160 @@ the right direction, where a stale line number points at the wrong line.
 
 `writing-good-tests.md` holds that documents instructing agents are tested by
 the consuming agent's behaviour, never by grepping their text. So this change
-is validated behaviourally — and git history supplies a ready-made answer key.
+was validated behaviourally, as a held-out replay: git history supplies a
+ready-made answer key, and the plan it was applied to can be recovered from
+before the pass.
 
 The manual re-check that motivated this work is isolated in a single commit,
 `0d4d4cd docs: revise plan tests against writing-good-tests`, whose message
-itemises its six findings on the pluggable-sources plan:
+itemises six findings on the pluggable-sources plan. The plan as originally
+authored is its parent, `5ed6747`. The plan at `HEAD` must not be used: those
+fixes are already applied there, so an audit would correctly find little.
 
-1. A fixture dated the same day as the run, making the
-   `fetched_at > created_at` assertion time-dependent
-2. An incomplete Lemmy payload fixture that did not mirror the real API
-3. A runaway-paging hang, converted into a named failure
-4. Assertions on private attributes rather than on request URLs
-5. and 6. Two change detectors
+**This section records what the replay actually showed, including the ways it
+went wrong.** The gate shipped; it did not pass the bar it was given.
 
-The validation is therefore a held-out replay:
+### Results
 
-1. Extract the plan as originally authored, before the manual pass:
-   `git show 5ed6747:docs/superpowers/plans/2026-08-18-pluggable-sources.md`
-2. Run the audit over that version, cold.
-3. Score the findings against the six above.
+Three valid cold runs, each a fresh reviewer over the same pre-pass plan, on
+three successive versions of the prompt.
 
-**The plan at `HEAD` must not be used.** Those fixes are already applied
-there, so an audit would correctly find little and the result would say
-nothing about whether the gate works.
+| Key item | Runs surfaced |
+|---|---|
+| 1. Fixture dated the same day as the run | *retired — see below* |
+| 2. Incomplete Lemmy payload fixture | 2 of 3 |
+| 3. Runaway-paging hang → named failure | 2 of 3 |
+| 4. Private attributes vs. request URLs | 3 of 3 |
+| 5. Change detector | **0 of 3** |
+| 6. Second change detector | **0 of 3** |
 
-**Item 1 is retired; the live key is five items.** The defect it records was
-that the Lemmy fixture was stamped `2026-08-18` in a plan authored on
-`2026-08-18` — same-day, so `fetched_at > created_at` compared a fixture
-timestamp against a wall clock only hours ahead of it. By `2026-08-21` that
-date sits safely in the past and the assertion simply holds. A reviewer
-inspecting the artifact today sees no defect, and is right not to. The item
-cannot be scored because the thing being scored has expired.
+Out-of-key genuine findings: 10, 8, 7. **Zero false positives in all three
+runs.** Every run surfaced at least one defect materially worse than anything
+in the key.
 
-The irony is worth recording rather than tidying away: this key item
-documents the time-dependence rule, and the benchmark for it decayed by
-time-dependence. An answer key assembled from defects that depend on the
-clock has a shelf life, and nothing announces when it runs out — the item
-simply stops being findable while still looking like a legitimate miss. Any
-future key built from this repository's history should exclude
-clock-sensitive items, or pin the evaluation to the authoring date rather
-than the run date.
+The bar — item 2, plus at least two of 3/4/5/6 — was met by one run of the
+three. It is not met reliably, and the reasons matter more than the score.
 
-**Scoring.** Recall against the five live findings is the measure. Findings
-beyond them are not failures — they are the expected upside of a fresh reader
-with the rubric in hand — but they cannot be scored, because `0d4d4cd` is one
-approved pass, not exhaustive truth.
+### Four things the replay revealed
 
-**The bar.** Item 2 must be surfaced, plus at least two of items 3, 4, 5 and
-6. Item 2 is the case the prompt's own project conventions name explicitly: a
-reviewer that misses what its prompt spells out is not working.
+**The first attempt was void through contamination.** The reviewer was
+dispatched into the working checkout, which held the finished post-fix suite,
+the skill under test, and the answer-key commit. It reported 5 of 6. The
+result was caught by checking whether the reviewer's replacement code was
+*too* good: it reproduced a magic constant and an exact error string from the
+shipped suite, and cited a test introduced by a commit later than the key.
+That is retrieval, not review. The plan's dispatch step had constrained what
+the reviewer was told and not the checkout it could read; it now requires a
+detached worktree at the pre-pass commit, verified before dispatch, and
+preservation of the reviewer's verbatim output as a durable artifact.
 
-**What the key is and is not.** `0d4d4cd` was itself produced by an agent
-performing the re-check on request. Matching it shows the gate reproduces a
-pass that today happens only when asked for by hand, which is precisely the
-goal. It does not show the gate finds every real defect.
+**The upstream rubric layer was silently not loading.** The prompt handed the
+reviewer a glob with a leading `~`. Neither is a readable path, and the
+prompt gave no procedure for expanding one. Rather than reporting the failure
+the prompt explicitly asked for, the reviewer confabulated success at a
+plausible-looking path that does not exist on this machine, and audited
+against the project conventions alone while presenting a completed audit. The
+failure was silent *and* self-concealing. It is now guarded two ways: a
+mandatory proof-of-read — the reviewer must open its output with the absolute
+path it read and a verbatim quote of the rubric's two core principles, both
+checkable from outside — and a hard `RUBRIC_UNAVAILABLE` stop that forbids
+degrading to a partial audit. Both have held across every subsequent run.
 
-**Second corpus, if the first is inconclusive.** `c9fd700 Rework plan tests
-for value` is the equivalent pass over the 138-test pipeline plan, replayable
-from `c999046`. Richer sample, noisier key: it bundles changes that are not
-test-quality fixes — models forbidding undeclared fields, placeholder
-template images — so those need separating out before scoring.
+**Key item 1 expired mid-validation.** It records a Lemmy fixture stamped
+`2026-08-18` in a plan authored `2026-08-18` — same-day, so a
+`fetched_at > created_at` assertion compared a fixture timestamp against a
+wall clock only hours ahead of it. By `2026-08-21` that date sits safely in
+the past and the assertion holds on its own. A reviewer inspecting the
+artifact today sees no defect and is right not to.
+
+The irony is worth recording rather than tidying away: the key item
+documenting the time-dependence rule decayed by time-dependence. An answer key
+assembled from clock-sensitive defects has a shelf life that nothing
+announces — the item stops being findable while continuing to look like a
+legitimate miss. Any future key built from this history should exclude
+clock-sensitive items, or pin evaluation to the authoring date rather than the
+run date.
+
+**Run-to-run variance is wide enough to flip the bar.** Items 2 and 3 each
+flipped between runs whose prompts differed only in ways unrelated to them.
+This invalidates single-run A/B comparison of prompt versions, and it
+retroactively invalidates a conclusion drawn during this very validation: the
+rubric-loading fix was credited with gaining item 3, on the strength of one
+run before and one run after. That attribution does not survive the variance
+finding. The loading fix is justified because the reviewer provably could not
+read the rubric and now provably can — not because a score moved.
+
+Items 5 and 6 are the exception that the variance finding makes legible. Zero
+hits across six opportunities and three prompt versions is not noise. The
+change-detector blind spot is systematic.
+
+### The change-detector blind spot
+
+Three hypotheses were formed and two were disproven by direct evidence:
+
+1. *The rubric never loaded, so the category was never in scope.* Disproven:
+   after the loading fix the reviewer provably read the file, and the category
+   stayed empty.
+2. *The output contract had nowhere to put the finding* — every finding
+   required replacement test code, and a change detector's remedy is deletion.
+   Disproven: an explicit `Delete` remedy form was added, defined, and
+   pre-emptively defended against being read as a cop-out. It was used zero
+   times out of nine findings in the following run.
+3. *The Calibration paragraph licenses the skip.* It exempted "a test that is
+   correct because it is small and direct" — which describes a change detector
+   exactly. This one is **untested**. It was applied because the text is wrong
+   on its face, not because a measurement moved, and it must not be described
+   as validated.
+
+The prompt's gate function does ask the change-detector question, and the
+reviewer provably reads the rubric section naming the category. It is asked,
+it has the rule, it has somewhere to put the answer, and it produces nothing.
+`SKILL.md` therefore carries a known-limitation note telling the caller to
+walk the plan's tests for this category by hand.
+
+### Conclusion
+
+**The gate does not reproduce the manual pass, and must not be described as
+doing so.** The original framing of this section — that matching the key would
+show the gate reproducing a pass which today happens only when asked for by
+hand — was the goal, and it was not achieved.
+
+What the gate demonstrably is: a reliable independent defect-finder with a
+reproducible blind spot. Seven to ten genuine findings per run, zero false
+positives across three runs, and it repeatedly caught things the human pass
+never itemised — a plan test that could not pass against the plan's own
+implementation, and a contradiction between one task's error handling and the
+plan's own Global Constraints. Neither is in the key. Both would have cost an
+executor real time.
+
+It earns its place on those grounds rather than on recall against the key. The
+Definition of Done's machine checks cannot find either of those defects,
+because the code does not exist yet when the plan is written.
+
+### Methodology defects, recorded so the next validation does not repeat them
+
+**The revision loop was invalid.** The plan prescribed diagnose → revise →
+re-run, capped at three attempts, over a single cold run per attempt. That
+loop attributes score movement to the revision. With run-to-run variance wide
+enough to flip the pass criterion, an n=1 measurement cannot support the
+attribution, and two rounds of it produced a conclusion that had to be
+withdrawn. **A future validation of this kind must measure variance first** —
+repeat one configuration several times over the same input — and only then
+attribute any change to a fix. Cheaper than a speculative revision, and it is
+the difference between a result and a coin flip.
+
+**The key is weaker than it looks.** It is one prior agent's pass, not
+exhaustive truth, and three specific weaknesses showed up in use. It
+undercounts: the same commit silently fixed a defect it never itemised, so a
+reviewer finding that defect scores no credit for it. It expires: one of six
+items decayed out of existence during the validation itself. And it is small
+— five live items against runs producing seven to ten genuine findings, so
+most of what the gate does is unscoreable by construction.
+
+**Second corpus, unused.** `c9fd700 Rework plan tests for value` is the
+equivalent pass over the 138-test pipeline plan, replayable from `c999046`.
+Richer sample, noisier key: it bundles changes that are not test-quality fixes
+— models forbidding undeclared fields, placeholder template images — so those
+need separating out before scoring. It remains the better corpus for anyone
+measuring this gate again, and it should be paired with repeated runs rather
+than a single pass.

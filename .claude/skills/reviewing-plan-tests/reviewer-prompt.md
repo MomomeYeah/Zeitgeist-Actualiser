@@ -180,6 +180,15 @@ Subagent (general-purpose):
     it is small and direct is not a finding, and neither is a stylistic
     preference.
 
+    That exemption does not cover a change detector. "Small and direct" is
+    not the same as "only an intentional decision could break it", and a
+    change detector satisfies the first while failing gate function 1. Such
+    a test is correct, short, readable, and asserts something true — it
+    looks exactly like the tests the paragraph above protects, which is why
+    it gets skipped. Size is not the test. Ask what would have to change to
+    make it fail, and if every answer is a decision someone is entitled to
+    make, it is always a finding, however small and however tidy.
+
     Conversely, absent coverage counts: if a task's behaviour has no test
     that would catch a realistic mutation, report it, with the test that
     should exist.
