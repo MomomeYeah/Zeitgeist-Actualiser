@@ -25,16 +25,56 @@ Subagent (general-purpose):
 
     ## Read the Rubric First
 
-    Read the upstream rubric:
+    The upstream rubric is `writing-good-tests.md`, installed inside the
+    superpowers plugin cache. Its location matches this pattern:
 
     `~/.claude/plugins/cache/*/superpowers/*/skills/test-driven-development/writing-good-tests.md`
 
-    The wildcards are deliberate: the installed path carries a version
-    number that changes on plugin updates. If the glob does not resolve,
-    invoke `Skill(superpowers:test-driven-development)` and follow the
-    `writing-good-tests.md` link in its body. If neither resolves, say so
-    plainly in your report and audit against the project conventions below
-    alone.
+    **That pattern is not a readable path.** It contains wildcards and a
+    `~`, and the `Read` tool takes neither. Passing it to `Read` fails.
+    You must resolve it to a concrete absolute path first, then read that.
+
+    Resolution procedure, in order:
+
+    1. Expand the pattern. Use the `Glob` tool with the pattern
+       `**/superpowers/*/skills/test-driven-development/writing-good-tests.md`
+       rooted at the plugin cache directory, or run a shell expansion —
+       `ls`/`find` over the same pattern with the home directory written
+       out in full rather than as `~`.
+    2. Take the concrete absolute path the expansion returns and pass
+       **that** to `Read`. The wildcards stand in for the marketplace
+       directory and the plugin version, both of which change on updates,
+       which is why this prompt names neither. If the expansion returns
+       several paths differing only by version, read the highest version.
+    3. If the expansion returns nothing, invoke
+       `Skill(superpowers:test-driven-development)` and follow the
+       `writing-good-tests.md` link in its body.
+
+    ### Proof of reading — mandatory
+
+    The first line of your output, before anything else, must be:
+
+    `Rubric read: <the absolute path you passed to Read>`
+
+    Immediately after it, quote the rubric's two numbered core principles
+    verbatim, copied from the file you just read — not reconstructed from
+    memory, not paraphrased, not recalled from training. They appear in
+    the rubric's overview section as a two-line block. Copy those two
+    lines exactly as they appear.
+
+    ### If the rubric cannot be read
+
+    If neither route resolves and you cannot read the file, **stop**.
+    Output exactly `RUBRIC_UNAVAILABLE` and nothing else. Do not audit
+    against the project conventions alone, and do not report a path you
+    did not actually read from.
+
+    This is not a formality. The rubric carries whole categories of
+    defect — change detectors among them — that the project conventions
+    below do not name. An audit missing the upstream layer is not a
+    weaker audit, it is an invalid one, and reporting it as a completed
+    audit hides the failure instead of surfacing it. A loud
+    `RUBRIC_UNAVAILABLE` is the correct and useful result.
 
     ## Project Conventions
 
@@ -103,8 +143,9 @@ Subagent (general-purpose):
 
     ## Output Format
 
-    Begin directly with the summary line. No preamble, no process
-    narration, no closing summary.
+    Begin with the proof-of-reading block: the `Rubric read:` path line
+    and the verbatim two-principle quote. Then the summary line. No other
+    preamble, no process narration, no closing summary.
 
     **Tests audited:** N (Tasks [A]-[B]) — **Findings:** M
 

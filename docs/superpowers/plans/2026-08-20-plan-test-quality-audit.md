@@ -420,15 +420,46 @@ The six findings are:
 5. A change detector
 6. A second change detector
 
-- [ ] **Step 3: Run the audit cold**
+- [ ] **Step 3: Run the audit cold, in an isolated checkout**
 
-Dispatch the reviewer using `reviewer-prompt.md`, with `[PLAN_FILE]` set to
-`.superpowers/validation/pluggable-sources-pre-pass.md` and `[A]`/`[B]` set
-to that plan's first and last task numbers.
+"Cold" governs two things, and the first validation attempt was void because
+it governed only one. What the reviewer is *told* must exclude the key; what
+the reviewer can *read* must exclude the answer too. A reviewer dispatched
+into the working tree can open the finished post-fix suite, the skill that is
+under test, and the commit that holds the key — none of which a genuinely
+cold reader would have. Isolate both.
 
-The reviewer must not be told what the answer key contains, and must not be
-given `0d4d4cd`, the current plan, or this plan. It gets the pre-pass plan
-and the prompt, nothing else.
+**Isolate the checkout.** Create a detached `git worktree` at the pre-pass
+commit and run the reviewer with that as its working directory. A detached
+worktree at that commit is the proven approach: it reconstructs the tree as
+it stood before the manual pass, so the post-pass suite, the skill under
+test, and the key commit are all simply absent rather than merely
+off-limits.
+
+Before dispatching, verify the isolation rather than assuming it. Confirm in
+that worktree that the post-pass test module does not exist, that the
+hermeticity fixture is not yet in `tests/conftest.py`, that there is no
+`.claude/` directory, and that the key commit is unreachable from the
+checked-out revision. Record what those checks returned; unverified
+isolation is the failure this step exists to prevent.
+
+**Isolate what the reviewer is told.** Dispatch using `reviewer-prompt.md`
+with every placeholder filled: `[PLAN_FILE]` set to the extracted pre-pass
+plan and `[A]`/`[B]` set to that plan's first and last task numbers. The
+reviewer must not be told what the answer key contains, which commits are
+involved, how many findings to expect, or that a validation is under way. It
+gets the pre-pass plan and the prompt, nothing else.
+
+**Preserve the verbatim output.** Write the reviewer's output to a durable
+artifact under this plan's `.superpowers/sdd/` directory, byte for byte as
+returned, before scoring anything. A paraphrase cannot be re-scored, cannot
+be checked for a category of finding that turns out to matter later, and
+cannot settle a disagreement about what the reviewer actually said. Score
+from the saved artifact, and do not delete it when the scratch plan file is
+cleaned up.
+
+Remove the temporary worktree with `git worktree remove` once the output is
+saved.
 
 - [ ] **Step 4: Score the findings against the key**
 
