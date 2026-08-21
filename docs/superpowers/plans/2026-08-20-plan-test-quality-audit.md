@@ -58,6 +58,14 @@ Expected: the glob resolves to exactly one path; `tests/conftest.py` contains an
 
 - [ ] **Step 2: Write the prompt template**
 
+**Superseded — do not transcribe this verbatim.** The template below is the
+prompt as first drafted, kept as a record of what Task 3 measured against.
+Task 3's validation replaced its rubric-loading section, its output contract
+and its calibration paragraph, because the original degrades silently when
+the rubric cannot be read and cannot express a finding whose remedy is
+deletion. Re-executing this step from the text below would reconstruct those
+defects. Take the shipped file as the source of truth.
+
 Create `.claude/skills/reviewing-plan-tests/reviewer-prompt.md`:
 
 ````markdown

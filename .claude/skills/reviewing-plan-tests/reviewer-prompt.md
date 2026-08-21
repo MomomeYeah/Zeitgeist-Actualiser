@@ -194,9 +194,17 @@ Subagent (general-purpose):
     should exist.
 ```
 
-**Placeholders:**
+**Placeholders:** these four and no others. The bracketed spans inside the
+Output Format section are the reviewer's to fill when it writes its report,
+not the controller's to fill at dispatch — leave them as they are.
+
 - `[MODEL]` — REQUIRED: reviewer model. An omitted model silently inherits
-  the session's most expensive one.
-- `[PLAN_FILE]` — REQUIRED: repo-relative path to the plan document.
+  the session's most expensive one. In the body this one is a multi-line
+  bracketed span rather than a bare token, so a literal find-and-replace
+  will miss it; replace the whole span, including its parenthetical.
+- `[PLAN_FILE]` — REQUIRED: repo-relative path to the plan document. Appears
+  twice: in the header and in the Output Format's Location line.
 - `[A]`, `[B]` — REQUIRED: the inclusive task range this reviewer audits.
-  For a single-reviewer plan, the plan's first and last task numbers.
+  For a single-reviewer plan, the plan's first and last task numbers. Each
+  appears three times: in the subagent description, the task range line, and
+  the summary line.

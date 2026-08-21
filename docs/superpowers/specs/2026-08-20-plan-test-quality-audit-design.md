@@ -96,9 +96,25 @@ parallel — a 4,796-line plan is too much for one reader to hold.
 `~/.claude/plugins/cache/*/superpowers/*/skills/test-driven-development/writing-good-tests.md`.
 The wildcards matter: the installed path is version-pinned
 (`.../superpowers/6.2.0/...`), so a literal path breaks on the next plugin
-update. If the glob does not resolve, the reviewer invokes
+update. If the pattern does not resolve, the reviewer invokes
 `Skill(superpowers:test-driven-development)` and follows the link in its
 body.
+
+That pattern is not itself readable — no tool takes a glob or a leading `~` —
+and treating it as though it were is what made this layer fail silently in
+practice. The prompt therefore carries three guards, added after validation
+and described in full there:
+
+- an explicit **resolution procedure**: expand the pattern first, then read
+  the concrete absolute path it yields, taking the highest version if several
+  match;
+- a mandatory **proof-of-read** — the reviewer opens its output with the
+  absolute path it read and a verbatim quote of the rubric's two core
+  principles, both checkable against the filesystem from outside;
+- a hard **`RUBRIC_UNAVAILABLE` stop** if neither route resolves. The
+  reviewer must not fall back to layer 2 alone. An audit missing the upstream
+  layer is invalid rather than merely weaker, and must not be reported as a
+  completed one.
 
 **Rubric, layer 2 — project conventions.** Derived from what the existing
 suite demonstrates, so the skill carries knowledge upstream cannot, but
@@ -142,9 +158,17 @@ counts and commit hashes belong here and nowhere else.
 
 **Output contract.** Findings only. The reviewer does not edit the plan. For
 each finding: plan location (task, step, line), the test's name, the rubric
-rule violated, why it fails that rule, and complete replacement test code.
-The reviewer reports the number of tests audited alongside the number of
-findings, and reporting zero findings is a valid result.
+rule violated, why it fails that rule, and a remedy in one of exactly three
+forms — *rewrite* with complete replacement test code, *delete* with the
+reason the test protects nothing, or *add* complete code for a test that
+should exist and does not. Where the remedy is code it is the code itself,
+never prose standing in for it. The reviewer reports the number of tests
+audited alongside the number of findings, and reporting zero findings is a
+valid result.
+
+The three forms replaced a single mandatory replacement-code field, which
+could not express the deletion that a change detector usually needs. See
+Validation.
 
 The reviewer applies both gate functions from the upstream rubric to every
 test — name the production change that would make it fail; confirm the

@@ -62,15 +62,16 @@ someone changed their mind?* A test that asserts a formatting choice, a
 joined string, a default the code is free to change, or a value the plan
 itself decides, is a candidate. The remedy is usually deletion.
 
-The blind spot is durable rather than incidental — three prompt revisions,
-each fixing a real and separately verified defect, left it unchanged. Assume
-it is still there.
+The blind spot is durable rather than incidental. It survived two measured
+prompt fixes, each of which closed a separately verified defect. A third fix
+targets it directly but has not been measured, so assume it is still there.
 
 ## Applying the Findings
 
-The reviewer reports; you apply. For each finding, either apply the
-replacement test or record why you are not — a finding you disagree with is
-a decision worth writing down, not one to leave silent.
+The reviewer reports; you apply. Each finding carries a remedy in one of
+three forms — rewrite a test, delete one, or add one that should exist. For
+each, either apply the remedy or record why you are not: a finding you
+disagree with is a decision worth writing down, not one to leave silent.
 
 Then re-run the type-consistency check from `writing-plans`' self-review.
 Rewriting a test can change a signature that a neighbouring task's
