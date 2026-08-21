@@ -248,10 +248,31 @@ The validation is therefore a held-out replay:
 there, so an audit would correctly find little and the result would say
 nothing about whether the gate works.
 
-**Scoring.** Recall against the six known findings is the measure. Findings
+**Item 1 is retired; the live key is five items.** The defect it records was
+that the Lemmy fixture was stamped `2026-08-18` in a plan authored on
+`2026-08-18` — same-day, so `fetched_at > created_at` compared a fixture
+timestamp against a wall clock only hours ahead of it. By `2026-08-21` that
+date sits safely in the past and the assertion simply holds. A reviewer
+inspecting the artifact today sees no defect, and is right not to. The item
+cannot be scored because the thing being scored has expired.
+
+The irony is worth recording rather than tidying away: this key item
+documents the time-dependence rule, and the benchmark for it decayed by
+time-dependence. An answer key assembled from defects that depend on the
+clock has a shelf life, and nothing announces when it runs out — the item
+simply stops being findable while still looking like a legitimate miss. Any
+future key built from this repository's history should exclude
+clock-sensitive items, or pin the evaluation to the authoring date rather
+than the run date.
+
+**Scoring.** Recall against the five live findings is the measure. Findings
 beyond them are not failures — they are the expected upside of a fresh reader
 with the rubric in hand — but they cannot be scored, because `0d4d4cd` is one
 approved pass, not exhaustive truth.
+
+**The bar.** Item 2 must be surfaced, plus at least two of items 3, 4, 5 and
+6. Item 2 is the case the prompt's own project conventions name explicitly: a
+reviewer that misses what its prompt spells out is not working.
 
 **What the key is and is not.** `0d4d4cd` was itself produced by an agent
 performing the re-check on request. Matching it shows the gate reproduces a

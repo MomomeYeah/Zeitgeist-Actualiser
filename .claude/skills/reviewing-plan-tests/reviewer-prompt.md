@@ -157,11 +157,21 @@ Subagent (general-purpose):
     - **Rule:** [the rubric rule or project convention violated]
     - **Why it fails:** [the break this test does not catch, or why it
       cannot fail for a good reason]
-    - **Replacement:**
+    - **Remedy:** [exactly one of the three forms below]
 
-    ```python
-    [complete replacement test code — never a description of it]
-    ```
+    A remedy takes one of exactly three forms, and every finding must fit
+    one of them:
+
+    1. **Rewrite** — complete replacement test code.
+    2. **Delete** — the test should not exist. Name it and say what it
+       fails to protect. A test only an intentional decision can break
+       protects nothing, and rewriting it would keep a test the suite is
+       better off without; deletion is the correct remedy, not a
+       cop-out. No code block is needed for this form.
+    3. **Add** — complete code for a test that should exist and does not.
+
+    Where the remedy is code, it is the code itself — never a prose
+    description standing in for it.
 
     ## Calibration
 

@@ -413,12 +413,19 @@ git show --format=%B --no-patch 0d4d4cd
 
 The six findings are:
 
-1. A fixture dated the same day as the run, making the `fetched_at > created_at` assertion time-dependent
+1. A fixture dated the same day as the run, making the `fetched_at > created_at` assertion time-dependent — **retired, not scorable**
 2. An incomplete Lemmy payload fixture that did not mirror the real API
 3. A runaway-paging hang, converted into a named failure
 4. Assertions on private attributes rather than on request URLs
 5. A change detector
 6. A second change detector
+
+Item 1 is retired and the live key is five items. The defect was that the
+fixture's date matched the day the plan was authored; enough time has since
+passed that the date sits in the past and the assertion holds on its own. A
+reviewer that reports no defect there today is correct. The design spec
+records the dates and the lesson about keys built from clock-sensitive
+defects.
 
 - [ ] **Step 3: Run the audit cold, in an isolated checkout**
 
@@ -465,9 +472,9 @@ saved.
 
 The gate ships if **both** conditions hold:
 
-- Findings 1 and 2 are surfaced. These are the two cases the project
-  conventions in `reviewer-prompt.md` name explicitly. If the reviewer
-  misses the cases its own prompt spells out, the prompt is not working.
+- Finding 2 is surfaced. It is the case the project conventions in
+  `reviewer-prompt.md` name explicitly. If the reviewer misses the case its
+  own prompt spells out, the prompt is not working.
 - At least two of findings 3, 4, 5, 6 are surfaced.
 
 Findings beyond the key are not failures and do not count toward the bar —
