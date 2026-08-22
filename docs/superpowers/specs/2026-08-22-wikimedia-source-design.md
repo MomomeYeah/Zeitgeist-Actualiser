@@ -27,7 +27,8 @@ distribution-free, which is why it sidesteps the magnitude problem entirely.
 
 - `WikipediaSource`, fetching the Wikimedia pageviews top-articles listing.
 - Replacing `Post` with `Item`, carrying a discriminated union of
-  platform-specific metrics models.
+  platform-specific metrics models, and renaming `Topic.post_ids` to
+  `Topic.item_ids` to match.
 - A scorer registry under `analysis/scorers/`, one strategy per platform.
 - Reducing `analysis/score.py` to a coordinator that dispatches to scorers and
   combines their output.
@@ -154,7 +155,36 @@ at exactly the boundary the project deliberately keeps strict.
 **`Item.platform` keeps existing call sites working.** `CompositeSource`'s
 `(post.platform, post.source_id)` dedup key needs no change.
 
-`Topic.post_ids` keeps its name and meaning: it holds `Item.source_id` values.
+`Topic.post_ids` is renamed to `Topic.item_ids`, still holding `source_id`
+values. Keeping the old name would leave the codebase referring to a `Post`
+model that no longer exists, and "post" is already wrong for a Wikipedia
+article-day — as it would be for a Twitch stream or a YouTube video under the
+platforms this design is meant to accommodate.
+
+The rename touches six production references across `models.py`,
+`consolidate.py`, `score.py` and `sentiment.py`, plus tests. It is not
+persisted, so the database is unaffected.
+
+Two knock-on effects:
+
+**A prompt string changes.** `sentiment.py:90` builds
+`f"Appears in {len(topic.post_ids)} posts."` — text the model reads. "Posts"
+becomes wrong once a count can include Wikipedia measurements, so it becomes
+`f"Appears in {len(topic.item_ids)} items."` in phase 1: a pure rename that
+leaves prompt semantics intact.
+
+Extending it to name the platform count — `"across N platforms"`, which would
+give the sentiment stage the corroboration signal it currently cannot see — is
+a genuine improvement but changes model input and therefore output. It belongs
+in phase 2 alongside the corroboration work, not bundled into a refactor whose
+value is being provably behaviour-preserving.
+
+**Old run directories stop resuming.** `Topic` is serialised into
+`output/<run-id>/*.json`, and `--resume-from generate` reads it back. With
+`extra="forbid"` on the model, a checkpoint containing `post_ids` will fail
+validation rather than silently drop the field. That is the right failure —
+loud, at the boundary — and old run directories are as disposable as the
+database at this stage.
 
 ## WikipediaSource
 
@@ -399,17 +429,19 @@ Per `CLAUDE.md`, the implementation plan's test code goes through the
 This spec is larger than the previous two, so the plan should land it in four
 phases, each leaving the four Definition of Done commands passing:
 
-1. **`Post` → `Item`.** The discriminated union, plus mechanical updates to
-   Lemmy, Reddit, `CompositeSource`, `extract.py`, `pipeline.py` and their
-   tests. No behaviour change; `score.py` keeps reading the same values
-   through the new envelope. This is the biggest diff and the least
-   interesting, and isolating it keeps the review tractable.
+1. **`Post` → `Item`.** The discriminated union, the `Topic.item_ids` rename,
+   plus mechanical updates to Lemmy, Reddit, `CompositeSource`, `extract.py`,
+   `consolidate.py`, `sentiment.py`, `pipeline.py` and their tests. No
+   behaviour change; `score.py` keeps reading the same values through the new
+   envelope. This is the biggest diff and the least interesting, and isolating
+   it keeps the review tractable.
 2. **Scorer registry.** Move the existing maths into `scorers/lemmy.py` and
    `scorers/reddit.py`, reduce `score.py` to the coordinator, add the
-   combination and the content-bearing filter. Still no new platform — with
-   one content-bearing source enabled, output should be identical to phase 1
-   apart from the corroboration factor being `1.0` throughout. That
-   equivalence is worth asserting as a test.
+   combination and the content-bearing filter, and extend the sentiment prompt
+   to name the platform count. Still no new platform — with one content-bearing
+   source enabled, scoring output should be identical to phase 1 apart from the
+   corroboration factor being `1.0` throughout. That equivalence is worth
+   asserting as a test.
 3. **Persistence.** `topic_scores`, `previous_sub_scores`, the schema guard,
    and deleting `previous_scores`.
 4. **`WikipediaSource`.** The new source, config keys, registry entries, and
