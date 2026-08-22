@@ -6,9 +6,13 @@
 ## Purpose
 
 The project has one working platform. Lemmy runs; Reddit is implemented and
-tested but unusable, because Reddit's Data API is no longer self-serve and
-`client_id`/`client_secret` cannot be obtained (see the 2026-08-18 spec).
+unit-tested but unusable, because Reddit's Data API is no longer self-serve
+and `client_id`/`client_secret` cannot be obtained (see the 2026-08-18 spec).
 `CompositeSource` has therefore never fanned out across two live platforms.
+
+This spec also **removes** `RedditSource`. That reverses the 2026-08-18
+decision to keep it "intact and working for if or when access is granted",
+because the cost of that decision changes here — see "Removing Reddit" below.
 
 This spec adds Wikimedia pageviews as a second working source. Doing so forces
 a change the project has been deferring: Wikimedia has no comments, no
@@ -25,6 +29,8 @@ distribution-free, which is why it sidesteps the magnitude problem entirely.
 
 ## Scope
 
+- Removing `RedditSource`, its tests, its configuration, and the `praw`
+  dependency.
 - `WikipediaSource`, fetching the Wikimedia pageviews top-articles listing.
 - Replacing `Post` with `Item`, carrying a discriminated union of
   platform-specific metrics models, and renaming `Topic.post_ids` to
@@ -66,12 +72,51 @@ model gains a `context` property, delegated through `Item.context`:
 
 | Platform | `context` |
 |---|---|
-| Lemmy, Reddit | the channel, e.g. `"technology@lemmy.world"` |
+| Lemmy | the channel, e.g. `"technology@lemmy.world"` |
 | Wikipedia | `f"{views:,} views"` |
 
 So the extraction prompt line becomes
 `f"- id={item.source_id} | {item.context} | {item.title}"`, keeping the same
 shape while giving each platform a hint that is meaningful for it.
+
+## Removing Reddit
+
+The 2026-08-18 spec kept `RedditSource` on the reasoning that it was written,
+tested, and cost nothing to leave in place. Two of those three stop being true
+here.
+
+**It is not tested in the way that matters.** `tests/test_sources_reddit.py`
+holds ten tests against hand-built `StubReddit`, `StubListing` and
+`StubSubmission` fakes — mapping, dedup across hot and rising, budget limits,
+body truncation, per-subreddit failure isolation. As unit tests they are
+sound. But no run has ever confirmed the stubs resemble PRAW: they encode
+assumptions about `submission.subreddit.display_name`, `created_utc` and
+`num_comments` that nothing has checked against a real response. The suite
+proves internal consistency and nothing else, which is worse than no coverage
+in one specific way — it looks like coverage.
+
+**It stops costing nothing.** Per-platform scoring means Reddit no longer
+rides along on Lemmy's scorer. Keeping it through this spec costs a
+`RedditMetrics` union member, a `scorers/reddit.py` that is a hand-copied
+duplicate of the Lemmy algorithm, a test file for that duplicate, entries in
+three registries, and a credential branch in `_check_sources`. This spec would
+not preserve Reddit; it would *port* Reddit into an architecture it cannot
+run in.
+
+**Preservation was the point, and porting defeats it.** The value of keeping
+the code was that it would be ready if access were granted. By the end of this
+spec that code is `Item`-shaped, metrics-union-shaped and scorer-registry-
+shaped — rewritten throughout against an API still nobody has tested it
+against. Access being granted would mean verifying every line against real
+PRAW responses regardless, so the ported code saves no work. `git show`
+recovers the original just as well, and dropping it removes `praw>=7.8` — a
+23.8 MB sdist — from the dependency tree.
+
+The one real loss: Lemmy becomes the only content-bearing platform, so nothing
+exercises two content-bearing sources corroborating each other. That path
+matters when a second one lands (YouTube, Hacker News), but it does not exist
+today either, and covering it through Reddit's unverified stubs would be
+theatre rather than protection.
 
 ## Platform selection
 
@@ -130,15 +175,6 @@ class LemmyMetrics(BaseModel):
     channel: str
     created_at: datetime          # when the post was made
 
-class RedditMetrics(BaseModel):
-    model_config = STRICT
-    platform: Literal["reddit"] = "reddit"
-    content_bearing: ClassVar[bool] = True
-    score: int
-    comment_count: int
-    channel: str
-    created_at: datetime
-
 class WikipediaMetrics(BaseModel):
     model_config = STRICT
     platform: Literal["wikipedia"] = "wikipedia"
@@ -148,7 +184,7 @@ class WikipediaMetrics(BaseModel):
     measured_on: date             # the day the measurement covers
 
 Metrics = Annotated[
-    LemmyMetrics | RedditMetrics | WikipediaMetrics,
+    LemmyMetrics | WikipediaMetrics,
     Field(discriminator="platform"),
 ]
 
@@ -274,9 +310,9 @@ Given, for each topic, that platform's items within it, return one score in
 topics. Normalising within the platform is what makes the outputs comparable
 between platforms; it is the whole mechanism.
 
-- **`lemmy.py` / `reddit.py`** keep today's maths verbatim: upvote velocity,
-  comment velocity, channel spread and rank delta, min-max normalised, blended
-  as `(1 - rank_delta) * base + rank_delta * delta`.
+- **`lemmy.py`** keeps today's maths verbatim: upvote velocity, comment
+  velocity, channel spread and rank delta, min-max normalised, blended as
+  `(1 - rank_delta) * base + rank_delta * delta`.
 - **`wikipedia.py`** scores position and delta only. Its inputs carry no
   comments, no channel, and no per-item age, so velocity is undefined.
 
@@ -309,8 +345,8 @@ The existing weights (`upvote_velocity`, `comment_velocity`, `channel_spread`,
 `rank_delta`) describe *within-platform* maths and move with the scorers that
 use them; `wikipedia.py` reads only `rank_delta` and ignores the rest.
 `corroboration_bonus` is the one weight the coordinator itself uses. The model
-stays a single `ScoreWeights` rather than fragmenting per platform — there is
-no evidence yet that Lemmy and Reddit want different values, and splitting it
+stays a single `ScoreWeights` rather than fragmenting per platform — with one
+content-bearing scorer there is nothing to differentiate, and splitting it
 speculatively would add configuration surface for nobody.
 
 ## Score combination
@@ -456,20 +492,26 @@ Per `CLAUDE.md`, the implementation plan's test code goes through the
 
 ## Implementation sequence
 
-This spec is larger than the previous two, so the plan should land it in four
+This spec is larger than the previous two, so the plan should land it in five
 phases, each leaving the four Definition of Done commands passing:
 
+0. **Remove Reddit.** `sources/reddit.py`, `tests/test_sources_reddit.py`, the
+   `reddit` entries in `KNOWN_SOURCES` and `BUILDERS`, the credential settings
+   and their `_check_sources` branch, the `praw` dependency, and the README
+   and `.env.example` sections. First rather than last: every later phase is
+   smaller for it, and the alternative is porting Reddit through four phases
+   in order to delete it.
 1. **`Post` → `Item`.** The discriminated union, the `Topic.item_ids` rename,
-   plus mechanical updates to Lemmy, Reddit, `CompositeSource`, `extract.py`,
+   plus mechanical updates to Lemmy, `CompositeSource`, `extract.py`,
    `consolidate.py`, `sentiment.py`, `pipeline.py` and their tests. No
    behaviour change; `score.py` keeps reading the same values through the new
    envelope. This is the biggest diff and the least interesting, and isolating
    it keeps the review tractable.
-2. **Scorer registry.** Move the existing maths into `scorers/lemmy.py` and
-   `scorers/reddit.py`, reduce `score.py` to the coordinator, add the
-   combination and the content-bearing filter, and extend the sentiment prompt
-   to name the platform count. Still no new platform — with one content-bearing
-   source enabled, scoring output should be identical to phase 1 apart from the
+2. **Scorer registry.** Move the existing maths into `scorers/lemmy.py`,
+   reduce `score.py` to the coordinator, add the combination and the
+   content-bearing filter, and extend the sentiment prompt to name the
+   platform count. Still no new platform — with one content-bearing source
+   enabled, scoring output should be identical to phase 1 apart from the
    corroboration factor being `1.0` throughout. That equivalence is worth
    asserting as a test.
 3. **Persistence.** `topic_scores`, `previous_sub_scores`, the schema guard,
@@ -477,7 +519,8 @@ phases, each leaving the four Definition of Done commands passing:
 4. **`WikipediaSource`.** The new source, config keys, registry entries, and
    documentation.
 
-Phases 1–3 are refactors with no user-visible change; phase 4 is the feature.
+Phase 0 removes a platform nobody can run; phases 1–3 are refactors with no
+user-visible change; phase 4 is the feature.
 If the work is interrupted, any phase boundary is a safe stopping point.
 
 ## Risks

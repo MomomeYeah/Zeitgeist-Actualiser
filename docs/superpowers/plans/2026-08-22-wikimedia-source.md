@@ -4,7 +4,7 @@
 
 **Goal:** Add Wikimedia pageviews as a second working platform, replacing the single shared trend scorer with per-platform scoring strategies that normalise within their own platform before combination.
 
-**Architecture:** `Post` becomes `Item`, an envelope carrying a Pydantic discriminated union of platform-specific metrics, so no field has to mean two different things across platforms. Trend scoring moves out of `analysis/score.py` into a registry of per-platform scorers under `analysis/scorers/`, each returning `[0, 1]` normalised within its own platform; `score.py` shrinks to a coordinator that dispatches, filters, and combines with a corroboration bonus.
+**Architecture:** `RedditSource` is removed first — its API is not self-serve, so it has never run, and per-platform scoring would otherwise mean porting it into an architecture it cannot execute in. `Post` then becomes `Item`, an envelope carrying a Pydantic discriminated union of platform-specific metrics, so no field has to mean two different things across platforms. Trend scoring moves out of `analysis/score.py` into a registry of per-platform scorers under `analysis/scorers/`, each returning `[0, 1]` normalised within its own platform; `score.py` shrinks to a coordinator that dispatches, filters, and combines with a corroboration bonus.
 
 **Tech Stack:** Python 3.14, Pydantic v2, pydantic-settings, httpx, SQLite, pytest, ruff, ty, uv.
 
@@ -21,12 +21,18 @@
 
 ## File Structure
 
+**Phase 0 — remove Reddit**
+| File | Responsibility |
+|---|---|
+| `zeitgeist/sources/reddit.py` | deleted |
+| `tests/test_sources_reddit.py` | deleted |
+| `zeitgeist/config.py`, `pyproject.toml` | drop reddit settings and the `praw` dependency |
+
 **Phase 1 — `Post` → `Item`**
 | File | Responsibility |
 |---|---|
 | `zeitgeist/models.py` | `Item`, the `Metrics` union, `Topic.item_ids` |
 | `zeitgeist/sources/lemmy.py` | emit `Item` with `LemmyMetrics` |
-| `zeitgeist/sources/reddit.py` | emit `Item` with `RedditMetrics` |
 | `zeitgeist/sources/{base,composite}.py` | type updates only |
 | `zeitgeist/analysis/extract.py` | prompt uses `item.context`, not `post.channel` |
 | `zeitgeist/analysis/consolidate.py` | build `Topic(item_ids=...)` |
@@ -38,7 +44,7 @@
 |---|---|
 | `zeitgeist/analysis/scorers/base.py` | `TrendScorer` protocol, `ScoreWeights`, `normalise` |
 | `zeitgeist/analysis/scorers/lemmy.py` | velocity + spread + delta maths (moved) |
-| `zeitgeist/analysis/scorers/reddit.py` | same maths over `RedditMetrics` |
+| `zeitgeist/analysis/scorers/wikipedia.py` | rank + delta scoring |
 | `zeitgeist/analysis/scorers/__init__.py` | `SCORERS` registry, `build_scorer` |
 | `zeitgeist/analysis/score.py` | coordinator: group, dispatch, filter, combine |
 
@@ -51,8 +57,146 @@
 | File | Responsibility |
 |---|---|
 | `zeitgeist/sources/wikipedia.py` | pageviews fetch, day walk-back, structural filtering |
-| `zeitgeist/analysis/scorers/wikipedia.py` | rank + delta scoring |
 | `zeitgeist/config.py`, `.env.example`, `README.md` | configuration and docs |
+
+---
+
+## Phase 0 — Remove Reddit
+
+### Task 0: Delete `RedditSource` and the `praw` dependency
+
+**Files:**
+- Delete: `zeitgeist/sources/reddit.py`, `tests/test_sources_reddit.py`
+- Modify: `zeitgeist/config.py`, `zeitgeist/sources/__init__.py`, `pyproject.toml`, `.env.example`, `README.md`
+- Test: `tests/test_config.py`, `tests/test_sources_composite.py`, `tests/conftest.py`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `KNOWN_SOURCES == ("lemmy",)`; `BUILDERS` with one entry; `Settings` without `reddit_client_id`, `reddit_client_secret`, `reddit_user_agent` or `subreddits`.
+
+Reddit's Data API is not self-serve, so this source has never run and its tests only ever exercised hand-built PRAW stubs that nothing has verified against a real response. Per-platform scoring would otherwise require porting it into the new architecture — a duplicated scorer plus its own test file — to keep code that cannot execute. `git show HEAD~1:zeitgeist/sources/reddit.py` recovers it if access is ever granted, and it would need re-verifying against live PRAW regardless.
+
+- [ ] **Step 1: Record what the removal breaks**
+
+This is a deletion task, so it needs no new test: the red step is the existing
+suite failing until every Reddit reference is gone together.
+
+```bash
+uv run pytest -q
+```
+
+Record the failing list. Step 3 is complete when it is empty. Do **not** add a
+`test_reddit_is_no_longer_a_known_source` — `test_config.py:124`'s
+`test_unknown_source_is_rejected_with_the_valid_names` already covers an
+unrecognised name through the identical code path, and a test asserting one
+specific removed platform stays removed can only fail on a deliberate decision
+to bring it back.
+
+- [ ] **Step 2: Confirm the failures are Reddit-shaped**
+
+Expected failures, all from Reddit references rather than from real breakage:
+`tests/test_sources_reddit.py` in full, plus `test_config.py`'s Reddit
+credential and `subreddits` tests, and any test naming `reddit` in `SOURCES`.
+
+- [ ] **Step 3: Delete Reddit**
+
+```bash
+git rm zeitgeist/sources/reddit.py tests/test_sources_reddit.py
+```
+
+In `zeitgeist/config.py`:
+
+```python
+KNOWN_SOURCES: tuple[str, ...] = ("lemmy",)
+```
+
+Delete the `reddit_client_id`, `reddit_client_secret`, `reddit_user_agent` and `subreddits` fields from `Settings`, delete the entire `if "reddit" in self.sources:` credential branch from `_check_sources`, and remove `"subreddits"` from the `_split_csv` validator's field list (leaving `"sources"`).
+
+In `zeitgeist/sources/__init__.py`, drop the `RedditSource` import and its `BUILDERS` entry.
+
+In `pyproject.toml`, delete the `"praw>=7.8"` dependency, then:
+
+```bash
+uv sync
+```
+
+This rewrites `uv.lock`, dropping `praw` and `prawcore`. Commit the lockfile — the Stop hook and CI both run `uv sync --locked`, so a stale lockfile fails immediately.
+
+In `tests/conftest.py`, remove `"SUBREDDITS"`, `"REDDIT_CLIENT_ID"`, `"REDDIT_CLIENT_SECRET"` and `"REDDIT_USER_AGENT"` from `_SETTINGS_ENV_VARS`.
+
+In `tests/test_config.py`, delete the Reddit credential tests, the `subreddits`
+CSV tests, and the `reddit_client_id`/`reddit_client_secret` defaults in the
+`_settings()` helper. Four `SOURCES` tests still name `reddit` and now raise
+`ValidationError: Unknown source(s): reddit` — **re-point them, do not delete
+them**. `test_sources_parse_from_a_real_env_var` is, once its `subreddits`
+twin is gone, the only test exercising `Annotated[list[str], NoDecode]`, which
+is what stops pydantic-settings JSON-decoding a plain CSV env value and raising
+`SettingsError` before the validator runs:
+
+```python
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("lemmy", ["lemmy"]),
+        (" lemmy ", ["lemmy"]),
+        ("LEMMY", ["lemmy"]),
+        ("lemmy,,", ["lemmy"]),
+        (["lemmy"], ["lemmy"]),
+    ],
+)
+def test_sources_parse_from_env_strings(raw, expected):
+    """SOURCES arrives from .env as one string, and the names are registry
+    keys, so case and stray separators must not decide whether a platform runs.
+    """
+    assert _settings(sources=raw).sources == expected
+
+
+def test_sources_parse_from_a_real_env_var(monkeypatch):
+    """pydantic-settings JSON-decodes list-typed fields before validators run
+    when the value comes from a real env var, so a plain CSV string here
+    raises SettingsError unless the field opts out via NoDecode. The
+    kwargs-based tests above go through InitSettingsSource, which never
+    JSON-decodes, so they cannot catch a regression here.
+    """
+    monkeypatch.setenv("SOURCES", "lemmy")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
+    assert Settings(_env_file=None).sources == ["lemmy"]
+```
+
+The multi-name CSV case — the only shape where the split can be told apart
+from a no-op — returns in Task 10 once a second source exists.
+
+In `tests/test_sources_composite.py`, change every `"reddit"` platform in
+`_post(...)` calls **and in assertion literals** to `"wikipedia"` — including
+`test_combines_posts_from_every_source`'s `platforms == {"lemmy", "reddit"}`,
+which is not a `_post(...)` call and is easily missed. At this point
+`Post.platform` is still a plain `str`, so any name validates; choosing
+`wikipedia` means these tests describe the pairing the project is heading for,
+and Task 2's `_item` helper can then cover them without a second rename.
+
+Two builder tests cannot be re-pointed this way, because they construct real
+`Settings`: `test_build_source_preserves_the_configured_order` uses
+`sources="lemmy,reddit"`, which now fails validation, and
+`test_build_source_builds_only_the_enabled_sources` degenerates to a tautology
+with one registry entry. **Delete both here and restore them in Task 10**,
+where a second real source exists — Task 10's step says so explicitly.
+
+In `.env.example`, delete `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_USER_AGENT` and `SUBREDDITS`. In `README.md`, delete the paragraph beginning "Reddit is implemented and tested but ships disabled" through the `SOURCES=lemmy,reddit` example and the sentence after it.
+
+- [ ] **Step 4: Run the whole gate**
+
+```bash
+uv run ruff check . && uv run ruff format --check . && uv run ty check && uv run pytest
+```
+
+Expected: all four PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A
+git commit -m "Remove RedditSource and the praw dependency"
+```
 
 ---
 
@@ -63,12 +207,13 @@ Behaviour-preserving throughout. At the end of Phase 1 the pipeline produces ide
 ### Task 1: The `Item` model and metrics union
 
 **Files:**
-- Modify: `zeitgeist/models.py`
+- Modify: `zeitgeist/models.py`, `tests/conftest.py`
+- Create: `tests/fixtures/items.json` (replacing `tests/fixtures/posts.json`)
 - Test: `tests/test_models.py`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `Item`, `LemmyMetrics`, `RedditMetrics`, `Metrics`, `Topic.item_ids`. `Item.platform -> str`, `Item.context -> str`, `Item.content_bearing -> bool`. Metrics models expose `.platform: str`, `.context: str`, and `.content_bearing: ClassVar[bool]`.
+- Produces: `Item`, `LemmyMetrics`, `WikipediaMetrics`, `Metrics`, `Topic.item_ids`, and `conftest.sample_items` returning `list[Item]`. `Item.platform -> str`, `Item.context -> str`, `Item.content_bearing -> bool`. Metrics models expose `.platform: str`, `.context: str`, and `.content_bearing: ClassVar[bool]`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -78,7 +223,7 @@ Add to `tests/test_models.py`:
 import pytest
 from pydantic import ValidationError
 
-from zeitgeist.models import Item, LemmyMetrics, RedditMetrics, Topic
+from zeitgeist.models import Item, LemmyMetrics, Topic, WikipediaMetrics
 
 
 def _lemmy_item(**overrides) -> Item:
@@ -112,24 +257,25 @@ def test_item_context_is_the_channel_for_lemmy():
 
 def test_metrics_union_dispatches_on_platform_discriminator():
     """A raw dict must deserialise to the right concrete metrics class.
-    This is what makes the JSON checkpoints round-trip."""
+    This is what makes the JSON checkpoints round-trip: without the
+    discriminator Pydantic picks whichever member validates first, so a
+    Wikipedia measurement could come back as something else entirely."""
     item = Item.model_validate(
         {
-            "source_id": "t3_x",
-            "title": "A post",
-            "permalink": "https://reddit.com/r/x/1",
+            "source_id": "en.wikipedia:Cats:2026-08-20",
+            "title": "Cats",
+            "permalink": "https://en.wikipedia.org/wiki/Cats",
             "fetched_at": "2026-08-16T12:00:00Z",
             "metrics": {
-                "platform": "reddit",
-                "score": 99,
-                "comment_count": 5,
-                "channel": "r/technology",
-                "created_at": "2026-08-16T09:00:00Z",
+                "platform": "wikipedia",
+                "views": 411486,
+                "rank": 4,
+                "measured_on": "2026-08-20",
             },
         }
     )
-    assert isinstance(item.metrics, RedditMetrics)
-    assert item.metrics.score == 99
+    assert isinstance(item.metrics, WikipediaMetrics)
+    assert item.metrics.rank == 4
 
 
 def test_metrics_union_rejects_an_unknown_platform():
@@ -185,7 +331,7 @@ _ENGAGEMENT_FIELDS = {"platform", "score", "comment_count", "channel", "created_
             },
         ),
         (LemmyMetrics, _ENGAGEMENT_FIELDS),
-        (RedditMetrics, _ENGAGEMENT_FIELDS),
+        (WikipediaMetrics, {"platform", "views", "rank", "measured_on"}),
     ],
 )
 def test_models_carry_exactly_the_specified_fields(model, want):
@@ -226,7 +372,7 @@ Expected: FAIL with `ImportError: cannot import name 'Item' from 'zeitgeist.mode
 Replace the `Post` class in `zeitgeist/models.py`:
 
 ```python
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Annotated, ClassVar, Literal
 
@@ -256,28 +402,39 @@ class LemmyMetrics(BaseModel):
         return self.channel
 
 
-class RedditMetrics(BaseModel):
-    """Engagement as Reddit reports it."""
+class WikipediaMetrics(BaseModel):
+    """Attention as Wikimedia pageviews report it.
+
+    Declared here, alongside Lemmy, even though no source produces it until
+    Task 9: `Metrics` needs two members for the discriminator to be a union
+    at all, and this is the second content shape the envelope exists for.
+
+    No comments, no communities, and no per-item creation date — an article
+    is years old while its spike is one day. `measured_on` is the day the
+    measurement covers, which is the only temporal fact this platform
+    actually supplies.
+    """
 
     model_config = STRICT
 
-    platform: Literal["reddit"] = "reddit"
-    content_bearing: ClassVar[bool] = True
+    platform: Literal["wikipedia"] = "wikipedia"
+    # No body text, so a Wikipedia-only topic gives the sentiment stage
+    # nothing to judge. The coordinator drops such topics.
+    content_bearing: ClassVar[bool] = False
 
-    score: int
-    comment_count: int
-    channel: str
-    created_at: datetime
+    views: int
+    rank: int
+    measured_on: date
 
     @property
     def context(self) -> str:
-        return self.channel
+        return f"{self.views:,} views"
 
 
 # Discriminated on `platform`, so a checkpoint dict deserialises back to the
 # concrete class rather than to whichever union member happens to validate.
 Metrics = Annotated[
-    LemmyMetrics | RedditMetrics,
+    LemmyMetrics | WikipediaMetrics,
     Field(discriminator="platform"),
 ]
 
@@ -315,6 +472,84 @@ class Item(BaseModel):
         return self.metrics.content_bearing
 ```
 
+**`tests/conftest.py` must change in this same step.** Its line 7 is
+`from zeitgeist.models import Post` at module scope, and `conftest.py` is
+imported before every test module — so the moment `Post` stops existing,
+pytest cannot collect *any* test file, including `tests/test_models.py`. The
+fixture and its data therefore land here, not in Task 4:
+
+```python
+from zeitgeist.models import Item
+
+
+@pytest.fixture
+def sample_items() -> list[Item]:
+    raw = json.loads((FIXTURES / "items.json").read_text(encoding="utf-8"))
+    return [Item.model_validate(entry) for entry in raw]
+```
+
+`tests/fixtures/posts.json` cannot simply be re-nested. All ten entries are Reddit data — `reddit.com/r/...` permalinks, bare subreddit channels (`cats`, `aww`), scores in the tens of thousands — and `RedditMetrics` no longer exists to validate them against. Relabelling them `lemmy` in place would produce a payload no platform could emit: a Lemmy item with a Reddit URL and a channel that is not instance-qualified, contradicting `test_channel_is_qualified_by_instance_host`. A fixture that mirrors nothing real proves nothing.
+
+So `tests/fixtures/items.json` is written fresh as **realistic Lemmy data**. No test hardcodes a fixture id — they all read `sample_items[n].source_id` — so ids become the `ap_id`-shaped URLs a real Lemmy run produces, matching the `source_id == permalink` property below:
+
+```json
+{
+  "source_id": "https://lemmy.world/post/1801",
+  "title": "My cat learned to open the fridge",
+  "body_excerpt": null,
+  "permalink": "https://lemmy.world/post/1801",
+  "fetched_at": "2026-08-16T12:00:00Z",
+  "metrics": {
+    "platform": "lemmy",
+    "score": 482,
+    "comment_count": 37,
+    "channel": "cats@lemmy.world",
+    "created_at": "2026-08-16T09:00:00Z"
+  }
+}
+```
+
+Four properties the rewritten fixture must hold, each mirroring something the real Lemmy source produces:
+
+- **`source_id` equals `permalink`** — the Lemmy source sets both from `ap_id` (see `_to_item`), so a fixture where they differ tests a shape the source cannot emit.
+- **Channels are instance-qualified** (`cats@lemmy.world`), which is what `_channel` builds and what `channel_spread` counts.
+- **Scores in the hundreds, comments in the tens** — Lemmy's actual range. The Reddit values (48,200 upvotes) would make any velocity assertion meaningless against real data.
+- **Spread across at least four distinct channels**, so `channel_spread` has a range to normalise over.
+
+Keep the titles from the existing fixture: they are varied, plausible, and several tests read them.
+
+Rename every `sample_posts` usage across the suite to `sample_items`.
+
+`git rm tests/test_sources_reddit.py` in Task 0 took
+`test_fixture_meets_the_preconditions_later_tests_assume` with it — the only
+guard on the shared fixture's shape. Restore it in `tests/test_sources_lemmy.py`,
+now enforcing the four properties above:
+
+```python
+def test_fixture_meets_the_preconditions_later_tests_assume(sample_items):
+    """items.json is shared by the extract, pipeline and scoring suites,
+    which assume a spread of channels and unique ids. Trimming it must fail
+    loudly here rather than quietly flattening channel_spread everywhere.
+
+    source_id == permalink because the Lemmy source sets both from ap_id
+    (see _to_item), so a fixture where they differ describes a payload no
+    source can emit.
+    """
+    assert len(sample_items) >= 10
+    assert len({item.metrics.channel for item in sample_items}) >= 4
+    assert all("@" in item.metrics.channel for item in sample_items)
+    assert all(item.metrics.created_at.tzinfo is not None for item in sample_items)
+    assert len({item.source_id for item in sample_items}) == len(sample_items)
+    assert all(item.source_id == item.permalink for item in sample_items)
+```
+
+**Re-point the other `Topic(...)` constructions.** `extra="forbid"` means a
+stray `post_ids=` raises rather than being ignored, and four helper bodies
+outside `tests/test_models.py` build topics: `tests/test_media_brief.py:44`,
+`tests/test_analysis_sentiment.py:14` and `:33`, and `tests/test_store.py:11`.
+None asserts on the field, so the rename is mechanical — but missing one
+fails the suite in a file no later task lists.
+
 Rename the field on `Topic`:
 
 ```python
@@ -337,7 +572,9 @@ class Topic(BaseModel):
 uv run pytest tests/test_models.py -v
 ```
 
-Expected: PASS. Other test files will still fail — that is Task 2 onward.
+Expected: PASS. Other test files still fail — that is Task 2 onward — but they
+must **collect**: if pytest reports a collection error rather than assertion
+failures, `conftest.py` still references `Post` somewhere.
 
 - [ ] **Step 5: Commit**
 
@@ -351,11 +588,11 @@ git commit -m "Replace Post with Item carrying a discriminated metrics union"
 ### Task 2: Sources emit `Item`
 
 **Files:**
-- Modify: `zeitgeist/sources/base.py`, `zeitgeist/sources/lemmy.py`, `zeitgeist/sources/reddit.py`, `zeitgeist/sources/composite.py`
-- Test: `tests/test_sources_lemmy.py`, `tests/test_sources_reddit.py`, `tests/test_sources_composite.py`
+- Modify: `zeitgeist/sources/base.py`, `zeitgeist/sources/lemmy.py`, `zeitgeist/sources/composite.py`
+- Test: `tests/test_sources_lemmy.py`, `tests/test_sources_composite.py`
 
 **Interfaces:**
-- Consumes: `Item`, `LemmyMetrics`, `RedditMetrics` from Task 1.
+- Consumes: `Item`, `LemmyMetrics` from Task 1.
 - Produces: `Source.fetch(limit: int) -> list[Item]`. `CompositeSource.fetch` dedups on `(item.platform, item.source_id)`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -373,23 +610,32 @@ Keep the file's existing helpers (`_view(ap_id, title, ...)`, `StubClient` keyed
 In `tests/test_sources_composite.py`, convert the `_post` helper into `_item`, which every test in the file then uses unchanged:
 
 ```python
-def _item(platform: str, source_id: str, channel: str = "cats") -> Item:
+def _item(platform: str, source_id: str, channel: str = "cats@lemmy.world") -> Item:
     """Dispatches on platform so each item carries its own metrics class.
     Every test in this file builds items through here, so the union is
     exercised by the whole file rather than by one dedicated test.
+
+    The two branches take different keyword sets on purpose: WikipediaMetrics
+    has no score, comments or channel, and STRICT would reject them.
     """
-    metrics_class = {"lemmy": LemmyMetrics, "reddit": RedditMetrics}[platform]
+    metrics: Metrics
+    if platform == "lemmy":
+        metrics = LemmyMetrics(
+            score=10,
+            comment_count=2,
+            channel=channel,
+            created_at=datetime(2026, 8, 16, 9, 0, tzinfo=UTC),
+        )
+    elif platform == "wikipedia":
+        metrics = WikipediaMetrics(views=1000, rank=7, measured_on=date(2026, 8, 16))
+    else:
+        raise AssertionError(f"no metrics class for platform {platform!r}")
     return Item(
         source_id=source_id,
         title=f"Post {source_id}",
         permalink=f"https://example.com/{source_id}",
         fetched_at=datetime(2026, 8, 16, 12, 0, tzinfo=UTC),
-        metrics=metrics_class(
-            score=10,
-            comment_count=2,
-            channel=channel,
-            created_at=datetime(2026, 8, 16, 9, 0, tzinfo=UTC),
-        ),
+        metrics=metrics,
     )
 ```
 
@@ -450,34 +696,12 @@ def _to_item(view: dict[str, Any], fetched_at: datetime) -> Item:
 
 Change `fetch`'s signature to `-> list[Item]`, its `seen: dict[str, Item]`, and its call from `_to_post(...)` to `_to_item(...)`. Import `Item, LemmyMetrics` from `zeitgeist.models`.
 
-In `zeitgeist/sources/reddit.py`, apply the same shape:
-
-```python
-def _to_item(submission: Any, fetched_at: datetime) -> Item:
-    body = (getattr(submission, "selftext", "") or "").strip()
-    return Item(
-        source_id=submission.id,
-        title=submission.title,
-        body_excerpt=body[:BODY_EXCERPT_CHARS] or None,
-        permalink=f"https://reddit.com{submission.permalink}",
-        fetched_at=fetched_at,
-        metrics=RedditMetrics(
-            score=submission.score,
-            comment_count=submission.num_comments,
-            channel=f"r/{submission.subreddit.display_name}",
-            created_at=datetime.fromtimestamp(submission.created_utc, tz=UTC),
-        ),
-    )
-```
-
-Match the existing `reddit.py` mapping exactly — read it before editing and preserve whatever field names it already uses; only the destination changes.
-
 In `zeitgeist/sources/composite.py`, change the `Post` import to `Item`, `fetch` to `-> list[Item]`, and `seen: dict[tuple[str, str], Item]`. The dedup key `(post.platform, post.source_id)` still works via the `Item.platform` property — rename the loop variable to `item` for clarity.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-uv run pytest tests/test_sources_lemmy.py tests/test_sources_reddit.py tests/test_sources_composite.py -v
+uv run pytest tests/test_sources_lemmy.py tests/test_sources_composite.py -v
 ```
 
 Expected: PASS.
@@ -485,7 +709,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add zeitgeist/sources tests/test_sources_lemmy.py tests/test_sources_reddit.py tests/test_sources_composite.py
+git add zeitgeist/sources tests/test_sources_lemmy.py tests/test_sources_composite.py
 git commit -m "Emit Item from every source"
 ```
 
@@ -531,6 +755,45 @@ def test_prompt_renders_the_id_context_and_title_on_one_line():
     assert "- id=p999 | memes@lemmy.world | Test Lemmy post" in prompt
 ```
 
+Two existing tests in `tests/test_analysis_extract.py` also break and must be re-pointed — neither survives the move of `channel` into `metrics`:
+
+```python
+def test_prompt_carries_the_title_and_the_id_the_model_must_echo(sample_items):
+    """The model keys its answers by item id, so dropping the id from the
+    prompt makes every assignment unmatchable and silently yields no tags.
+    """
+    item = sample_items[0]
+    provider = FakeLLMProvider([TagExtraction(assignments=[])])
+    extract_tags([item], provider, batch_size=40)
+
+    prompt = provider.calls[0].prompt
+    assert item.title in prompt
+    assert item.source_id in prompt
+    assert item.metrics.channel in prompt
+
+
+def test_channel_rendered_without_platform_prefix():
+    """Platform-neutral context rendering: Lemmy items show as
+    memes@lemmy.world, not r/memes@lemmy.world. A platform-specific prefix
+    would be misleading now that context is shared across platforms.
+    """
+    item = Item(
+        source_id="p1",
+        title="A post",
+        permalink="https://lemmy.world/post/1",
+        fetched_at=datetime(2026, 8, 16, 12, 0, tzinfo=UTC),
+        metrics=LemmyMetrics(
+            score=1,
+            comment_count=1,
+            channel="memes@lemmy.world",
+            created_at=datetime(2026, 8, 16, 9, 0, tzinfo=UTC),
+        ),
+    )
+
+    assert "| memes@lemmy.world |" in _build_prompt([item])
+    assert "r/memes" not in _build_prompt([item])
+```
+
 In `tests/test_analysis_consolidate.py`, change `topics[0].post_ids` to `topics[0].item_ids` in all four assertions.
 
 In `tests/test_analysis_sentiment.py`:
@@ -552,7 +815,7 @@ def test_prompt_reports_the_item_count():
 uv run pytest tests/test_analysis_extract.py tests/test_analysis_consolidate.py tests/test_analysis_sentiment.py -v
 ```
 
-Expected: FAIL — `sample_items` fixture missing, `item_ids` unknown.
+Expected: FAIL — `Item` has no `channel` attribute, and `Topic` has no `post_ids`.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -669,10 +932,12 @@ and `raw_cs = [float(len({item.metrics.channel for item in group})) for _, group
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-uv run pytest tests/test_analysis_extract.py tests/test_analysis_consolidate.py tests/test_analysis_sentiment.py tests/test_analysis_score.py -v
+uv run pytest tests/test_analysis_extract.py tests/test_analysis_consolidate.py tests/test_analysis_sentiment.py -v
 ```
 
-Expected: PASS.
+Expected: PASS. `tests/test_analysis_score.py` is deliberately **not** in this
+command — it still builds `Post(...)` and calls `score_topics(..., previous_scores={})`,
+and Task 6 is what rewrites it.
 
 - [ ] **Step 5: Commit**
 
@@ -686,13 +951,12 @@ git commit -m "Read Item and item_ids through the analysis stages"
 ### Task 4: Wire the pipeline, store, CLI and fixtures
 
 **Files:**
-- Modify: `zeitgeist/pipeline.py`, `zeitgeist/store.py`, `zeitgeist/cli.py`, `tests/conftest.py`
-- Rename: `tests/fixtures/posts.json` → `tests/fixtures/items.json`
+- Modify: `zeitgeist/pipeline.py`, `zeitgeist/store.py`, `zeitgeist/cli.py`
 - Test: `tests/test_pipeline.py`, `tests/test_store.py`, `tests/test_cli.py`
 
 **Interfaces:**
 - Consumes: everything from Tasks 1–3.
-- Produces: ingest checkpoint at `items.json`; `Store.finish_run(run_id, status, item_count)`; `conftest.sample_items` fixture returning `list[Item]`.
+- Produces: ingest checkpoint at `items.json`; `Store.finish_run(run_id, status, item_count)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -716,24 +980,13 @@ def test_the_ingest_checkpoint_round_trips_through_item(settings, sample_items):
     raw = json.loads((run_dir / "items.json").read_text(encoding="utf-8"))
     restored = [Item.model_validate(entry) for entry in raw]
 
-    assert [i.source_id for i in restored] == ["p01", "p02", "p03"]
-    assert all(isinstance(i.metrics, RedditMetrics) for i in restored)
-    assert restored[0].metrics.channel == "cats"
-    assert restored[0].metrics.score == 48200
+    assert [i.source_id for i in restored] == [i.source_id for i in items]
+    assert all(isinstance(i.metrics, LemmyMetrics) for i in restored)
+    assert restored[0].metrics.channel == "cats@lemmy.world"
+    assert restored[0].metrics.score == 482
 ```
 
-In `tests/test_store.py`:
-
-```python
-def test_finish_run_records_the_item_count(tmp_path):
-    store = Store(tmp_path / "z.db")
-    store.init_schema()
-    store.start_run("r1")
-
-    store.finish_run("r1", status="ok", item_count=7)
-
-    assert store.run_summary("r1")["item_count"] == 7
-```
+In `tests/test_store.py`, **re-point the existing `test_finish_run_records_the_outcome`** rather than adding a parallel test — it already asserts the count round-trips, the pre-`finish_run` state, and that `finished_at` is stamped, so a new test would be strictly weaker under a new name. Rename its keyword and dict keys `post_count` → `item_count` in all four places, and rename it to `test_finish_run_records_the_outcome_and_item_count`.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -756,31 +1009,6 @@ def sample_items() -> list[Item]:
     raw = json.loads((FIXTURES / "items.json").read_text(encoding="utf-8"))
     return [Item.model_validate(entry) for entry in raw]
 ```
-
-Restructure every entry in `tests/fixtures/items.json` into the new shape — move `score`, `comment_count`, `channel` and `created_at` under a `metrics` object, moving the existing `platform` key inside it.
-
-**Keep `"platform": "reddit"`.** All ten entries are real Reddit data — `reddit.com/r/...` permalinks, bare subreddit channels like `cats` and `aww`, scores in the tens of thousands. Relabelling them `lemmy` would produce a payload no platform could ever emit: a Lemmy item with a Reddit URL and a channel that is not instance-qualified, contradicting `test_channel_is_qualified_by_instance_host`. A fixture that mirrors nothing real proves nothing.
-
-```json
-{
-  "source_id": "p01",
-  "title": "My cat learned to open the fridge",
-  "body_excerpt": null,
-  "permalink": "https://www.reddit.com/r/cats/comments/p01/",
-  "fetched_at": "2026-08-16T12:00:00Z",
-  "metrics": {
-    "platform": "reddit",
-    "score": 48200,
-    "comment_count": 1420,
-    "channel": "cats",
-    "created_at": "2026-08-16T09:00:00Z"
-  }
-}
-```
-
-Take the real values for each of the ten entries from the existing `tests/fixtures/posts.json` — only the nesting changes, never a value.
-
-Rename every `sample_posts` usage across the suite to `sample_items`.
 
 In `zeitgeist/pipeline.py`: change the `Post` import to `Item`, `posts: list[Item] = []` to `items: list[Item] = []`, both `posts.json` paths to `items.json`, `_read(run_dir / "items.json", Item)`, and `store.finish_run(run_id, status="ok", item_count=len(items))`.
 
@@ -824,19 +1052,20 @@ git commit -m "Wire pipeline, store and CLI onto Item"
 
 ## Phase 2 — Per-platform scorer registry
 
-### Task 5: Scorer protocol, shared helpers, and the Lemmy/Reddit scorers
+### Task 5: Scorer protocol, shared helpers, and both scorers
 
 **Files:**
-- Create: `zeitgeist/analysis/scorers/__init__.py`, `zeitgeist/analysis/scorers/base.py`, `zeitgeist/analysis/scorers/lemmy.py`, `zeitgeist/analysis/scorers/reddit.py`
-- Test: `tests/test_scorers_lemmy.py`, `tests/test_scorers_reddit.py`
+- Create: `zeitgeist/analysis/scorers/__init__.py`, `zeitgeist/analysis/scorers/base.py`, `zeitgeist/analysis/scorers/lemmy.py`, `zeitgeist/analysis/scorers/wikipedia.py`
+- Test: `tests/test_scorers_lemmy.py`, `tests/test_scorers_wikipedia.py`
 
 **Interfaces:**
-- Consumes: `LemmyMetrics`, `RedditMetrics` from Task 1.
+- Consumes: `LemmyMetrics`, `WikipediaMetrics` from Task 1.
 - Produces:
   - `base.ScoreWeights` — fields `upvote_velocity=0.4`, `comment_velocity=0.3`, `channel_spread=0.3`, `rank_delta=0.25`, `corroboration_bonus=0.25`.
   - `base.normalise(values: list[float]) -> list[float]` — min-max; zero range yields zeros.
   - `base.TrendScorer[M]` protocol with `platform: str` and `score(self, per_topic: list[list[M]], previous: list[float | None]) -> list[float]`.
   - `scorers.build_scorer(platform: str, weights: ScoreWeights, now: datetime) -> TrendScorer`.
+  - `LemmyScorer` and `WikipediaScorer`, registered under `"lemmy"` and `"wikipedia"`.
   - `scorers.SCORERS: dict[str, ScorerBuilder]`.
   - **Contract:** the coordinator passes only topics where that platform is present, so no group in `per_topic` is ever empty, and `previous[i]` is `None` when the topic has no history for this platform.
 
@@ -1028,91 +1257,105 @@ def test_registry_rejects_an_unregistered_platform():
         build_scorer("myspace", ScoreWeights(), NOW)
 ```
 
-`scorers/reddit.py` is a hand-copied second implementation of the same algorithm, so the two can drift apart silently. Create `tests/test_scorers_reddit.py`:
+
+Create `tests/test_scorers_wikipedia.py`:
 
 ```python
-"""RedditScorer is a second copy of the Lemmy algorithm over RedditMetrics.
-Nothing else in the suite exercises it: the registry guard checks only that
-the key exists, and the coordinator tests use Lemmy and Wikipedia.
-"""
+from datetime import UTC, date, datetime
 
-from datetime import UTC, datetime
+import pytest
 
 from zeitgeist.analysis.scorers import build_scorer
 from zeitgeist.analysis.scorers.base import ScoreWeights
-from zeitgeist.models import RedditMetrics
+from zeitgeist.models import WikipediaMetrics
 
-NOW = datetime(2026, 8, 16, 12, 0, tzinfo=UTC)
-
-
-def _m(score: int, comments: int, channel: str, age_hours: float) -> RedditMetrics:
-    return RedditMetrics(
-        score=score,
-        comment_count=comments,
-        channel=channel,
-        created_at=datetime.fromtimestamp(NOW.timestamp() - age_hours * 3600, tz=UTC),
-    )
+NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
+DAY = date(2026, 8, 20)
 
 
-def test_faster_upvote_velocity_scores_higher():
-    """Two topics, same age and comments; only score differs."""
-    scorer = build_scorer("reddit", ScoreWeights(), NOW)
+def _m(rank: int, views: int = 1000) -> WikipediaMetrics:
+    return WikipediaMetrics(views=views, rank=rank, measured_on=DAY)
+
+
+def test_a_better_rank_scores_higher():
+    """Rank 1 beats rank 500. Discriminates the negation from forgetting it,
+    which would invert the entire ranking."""
+    scorer = build_scorer("wikipedia", ScoreWeights(), NOW)
+
+    scores = scorer.score(per_topic=[[_m(rank=1)], [_m(rank=500)]], previous=[None, None])
+
+    assert scores[0] > scores[1]
+
+
+def test_a_topic_uses_its_best_ranked_article():
+    """min(), not mean or first: a topic containing one rank-2 article and
+    one rank-900 article is trending on the strength of the rank-2 one."""
+    scorer = build_scorer("wikipedia", ScoreWeights(), NOW)
 
     scores = scorer.score(
-        per_topic=[
-            [_m(score=1000, comments=10, channel="r/a", age_hours=2)],
-            [_m(score=10, comments=10, channel="r/b", age_hours=2)],
-        ],
+        per_topic=[[_m(rank=900), _m(rank=2)], [_m(rank=400)]],
         previous=[None, None],
     )
 
     assert scores[0] > scores[1]
 
 
-def test_wider_channel_spread_scores_higher():
-    """Same velocity in both topics and the same item count; only the number
-    of distinct subreddits differs.
-    """
-    scorer = build_scorer("reddit", ScoreWeights(), NOW)
+def test_a_perennial_topic_does_not_score_as_rising():
+    """Two topics at identical ranks; one held that position last run, the
+    other is new. This is what neutralises pages like Google that sit in the
+    top ten every day, so the source does not need to denylist them."""
+    scorer = build_scorer("wikipedia", ScoreWeights(), NOW)
 
     scores = scorer.score(
-        per_topic=[
-            [
-                _m(score=100, comments=10, channel="r/a", age_hours=2),
-                _m(score=100, comments=10, channel="r/b", age_hours=2),
-            ],
-            [
-                _m(score=100, comments=10, channel="r/c", age_hours=2),
-                _m(score=100, comments=10, channel="r/c", age_hours=2),
-            ],
-        ],
-        previous=[None, None],
+        per_topic=[[_m(rank=5)], [_m(rank=5)]],
+        previous=[1.0, None],
     )
 
-    assert scores[0] > scores[1]
+    assert scores[1] > scores[0]
 
 
 def test_a_topic_with_no_history_is_not_treated_as_maximally_rising():
     """previous=None must default to the topic's own base, giving a delta of
-    zero — not the tempting `previous or 0.0`, which hands every first-run
-    topic a full-marks rise.
+    zero. Discriminates that from `previous or 0.0`, which hands every
+    first-seen article a full-marks rise — the opposite of what rank-delta is
+    for, since a brand new entry has not risen against anything.
+
+    wikipedia.py carries its own copy of this default, so the equivalent
+    Lemmy test does not cover it. Nonzero bases are essential: with every
+    base at 0.0 the two implementations coincide, which is why
+    test_a_perennial_topic_does_not_score_as_rising cannot tell them apart.
     """
-    scorer = build_scorer("reddit", ScoreWeights(), NOW)
-    groups = [
-        [_m(score=100, comments=10, channel="r/a", age_hours=2)],
-        [_m(score=50, comments=10, channel="r/b", age_hours=2)],
-    ]
+    scorer = build_scorer("wikipedia", ScoreWeights(), NOW)
+    groups = [[_m(rank=1)], [_m(rank=500)]]
 
-    risen = scorer.score(per_topic=groups, previous=[0.0, None])
     fresh = scorer.score(per_topic=groups, previous=[None, None])
+    risen = scorer.score(per_topic=groups, previous=[0.0, None])
 
-    assert risen[0] > fresh[0]
+    assert fresh[0] == pytest.approx(0.75)
+    assert risen[0] == pytest.approx(1.0)
+
+
+def test_scores_stay_within_the_unit_interval():
+    scorer = build_scorer("wikipedia", ScoreWeights(), NOW)
+
+    scores = scorer.score(
+        per_topic=[[_m(rank=1)], [_m(rank=1000)], [_m(rank=37)]],
+        previous=[0.9, None, 0.1],
+    )
+
+    assert all(0.0 <= s <= 1.0 for s in scores)
+
+
+def test_context_reports_views():
+    assert _m(rank=4, views=411486).context == "411,486 views"
 ```
+
+`content_bearing` needs no dedicated assertion: Task 6's `test_topics_with_no_content_bearing_platform_are_dropped` and `test_scoring_precedes_the_content_bearing_filter` both fail immediately if the flag flips, and they test the behaviour rather than the constant.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-uv run pytest tests/test_scorers_lemmy.py tests/test_scorers_reddit.py -v
+uv run pytest tests/test_scorers_lemmy.py tests/test_scorers_wikipedia.py -v
 ```
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.analysis.scorers'`.
@@ -1240,7 +1483,47 @@ class LemmyScorer:
         return sum(values) / len(values)
 ```
 
-Create `zeitgeist/analysis/scorers/reddit.py` with the identical algorithm over `RedditMetrics` — same imports, `platform = "reddit"`, `class RedditScorer`, and the same `score` and `_mean_velocity` bodies with `RedditMetrics` in the annotations.
+Create `zeitgeist/analysis/scorers/wikipedia.py`:
+
+```python
+"""Wikipedia trend scoring: position, and movement against last run.
+
+Pageviews carry no comments, no channel, and no per-item age, so velocity is
+undefined here. Position and delta are the whole signal.
+"""
+
+from datetime import datetime
+
+from zeitgeist.analysis.scorers.base import ScoreWeights, normalise
+from zeitgeist.models import WikipediaMetrics
+
+
+class WikipediaScorer:
+    platform = "wikipedia"
+
+    def __init__(self, weights: ScoreWeights, now: datetime) -> None:
+        self._weights = weights
+
+    def score(
+        self, per_topic: list[list[WikipediaMetrics]], previous: list[float | None]
+    ) -> list[float]:
+        # Negated rather than scaled against a total: normalise establishes
+        # the range from what is present, so the maths does not depend on how
+        # many articles the run kept or how many filtering removed.
+        raw = [-float(min(m.rank for m in group)) for group in per_topic]
+        bases = normalise(raw)
+
+        # Defaulting to the topic's own base, not 0.0: an unseen topic has
+        # not risen, so its delta must be zero rather than full marks.
+        raw_delta = [
+            bases[i] - (previous[i] if previous[i] is not None else bases[i])
+            for i in range(len(per_topic))
+        ]
+        delta = normalise(raw_delta)
+
+        w = self._weights.rank_delta
+        return [(1.0 - w) * bases[i] + w * delta[i] for i in range(len(per_topic))]
+```
 
 Create `zeitgeist/analysis/scorers/__init__.py`:
 
@@ -1256,13 +1539,13 @@ from datetime import datetime
 
 from zeitgeist.analysis.scorers.base import ScoreWeights, TrendScorer
 from zeitgeist.analysis.scorers.lemmy import LemmyScorer
-from zeitgeist.analysis.scorers.reddit import RedditScorer
+from zeitgeist.analysis.scorers.wikipedia import WikipediaScorer
 
 ScorerBuilder = Callable[[ScoreWeights, datetime], TrendScorer]
 
 SCORERS: dict[str, ScorerBuilder] = {
     "lemmy": LemmyScorer,
-    "reddit": RedditScorer,
+    "wikipedia": WikipediaScorer,
 }
 
 
@@ -1276,7 +1559,7 @@ def build_scorer(
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-uv run pytest tests/test_scorers_lemmy.py tests/test_scorers_reddit.py -v && uv run ty check
+uv run pytest tests/test_scorers_lemmy.py tests/test_scorers_wikipedia.py -v && uv run ty check
 ```
 
 Expected: PASS.
@@ -1284,8 +1567,8 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add zeitgeist/analysis/scorers tests/test_scorers_lemmy.py tests/test_scorers_reddit.py
-git commit -m "Add per-platform scorer registry with Lemmy and Reddit"
+git add zeitgeist/analysis/scorers tests/test_scorers_lemmy.py tests/test_scorers_wikipedia.py
+git commit -m "Add the per-platform scorer registry with both scorers"
 ```
 
 ---
@@ -1361,6 +1644,21 @@ def test_scoring_precedes_the_content_bearing_filter():
 
     assert len(scored) == 1
     assert scored[0].score_components["wikipedia"] > 0.0
+
+
+def test_a_topic_referencing_an_unknown_item_is_dropped_not_fatal():
+    """Consolidation works from model-supplied tags and can name an id no
+    source produced — tests/test_analysis_extract.py proves that happens.
+    The lookup must skip it: indexing by_id directly turns one hallucinated
+    id into a KeyError that ends the run after the fetch and every LLM call
+    have already been paid for.
+    """
+    items = [_lemmy("a", score=100, channel="a@h", age_hours=2)]
+    topics = [_topic("real", ["a"]), _topic("ghost", ["missing"])]
+
+    scored = score_topics(topics, items, NOW, previous={}, weights=ScoreWeights())
+
+    assert [t.id for t in scored] == ["real"]
 
 
 def test_topics_with_no_content_bearing_platform_are_dropped():
@@ -1589,7 +1887,7 @@ def _lemmy_only_run() -> tuple[list[Topic], list[Item]]:
     return topics, items
 ```
 
-Note `_wiki` references `WikipediaMetrics`, which does not exist until Task 9. Mark the five tests that use it with `@pytest.mark.xfail(reason="WikipediaMetrics arrives in Task 9", strict=True)` — `strict=True` so they fail loudly if they start passing early — and remove those markers in Task 9. `test_single_platform_run_matches_phase_one_ranking` needs no marker.
+`WikipediaMetrics` comes from Task 1 and `WikipediaScorer` from Task 5, so every test in this task runs for real against both scorers — no `xfail` markers here.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -1732,7 +2030,7 @@ In `zeitgeist/config.py`, change the `ScoreWeights` import path if it is importe
 uv run pytest tests/test_analysis_score.py -v
 ```
 
-Expected: PASS, with five `xfail` entries pending Task 9.
+Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -1761,9 +2059,12 @@ existing BUILDERS/KNOWN_SOURCES check in tests/test_sources_composite.py.
 from typing import get_args
 
 from zeitgeist.analysis.scorers import SCORERS
-from zeitgeist.config import KNOWN_SOURCES
 from zeitgeist.models import Metrics
 from zeitgeist.sources import BUILDERS
+
+# BUILDERS vs KNOWN_SOURCES is already guarded by
+# tests/test_sources_composite.py::test_every_known_source_has_a_builder,
+# so it is deliberately not repeated here.
 
 
 def _union_platforms() -> set[str]:
@@ -1777,15 +2078,21 @@ def _union_platforms() -> set[str]:
 
 
 def test_every_metrics_platform_has_a_scorer():
+    """The union and SCORERS must stay in step: a platform that can appear
+    in an Item but has no scorer is a KeyError from build_scorer partway
+    through a run, after the fetch has already been paid for.
+    """
     assert _union_platforms() == set(SCORERS)
 
 
 def test_every_source_has_a_scorer():
+    """Subset, not equality: a metrics type may exist before its source
+    does, which is how WikipediaMetrics lands in Task 1 while
+    WikipediaSource arrives in Task 9. The reverse — a source whose items
+    nothing can score — is the failure this catches.
+    """
     assert set(BUILDERS) <= set(SCORERS)
 
-
-def test_known_sources_matches_the_source_registry():
-    assert set(KNOWN_SOURCES) == set(BUILDERS)
 ```
 
 - [ ] **Step 2: Run test to verify it passes**
@@ -1956,6 +2263,21 @@ def test_each_label_and_platform_tracks_its_own_history(tmp_path):
         "lemmy": {"cats": 0.7, "dogs": 0.9},
         "wikipedia": {"cats": 0.6},
     }
+
+
+def test_the_current_run_is_excluded_from_its_own_history(tmp_path):
+    """Guards the outer `s.run_id != ?`. Without it a run reads back the
+    sub-scores it has just written, so every raw delta is base minus itself
+    — zero — and rank_delta goes inert against real data without failing
+    anything. The excluded run is the only run here, so no other test in
+    this file can tell the two implementations apart.
+    """
+    store = Store(tmp_path / "z.db")
+    store.init_schema()
+    store.start_run("r1")
+    store.record_topics("r1", [_topic("Cats", {"lemmy": 0.8})])
+
+    assert store.previous_sub_scores("r1") == {}
 
 
 def test_the_excluded_runs_own_rows_do_not_hide_the_older_run(tmp_path):
@@ -2143,223 +2465,14 @@ git commit -m "Persist per-platform sub-scores and guard the schema version"
 
 ## Phase 4 — Wikimedia
 
-### Task 9: `WikipediaMetrics` and the Wikipedia scorer
-
-**Files:**
-- Modify: `zeitgeist/models.py`, `zeitgeist/analysis/scorers/__init__.py`
-- Create: `zeitgeist/analysis/scorers/wikipedia.py`
-- Test: `tests/test_scorers_wikipedia.py`, `tests/test_analysis_score.py` (remove xfail markers)
-
-**Interfaces:**
-- Consumes: `ScoreWeights`, `normalise`, `TrendScorer` from Task 5.
-- Produces: `WikipediaMetrics` with `views: int`, `rank: int`, `date: datetime.date`, `platform: Literal["wikipedia"]`, `content_bearing: ClassVar[bool] = False`, `context` returning `f"{views:,} views"`. `WikipediaScorer` registered under `"wikipedia"`.
-
-- [ ] **Step 1: Write the failing tests**
-
-Create `tests/test_scorers_wikipedia.py`:
-
-```python
-from datetime import UTC, date, datetime
-
-from zeitgeist.analysis.scorers import build_scorer
-from zeitgeist.analysis.scorers.base import ScoreWeights
-from zeitgeist.models import WikipediaMetrics
-
-NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
-DAY = date(2026, 8, 20)
-
-
-def _m(rank: int, views: int = 1000) -> WikipediaMetrics:
-    return WikipediaMetrics(views=views, rank=rank, measured_on=DAY)
-
-
-def test_a_better_rank_scores_higher():
-    """Rank 1 beats rank 500. Discriminates the negation from forgetting it,
-    which would invert the entire ranking."""
-    scorer = build_scorer("wikipedia", ScoreWeights(), NOW)
-
-    scores = scorer.score(per_topic=[[_m(rank=1)], [_m(rank=500)]], previous=[None, None])
-
-    assert scores[0] > scores[1]
-
-
-def test_a_topic_uses_its_best_ranked_article():
-    """min(), not mean or first: a topic containing one rank-2 article and
-    one rank-900 article is trending on the strength of the rank-2 one."""
-    scorer = build_scorer("wikipedia", ScoreWeights(), NOW)
-
-    scores = scorer.score(
-        per_topic=[[_m(rank=900), _m(rank=2)], [_m(rank=400)]],
-        previous=[None, None],
-    )
-
-    assert scores[0] > scores[1]
-
-
-def test_a_perennial_topic_does_not_score_as_rising():
-    """Two topics at identical ranks; one held that position last run, the
-    other is new. This is what neutralises pages like Google that sit in the
-    top ten every day, so the source does not need to denylist them."""
-    scorer = build_scorer("wikipedia", ScoreWeights(), NOW)
-
-    scores = scorer.score(
-        per_topic=[[_m(rank=5)], [_m(rank=5)]],
-        previous=[1.0, None],
-    )
-
-    assert scores[1] > scores[0]
-
-
-def test_scores_stay_within_the_unit_interval():
-    scorer = build_scorer("wikipedia", ScoreWeights(), NOW)
-
-    scores = scorer.score(
-        per_topic=[[_m(rank=1)], [_m(rank=1000)], [_m(rank=37)]],
-        previous=[0.9, None, 0.1],
-    )
-
-    assert all(0.0 <= s <= 1.0 for s in scores)
-
-
-def test_context_reports_views():
-    assert _m(rank=4, views=411486).context == "411,486 views"
-```
-
-Extend the field-set guard added in Task 1 with the third model — `tests/test_models.py`'s parametrize list gains:
-
-```python
-        (WikipediaMetrics, {"platform", "views", "rank", "measured_on"}),
-```
-
-`content_bearing` needs no dedicated assertion: Task 6's `test_topics_with_no_content_bearing_platform_are_dropped` and `test_scoring_precedes_the_content_bearing_filter` both fail immediately if the flag flips, and they test the behaviour rather than the constant.
-
-Then remove the five `pytest.mark.xfail` markers added in Task 6.
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-```bash
-uv run pytest tests/test_scorers_wikipedia.py -v
-```
-
-Expected: FAIL with `ImportError: cannot import name 'WikipediaMetrics'`.
-
-- [ ] **Step 3: Write the implementation**
-
-In `zeitgeist/models.py`, add `date` to the datetime import and add:
-
-```python
-class WikipediaMetrics(BaseModel):
-    """Attention as Wikimedia pageviews report it.
-
-    No comments, no communities, and no per-item creation date — an article
-    is years old while its spike is one day. `date` is the day the measurement
-    covers, which is the only temporal fact this platform actually supplies.
-    """
-
-    model_config = STRICT
-
-    platform: Literal["wikipedia"] = "wikipedia"
-    # No body text, so a Wikipedia-only topic gives the sentiment stage
-    # nothing to judge. The coordinator drops such topics.
-    content_bearing: ClassVar[bool] = False
-
-    views: int
-    rank: int
-    measured_on: date
-
-    @property
-    def context(self) -> str:
-        return f"{self.views:,} views"
-```
-
-Extend the union:
-
-```python
-Metrics = Annotated[
-    LemmyMetrics | RedditMetrics | WikipediaMetrics,
-    Field(discriminator="platform"),
-]
-```
-
-Create `zeitgeist/analysis/scorers/wikipedia.py`:
-
-```python
-"""Wikipedia trend scoring: position, and movement against last run.
-
-Pageviews carry no comments, no channel, and no per-item age, so velocity is
-undefined here. Position and delta are the whole signal.
-"""
-
-from datetime import datetime
-
-from zeitgeist.analysis.scorers.base import ScoreWeights, normalise
-from zeitgeist.models import WikipediaMetrics
-
-
-class WikipediaScorer:
-    platform = "wikipedia"
-
-    def __init__(self, weights: ScoreWeights, now: datetime) -> None:
-        self._weights = weights
-
-    def score(
-        self, per_topic: list[list[WikipediaMetrics]], previous: list[float | None]
-    ) -> list[float]:
-        # Negated rather than scaled against a total: normalise establishes
-        # the range from what is present, so the maths does not depend on how
-        # many articles the run kept or how many filtering removed.
-        raw = [-float(min(m.rank for m in group)) for group in per_topic]
-        bases = normalise(raw)
-
-        # Defaulting to the topic's own base, not 0.0: an unseen topic has
-        # not risen, so its delta must be zero rather than full marks.
-        raw_delta = [
-            bases[i] - (previous[i] if previous[i] is not None else bases[i])
-            for i in range(len(per_topic))
-        ]
-        delta = normalise(raw_delta)
-
-        w = self._weights.rank_delta
-        return [(1.0 - w) * bases[i] + w * delta[i] for i in range(len(per_topic))]
-```
-
-Register it in `zeitgeist/analysis/scorers/__init__.py`:
-
-```python
-from zeitgeist.analysis.scorers.wikipedia import WikipediaScorer
-
-SCORERS: dict[str, ScorerBuilder] = {
-    "lemmy": LemmyScorer,
-    "reddit": RedditScorer,
-    "wikipedia": WikipediaScorer,
-}
-```
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-```bash
-uv run pytest tests/test_scorers_wikipedia.py tests/test_analysis_score.py -v
-```
-
-Expected: PASS, with no remaining xfails. `tests/test_scorers_registry.py` will now fail — `wikipedia` is in the union and `SCORERS` but not in `BUILDERS`; Task 11 fixes that. Leave it failing.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add zeitgeist/models.py zeitgeist/analysis/scorers tests/test_scorers_wikipedia.py tests/test_analysis_score.py
-git commit -m "Add WikipediaMetrics and the Wikipedia trend scorer"
-```
-
----
-
-### Task 10: `WikipediaSource`
+### Task 9: `WikipediaSource`
 
 **Files:**
 - Create: `zeitgeist/sources/wikipedia.py`, `tests/fixtures/wikipedia_top.json`
 - Test: `tests/test_sources_wikipedia.py`
 
 **Interfaces:**
-- Consumes: `Item`, `WikipediaMetrics` from Tasks 1 and 9; `SourceError` from `sources/base.py`.
+- Consumes: `Item`, `WikipediaMetrics` from Task 1; `SourceError` from `sources/base.py`.
 - Produces: `WikipediaSource(project: str = "en.wikipedia", contact: str = DEFAULT_CONTACT, client: Any = None)`, `WikipediaSource.from_settings(settings) -> WikipediaSource`, `name = "wikipedia"`, `fetch(limit: int) -> list[Item]`. Module constants `MAX_DAY_ATTEMPTS = 5`, `STRUCTURAL_PREFIXES`, `DEATHS_PATTERN`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -2552,12 +2665,22 @@ def test_a_payload_with_only_structural_pages_raises_source_error():
 
 
 def test_a_changed_payload_shape_crashes_rather_than_looking_like_an_outage():
-    """A missing 'articles' key is a contract break, not an unreachable host.
-    It must not be swallowed into SourceError."""
-    client = _FakeClient([_Response({"items": [{"year": "2026"}]})])
+    """A missing 'articles' key is a contract break, not an unreachable host,
+    so it must not be swallowed into SourceError and reported as a down
+    platform. The day fields are present and valid on purpose: the KeyError
+    has to come from the articles lookup itself, or softening that lookup to
+    .get("articles", []) would leave this test green — _fetch_day reads the
+    date fields first, so an incomplete payload raises on "month" instead.
+    """
+    payload = {
+        "items": [
+            {"project": "en.wikipedia", "year": "2026", "month": "08", "day": "20"}
+        ]
+    }
+    client = _FakeClient([_Response(payload)])
     source = WikipediaSource(client=client)
 
-    with pytest.raises(KeyError):
+    with pytest.raises(KeyError, match="articles"):
         source.fetch(limit=50)
 
 
@@ -2623,7 +2746,7 @@ def test_from_settings_wires_the_project_and_contact_through():
     assert "https://example.org/bot" in source.user_agent
 ```
 
-Note `test_from_settings_wires_the_project_and_contact_through` depends on the config keys added in Task 11; mark it `@pytest.mark.xfail(reason="Settings keys arrive in Task 11", strict=True)` here and remove the marker in Task 11.
+Note `test_from_settings_wires_the_project_and_contact_through` depends on the config keys added in Task 10; mark it `@pytest.mark.xfail(reason="Settings keys arrive in Task 10", strict=True)` here and remove the marker in Task 10.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -2801,14 +2924,14 @@ git commit -m "Add WikipediaSource over the Wikimedia pageviews API"
 
 ---
 
-### Task 11: Configuration, registry, and documentation
+### Task 10: Configuration, registry, and documentation
 
 **Files:**
 - Modify: `zeitgeist/config.py`, `zeitgeist/sources/__init__.py`, `.env.example`, `README.md`
-- Test: `tests/test_config.py`, `tests/test_scorers_registry.py`
+- Test: `tests/test_config.py`, `tests/test_scorers_registry.py`, `tests/test_sources_composite.py`
 
 **Interfaces:**
-- Consumes: `WikipediaSource.from_settings` from Task 10.
+- Consumes: `WikipediaSource.from_settings` from Task 9.
 - Produces: `Settings.wikipedia_project: str = "en.wikipedia"`, `Settings.wikipedia_contact: str = DEFAULT_CONTACT`; `"wikipedia"` in `KNOWN_SOURCES` and `BUILDERS`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -2817,16 +2940,73 @@ In `tests/test_config.py`:
 
 ```python
 def test_wikipedia_needs_no_credentials():
-    """Unlike Reddit, enabling it must not raise at startup — this is the
-    property that keeps the project runnable out of the box. Fails if
-    _check_sources ever grows a credential branch for wikipedia.
+    """Enabling it must not raise at startup — this is the property that
+    keeps the project runnable with no credentials at all, which is why
+    Wikimedia was chosen. Fails if _check_sources ever grows a credential
+    branch for wikipedia, as it once had for reddit.
     """
     settings = Settings(_env_file=None, sources=["lemmy", "wikipedia"])
 
     assert settings.sources == ["lemmy", "wikipedia"]
 ```
 
-There is deliberately **no** `test_wikipedia_project_defaults_to_english`. Asserting `settings.wikipedia_project == "en.wikipedia"` restates the default back at itself: the only change that fails it is someone deciding the default should be a different wiki, which is a decision they are entitled to make, not a bug. Task 10's `test_a_non_default_project_reaches_the_url_the_id_and_the_permalink` covers the part that can actually break — the value being threaded through rather than ignored.
+Restore the two builder tests Task 0 removed, now that a second real source exists. `test_each_registry_key_builds_its_own_source_class` is new: Task 7's registry guards compare key *sets*, so wiring `LemmySource.from_settings` under `"wikipedia"` passes every other test in this plan while fetching Lemmy twice and reporting it as a two-platform run.
+
+```python
+def test_build_source_builds_only_the_enabled_sources():
+    """A disabled platform must not be constructed at all: build_source
+    indexes BUILDERS by the configured names, and building the rest anyway
+    would spend a client and a request budget on a platform nobody enabled.
+    """
+    settings = Settings(_env_file=None, anthropic_api_key="key", sources="lemmy")
+
+    composite = build_source(settings)
+
+    assert isinstance(composite, CompositeSource)
+    assert [type(source) for source in composite._sources] == [LemmySource]
+
+
+def test_each_registry_key_builds_its_own_source_class():
+    """BUILDERS is a name -> constructor map, so a key wired to the wrong
+    class fails silently. The registry drift tests compare key sets only and
+    would not notice.
+    """
+    settings = Settings(
+        _env_file=None, anthropic_api_key="key", sources="lemmy,wikipedia"
+    )
+
+    composite = build_source(settings)
+
+    assert [type(source) for source in composite._sources] == [
+        LemmySource,
+        WikipediaSource,
+    ]
+
+
+def test_build_source_preserves_the_configured_order():
+    """The budget is split per source in order, so a registry that reordered
+    them would silently change which platform gets the remainder.
+    """
+    settings = Settings(
+        _env_file=None, anthropic_api_key="key", sources="wikipedia,lemmy"
+    )
+
+    composite = build_source(settings)
+
+    assert [source.name for source in composite._sources] == ["wikipedia", "lemmy"]
+
+
+def test_a_multi_source_env_var_splits_on_the_comma(monkeypatch):
+    """Two names in one env var is the shape a real .env carries, and the
+    only shape where the CSV split can be told apart from a no-op.
+    """
+    monkeypatch.setenv("SOURCES", "lemmy,wikipedia")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
+
+    assert Settings(_env_file=None).sources == ["lemmy", "wikipedia"]
+```
+
+There is deliberately **no** `test_wikipedia_project_defaults_to_english`. Asserting `settings.wikipedia_project == "en.wikipedia"` restates the default back at itself: the only change that fails it is someone deciding the default should be a different wiki, which is a decision they are entitled to make, not a bug. Task 9's `test_a_non_default_project_reaches_the_url_the_id_and_the_permalink` covers the part that can actually break — the value being threaded through rather than ignored.
 
 Add `"WIKIPEDIA_PROJECT"` and `"WIKIPEDIA_CONTACT"` to `_SETTINGS_ENV_VARS` in `tests/conftest.py` — without this the suite's result depends on the developer's shell, which the fixture exists to prevent.
 
@@ -2838,14 +3018,16 @@ Remove the `xfail` marker from `test_from_settings_wires_the_project_and_contact
 uv run pytest tests/test_config.py tests/test_scorers_registry.py -v
 ```
 
-Expected: FAIL — `wikipedia` is not in `KNOWN_SOURCES`, and the registry guard from Task 7 fails because `BUILDERS` lacks it.
+Expected: FAIL on `tests/test_config.py` — `wikipedia` is not yet in `KNOWN_SOURCES`, so `Settings` rejects it.
+
+`tests/test_scorers_registry.py` should still **pass** here, and it is run alongside to confirm that. Its source-side assertion is deliberately a subset check (`BUILDERS <= SCORERS`), so a metrics type and scorer existing before their source does — which is exactly the state since Tasks 1 and 5 — is allowed. If it fails at this point, the subset assertion has been tightened to equality somewhere and that is the bug, not the registry.
 
 - [ ] **Step 3: Write the implementation**
 
 In `zeitgeist/config.py`:
 
 ```python
-KNOWN_SOURCES: tuple[str, ...] = ("lemmy", "reddit", "wikipedia")
+KNOWN_SOURCES: tuple[str, ...] = ("lemmy", "wikipedia")
 ```
 
 and add to `Settings`:
@@ -2862,7 +3044,6 @@ from zeitgeist.sources.wikipedia import WikipediaSource
 
 BUILDERS: dict[str, Callable[[Settings], Source]] = {
     "lemmy": LemmySource.from_settings,
-    "reddit": RedditSource.from_settings,
     "wikipedia": WikipediaSource.from_settings,
 }
 ```
@@ -2879,10 +3060,10 @@ In `README.md`, extend the Sources section:
 
 ```markdown
 `wikipedia` adds Wikimedia pageviews — the top 1000 most-viewed articles for
-the most recent day with data. It needs no credentials. Unlike Lemmy and
-Reddit it measures *attention* rather than conversation: articles carry no
-comments and no body text, so a topic Wikipedia alone found is dropped rather
-than ranked. Its role is corroboration — a topic trending on Lemmy *and*
+the most recent day with data. It needs no credentials. Unlike Lemmy it
+measures *attention* rather than conversation: articles carry no comments and
+no body text, so a topic Wikipedia alone found is dropped rather than
+ranked. Its role is corroboration — a topic trending on Lemmy *and*
 spiking on Wikipedia outranks one trending on Lemmy alone.
 
 `WIKIPEDIA_CONTACT` is interpolated into the User-Agent. Wikimedia's API
