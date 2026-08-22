@@ -145,7 +145,7 @@ class WikipediaMetrics(BaseModel):
     content_bearing: ClassVar[bool] = False
     views: int
     rank: int
-    date: date                    # the day the measurement covers
+    measured_on: date             # the day the measurement covers
 
 Metrics = Annotated[
     LemmyMetrics | RedditMetrics | WikipediaMetrics,
