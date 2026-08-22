@@ -161,14 +161,45 @@ def test_lemmy_metrics_reject_an_unknown_field():
         )
 
 
-def test_lemmy_and_reddit_are_content_bearing():
-    assert LemmyMetrics.content_bearing is True
-    assert RedditMetrics.content_bearing is True
+# The complete specified field set of each model, written out by hand rather
+# than derived from the model, so that a change to a model fails this test.
+# Catches two breaks at once: a PII field such as `author` creeping in, and a
+# field the checkpoint format depends on quietly disappearing. `metrics` now
+# carries the platform-specific half, so it needs the same guard as `Item`.
+# Replaces the old POST_FIELDS / test_post_carries_exactly_the_specified_fields.
+_ENGAGEMENT_FIELDS = {"platform", "score", "comment_count", "channel", "created_at"}
 
 
-def test_topic_uses_item_ids():
-    topic = Topic(id="cats", label="Cats", summary="Cat things.", item_ids=["abc123"])
-    assert topic.item_ids == ["abc123"]
+@pytest.mark.parametrize(
+    "model,want",
+    [
+        (
+            Item,
+            {
+                "source_id",
+                "title",
+                "body_excerpt",
+                "permalink",
+                "fetched_at",
+                "metrics",
+            },
+        ),
+        (LemmyMetrics, _ENGAGEMENT_FIELDS),
+        (RedditMetrics, _ENGAGEMENT_FIELDS),
+    ],
+)
+def test_models_carry_exactly_the_specified_fields(model, want):
+    assert set(model.model_fields) == want
+
+
+@pytest.mark.parametrize("field", ["author", "username", "user_id", "titel"])
+def test_item_rejects_undeclared_fields(field):
+    """Without extra="forbid", Pydantic silently drops unknown keys — so a
+    typo'd field name or an author slipped in by a new source would pass
+    unnoticed rather than failing loudly.
+    """
+    with pytest.raises(ValidationError):
+        _lemmy_item(**{field: "somebody"})
 
 
 def test_topic_rejects_the_old_post_ids_field():
@@ -180,7 +211,7 @@ def test_topic_rejects_the_old_post_ids_field():
         )
 ```
 
-Also update the existing tests in `tests/test_models.py` that construct `Post(...)` or `Topic(post_ids=...)` to use the new shape — `_lemmy_item(...)` covers most of them.
+Delete `POST_FIELDS` and `test_post_carries_exactly_the_specified_fields` — the parametrized guard above replaces them, covering three models rather than one. Update the remaining tests in `tests/test_models.py` that construct `Post(...)` or `Topic(post_ids=...)` to use the new shape; `_lemmy_item(...)` covers most of them.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -329,44 +360,40 @@ git commit -m "Replace Post with Item carrying a discriminated metrics union"
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/test_sources_lemmy.py`, update assertions to read through `metrics` and add:
+This task adds **no new tests**. The existing suites already pin every behaviour that changes here; what they need is re-pointing through `metrics`. Adding parallel tests would duplicate them under new names.
+
+In `tests/test_sources_lemmy.py`, re-point the existing assertions:
+
+- `test_maps_views_onto_posts` — change `post.score` to `post.metrics.score`, `post.comment_count` to `post.metrics.comment_count`, `post.created_at` to `post.metrics.created_at`, and drop the `post.platform == "lemmy"` assertion only if it now reads through the property (it still works). This test already pins the mapping with hand-derived literals; it is the guard against a swapped `score`/`comment_count`.
+- `test_channel_is_qualified_by_instance_host` — change to `post.metrics.channel`. This remains the guard on `_channel`.
+- `test_created_at_is_timezone_aware_when_the_instance_omits_the_zone` — change to `post.metrics.created_at`.
+
+Keep the file's existing helpers (`_view(ap_id, title, ...)`, `StubClient` keyed on `(sort, page)`, `_source(pages)`) exactly as they are — they need no changes.
+
+In `tests/test_sources_composite.py`, convert the `_post` helper into `_item`, which every test in the file then uses unchanged:
 
 ```python
-def test_lemmy_maps_counts_into_lemmy_metrics():
-    """Pins the mapping, not just the type: a swapped score/comment_count
-    would still produce a valid LemmyMetrics."""
-    source = LemmySource(client=_FakeClient([_view(score=42, comments=7)]))
-
-    items = source.fetch(limit=1)
-
-    assert isinstance(items[0].metrics, LemmyMetrics)
-    assert items[0].metrics.score == 42
-    assert items[0].metrics.comment_count == 7
-
-
-def test_lemmy_channel_moves_into_metrics_not_the_envelope():
-    source = LemmySource(client=_FakeClient([_view()]))
-
-    items = source.fetch(limit=1)
-
-    assert items[0].metrics.channel == "technology@lemmy.world"
-    assert not hasattr(items[0], "channel")
+def _item(platform: str, source_id: str, channel: str = "cats") -> Item:
+    """Dispatches on platform so each item carries its own metrics class.
+    Every test in this file builds items through here, so the union is
+    exercised by the whole file rather than by one dedicated test.
+    """
+    metrics_class = {"lemmy": LemmyMetrics, "reddit": RedditMetrics}[platform]
+    return Item(
+        source_id=source_id,
+        title=f"Post {source_id}",
+        permalink=f"https://example.com/{source_id}",
+        fetched_at=datetime(2026, 8, 16, 12, 0, tzinfo=UTC),
+        metrics=metrics_class(
+            score=10,
+            comment_count=2,
+            channel=channel,
+            created_at=datetime(2026, 8, 16, 9, 0, tzinfo=UTC),
+        ),
+    )
 ```
 
-In `tests/test_sources_composite.py`:
-
-```python
-def test_composite_dedups_across_platforms_on_platform_and_id():
-    """Two platforms can legitimately use the same source_id; only the pair
-    identifies an item. A dedup on source_id alone would drop the second."""
-    lemmy = _FakeSource("lemmy", [_item("lemmy", "shared-id")])
-    reddit = _FakeSource("reddit", [_item("reddit", "shared-id")])
-
-    items = CompositeSource([lemmy, reddit]).fetch(limit=10)
-
-    assert len(items) == 2
-    assert {i.platform for i in items} == {"lemmy", "reddit"}
-```
+Rename every `_post(` call site in that file to `_item(`. The existing `test_same_id_on_different_platforms_is_not_a_duplicate` already covers cross-platform dedup and needs no replacement.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -479,17 +506,29 @@ git commit -m "Emit Item from every source"
 In `tests/test_analysis_extract.py`:
 
 ```python
-def test_prompt_uses_item_context_as_the_platform_hint(sample_items):
+def test_prompt_renders_the_id_context_and_title_on_one_line():
     """The prompt previously carried post.channel. Wikipedia has no channel,
-    so it carries item.context — which for Lemmy is still the channel.
-    Asserting the rendered line catches an empty or misordered hint."""
-    provider = _RecordingProvider()
+    so it carries item.context — which for Lemmy is still the channel. The
+    expected line is written out by hand rather than built from
+    `item.context`: deriving it would let an emptied context satisfy both
+    sides of the assertion, which is the break this test exists to catch.
+    """
+    item = Item(
+        source_id="p999",
+        title="Test Lemmy post",
+        permalink="https://lemmy.world/post/999",
+        fetched_at=datetime(2026, 8, 16, 12, 0, tzinfo=UTC),
+        metrics=LemmyMetrics(
+            score=100,
+            comment_count=5,
+            channel="memes@lemmy.world",
+            created_at=datetime(2026, 8, 16, 9, 0, tzinfo=UTC),
+        ),
+    )
 
-    extract_tags(sample_items[:1], provider)
+    prompt = _build_prompt([item])
 
-    item = sample_items[0]
-    expected = f"- id={item.source_id} | {item.context} | {item.title}"
-    assert expected in provider.prompts[0]
+    assert "- id=p999 | memes@lemmy.world | Test Lemmy post" in prompt
 ```
 
 In `tests/test_analysis_consolidate.py`, change `topics[0].post_ids` to `topics[0].item_ids` in all four assertions.
@@ -659,28 +698,28 @@ git commit -m "Read Item and item_ids through the analysis stages"
 
 In `tests/test_pipeline.py`:
 
-Read the existing `tests/test_pipeline.py` first — it already builds a `Settings`, a fake `Source`, a `FakeLLMProvider` and a `Store`. Reuse whatever fixtures or helpers it defines rather than inventing new ones; the test below assumes a helper `_run(tmp_path)` that calls `run_pipeline` with those and returns the run directory. If no such helper exists, extract one from the existing tests as part of this step.
+Read the existing `tests/test_pipeline.py` first and reuse its helpers — it already builds a `Settings`, a stub `Source`, a `FakeLLMProvider` and a `Store`. Adapt the call below to whatever those helpers are actually named.
+
+The existing `test_writes_every_checkpoint` already guards the checkpoint filenames; this task re-points it from `posts.json` to `items.json` rather than adding a parallel test. Add only the round-trip, which nothing currently covers:
 
 ```python
-def test_ingest_checkpoint_is_written_as_items_json(tmp_path):
-    """The filename is part of the resume contract; renaming it deliberately
-    breaks old run directories rather than half-reading them."""
-    run_dir = _run(tmp_path)
-
-    assert (run_dir / "items.json").exists()
-    assert not (run_dir / "posts.json").exists()
-
-
-def test_the_ingest_checkpoint_round_trips_through_Item(tmp_path):
-    """Checkpoint JSON must deserialise back to the concrete metrics class,
-    or --resume-from would silently produce differently-shaped items."""
-    run_dir = _run(tmp_path)
+def test_the_ingest_checkpoint_round_trips_through_item(settings, sample_items):
+    """Checkpoint JSON must deserialise back to the concrete metrics class
+    with its values intact, or --resume-from silently produces
+    differently-shaped items than the run that wrote them.
+    """
+    items = sample_items[:3]
+    run_dir = run_pipeline(
+        settings, StubSource(items), _provider(items), _store(settings), "run1"
+    )
 
     raw = json.loads((run_dir / "items.json").read_text(encoding="utf-8"))
-    items = [Item.model_validate(entry) for entry in raw]
+    restored = [Item.model_validate(entry) for entry in raw]
 
-    assert items
-    assert all(isinstance(i.metrics, LemmyMetrics) for i in items)
+    assert [i.source_id for i in restored] == ["p01", "p02", "p03"]
+    assert all(isinstance(i.metrics, RedditMetrics) for i in restored)
+    assert restored[0].metrics.channel == "cats"
+    assert restored[0].metrics.score == 48200
 ```
 
 In `tests/test_store.py`:
@@ -718,24 +757,28 @@ def sample_items() -> list[Item]:
     return [Item.model_validate(entry) for entry in raw]
 ```
 
-Restructure every entry in `tests/fixtures/items.json` into the new shape — move `score`, `comment_count`, `channel`, `created_at` under a `metrics` object with `"platform": "lemmy"`, and drop the top-level `platform` key:
+Restructure every entry in `tests/fixtures/items.json` into the new shape — move `score`, `comment_count`, `channel` and `created_at` under a `metrics` object, moving the existing `platform` key inside it.
+
+**Keep `"platform": "reddit"`.** All ten entries are real Reddit data — `reddit.com/r/...` permalinks, bare subreddit channels like `cats` and `aww`, scores in the tens of thousands. Relabelling them `lemmy` would produce a payload no platform could ever emit: a Lemmy item with a Reddit URL and a channel that is not instance-qualified, contradicting `test_channel_is_qualified_by_instance_host`. A fixture that mirrors nothing real proves nothing.
 
 ```json
 {
-  "source_id": "https://lemmy.world/post/1",
-  "title": "Example post",
+  "source_id": "p01",
+  "title": "My cat learned to open the fridge",
   "body_excerpt": null,
-  "permalink": "https://lemmy.world/post/1",
+  "permalink": "https://www.reddit.com/r/cats/comments/p01/",
   "fetched_at": "2026-08-16T12:00:00Z",
   "metrics": {
-    "platform": "lemmy",
-    "score": 120,
-    "comment_count": 14,
-    "channel": "technology@lemmy.world",
+    "platform": "reddit",
+    "score": 48200,
+    "comment_count": 1420,
+    "channel": "cats",
     "created_at": "2026-08-16T09:00:00Z"
   }
 }
 ```
+
+Take the real values for each of the ten entries from the existing `tests/fixtures/posts.json` — only the nesting changes, never a value.
 
 Rename every `sample_posts` usage across the suite to `sample_items`.
 
@@ -785,7 +828,7 @@ git commit -m "Wire pipeline, store and CLI onto Item"
 
 **Files:**
 - Create: `zeitgeist/analysis/scorers/__init__.py`, `zeitgeist/analysis/scorers/base.py`, `zeitgeist/analysis/scorers/lemmy.py`, `zeitgeist/analysis/scorers/reddit.py`
-- Test: `tests/test_scorers_lemmy.py`
+- Test: `tests/test_scorers_lemmy.py`, `tests/test_scorers_reddit.py`
 
 **Interfaces:**
 - Consumes: `LemmyMetrics`, `RedditMetrics` from Task 1.
@@ -908,6 +951,76 @@ def test_scores_stay_within_the_unit_interval():
     assert all(0.0 <= s <= 1.0 for s in scores)
 
 
+def test_the_age_floor_stops_a_minutes_old_item_dominating():
+    """Ported from test_analysis_score.py, which Task 6 rewrites. Without
+    MIN_AGE_HOURS an item seconds old divides by nearly zero and swamps the
+    run purely for being new. Three topics, so normalisation has a real range
+    and the assertion cannot pass on all-zeros: with the floor the first two
+    are indistinguishable, without it the first takes the top of the range
+    away from the genuinely busy topic.
+    """
+    scorer = build_scorer("lemmy", ScoreWeights(), NOW)
+
+    scores = scorer.score(
+        per_topic=[
+            [_m(score=100, comments=10, channel="a@h", age_hours=0.01)],
+            [_m(score=100, comments=10, channel="b@h", age_hours=0.5)],
+            [_m(score=1000, comments=100, channel="c@h", age_hours=1)],
+        ],
+        previous=[None, None, None],
+    )
+
+    assert scores[0] == scores[1]
+    assert scores[2] > scores[0]
+
+
+def test_a_topic_averages_its_items_rather_than_summing_them():
+    """Ported from test_analysis_score.py. Summing would let a topic climb on
+    item count alone: five ordinary items would outrank one genuinely
+    fast-moving item.
+    """
+    scorer = build_scorer("lemmy", ScoreWeights(), NOW)
+
+    scores = scorer.score(
+        per_topic=[
+            [
+                _m(score=100, comments=10, channel="a@h", age_hours=1)
+                for _ in range(5)
+            ],
+            [_m(score=400, comments=40, channel="b@h", age_hours=1)],
+        ],
+        previous=[None, None],
+    )
+
+    assert scores[1] > scores[0]
+
+
+def test_weights_redirect_the_score_between_the_terms_they_name():
+    """Ported from test_weights_are_configurable. Each weight must multiply
+    the term it is named after. The defaults sum to 1.0, which makes
+    `/ base_total` a no-op and lets a swapped pair of weight fields go
+    unnoticed — so this run zeroes the upvote weight, and the heavily
+    discussed topic must win despite having none of the upvotes.
+    """
+    weights = ScoreWeights(
+        upvote_velocity=0.0,
+        comment_velocity=1.0,
+        channel_spread=0.0,
+        rank_delta=0.0,
+    )
+    scorer = build_scorer("lemmy", weights, NOW)
+
+    scores = scorer.score(
+        per_topic=[
+            [_m(score=10000, comments=1, channel="a@h", age_hours=1)],
+            [_m(score=1, comments=10000, channel="b@h", age_hours=1)],
+        ],
+        previous=[None, None],
+    )
+
+    assert scores == [0.0, 1.0]
+
+
 def test_registry_rejects_an_unregistered_platform():
     import pytest
 
@@ -915,10 +1028,91 @@ def test_registry_rejects_an_unregistered_platform():
         build_scorer("myspace", ScoreWeights(), NOW)
 ```
 
+`scorers/reddit.py` is a hand-copied second implementation of the same algorithm, so the two can drift apart silently. Create `tests/test_scorers_reddit.py`:
+
+```python
+"""RedditScorer is a second copy of the Lemmy algorithm over RedditMetrics.
+Nothing else in the suite exercises it: the registry guard checks only that
+the key exists, and the coordinator tests use Lemmy and Wikipedia.
+"""
+
+from datetime import UTC, datetime
+
+from zeitgeist.analysis.scorers import build_scorer
+from zeitgeist.analysis.scorers.base import ScoreWeights
+from zeitgeist.models import RedditMetrics
+
+NOW = datetime(2026, 8, 16, 12, 0, tzinfo=UTC)
+
+
+def _m(score: int, comments: int, channel: str, age_hours: float) -> RedditMetrics:
+    return RedditMetrics(
+        score=score,
+        comment_count=comments,
+        channel=channel,
+        created_at=datetime.fromtimestamp(NOW.timestamp() - age_hours * 3600, tz=UTC),
+    )
+
+
+def test_faster_upvote_velocity_scores_higher():
+    """Two topics, same age and comments; only score differs."""
+    scorer = build_scorer("reddit", ScoreWeights(), NOW)
+
+    scores = scorer.score(
+        per_topic=[
+            [_m(score=1000, comments=10, channel="r/a", age_hours=2)],
+            [_m(score=10, comments=10, channel="r/b", age_hours=2)],
+        ],
+        previous=[None, None],
+    )
+
+    assert scores[0] > scores[1]
+
+
+def test_wider_channel_spread_scores_higher():
+    """Same velocity in both topics and the same item count; only the number
+    of distinct subreddits differs.
+    """
+    scorer = build_scorer("reddit", ScoreWeights(), NOW)
+
+    scores = scorer.score(
+        per_topic=[
+            [
+                _m(score=100, comments=10, channel="r/a", age_hours=2),
+                _m(score=100, comments=10, channel="r/b", age_hours=2),
+            ],
+            [
+                _m(score=100, comments=10, channel="r/c", age_hours=2),
+                _m(score=100, comments=10, channel="r/c", age_hours=2),
+            ],
+        ],
+        previous=[None, None],
+    )
+
+    assert scores[0] > scores[1]
+
+
+def test_a_topic_with_no_history_is_not_treated_as_maximally_rising():
+    """previous=None must default to the topic's own base, giving a delta of
+    zero — not the tempting `previous or 0.0`, which hands every first-run
+    topic a full-marks rise.
+    """
+    scorer = build_scorer("reddit", ScoreWeights(), NOW)
+    groups = [
+        [_m(score=100, comments=10, channel="r/a", age_hours=2)],
+        [_m(score=50, comments=10, channel="r/b", age_hours=2)],
+    ]
+
+    risen = scorer.score(per_topic=groups, previous=[0.0, None])
+    fresh = scorer.score(per_topic=groups, previous=[None, None])
+
+    assert risen[0] > fresh[0]
+```
+
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-uv run pytest tests/test_scorers_lemmy.py -v
+uv run pytest tests/test_scorers_lemmy.py tests/test_scorers_reddit.py -v
 ```
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'zeitgeist.analysis.scorers'`.
@@ -1082,7 +1276,7 @@ def build_scorer(
 - [ ] **Step 4: Run tests to verify they pass**
 
 ```bash
-uv run pytest tests/test_scorers_lemmy.py -v && uv run ty check
+uv run pytest tests/test_scorers_lemmy.py tests/test_scorers_reddit.py -v && uv run ty check
 ```
 
 Expected: PASS.
@@ -1090,7 +1284,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add zeitgeist/analysis/scorers tests/test_scorers_lemmy.py
+git add zeitgeist/analysis/scorers tests/test_scorers_lemmy.py tests/test_scorers_reddit.py
 git commit -m "Add per-platform scorer registry with Lemmy and Reddit"
 ```
 
@@ -1100,7 +1294,7 @@ git commit -m "Add per-platform scorer registry with Lemmy and Reddit"
 
 **Files:**
 - Modify: `zeitgeist/analysis/score.py`, `zeitgeist/analysis/sentiment.py`, `zeitgeist/config.py`
-- Test: `tests/test_analysis_score.py`
+- Test: `tests/test_analysis_score.py`, `tests/test_analysis_sentiment.py`
 
 **Interfaces:**
 - Consumes: `build_scorer`, `ScoreWeights`, `normalise` from Task 5.
@@ -1113,14 +1307,43 @@ Rewrite `tests/test_analysis_score.py`:
 
 ```python
 def test_corroboration_makes_two_platforms_beat_one_stronger_platform():
-    """0.8 on two platforms (x1.25) must outrank 0.9 on one. This is the
-    assertion that fails if the bonus is ever silently zeroed."""
+    """`solo` outscores `corroborated` on the mean of their sub-scores
+    (0.75 vs 0.72375); only the two-platform multiplier reverses that. Both
+    values are hand-derived in the builder's docstring, so zeroing the bonus
+    or dropping the `* bonus` from trend_score fails here.
+    """
     topics, items = _two_topics_one_corroborated()
 
     scored = score_topics(topics, items, NOW, previous={}, weights=ScoreWeights())
 
     by_id = {t.id: t for t in scored}
+    assert by_id["solo"].trend_score == pytest.approx(0.75)
+    assert by_id["corroborated"].trend_score == pytest.approx(0.9046875)
     assert by_id["corroborated"].trend_score > by_id["solo"].trend_score
+
+
+def test_history_is_looked_up_by_platform_then_label_slug():
+    """Hand-derived: bases are [0.7, 0.63, 0.0]. `steady`'s history equals
+    its own base, so it has not risen (raw delta 0.0); `rising` climbed from
+    0.0 (raw delta 0.63). Normalised deltas are [0.0, 1.0, 0.0] and the
+    scores are 0.525 / 0.7225 / 0.0, so `rising` overtakes `steady`.
+
+    This is the only test joining Store.previous_sub_scores to the scorers'
+    `previous` list. A lookup keyed on the raw label, on topic.id, or without
+    the platform level finds nothing: every delta is then zero and `steady`
+    stays ahead at 0.525 against 0.4725.
+    """
+    topics, items = _history_case()
+    previous = {"lemmy": {"steady-eddie": 0.7, "rising-star": 0.0}}
+
+    scored = {
+        t.id: t
+        for t in score_topics(topics, items, NOW, previous, weights=ScoreWeights())
+    }
+
+    assert scored["rising"].trend_score == pytest.approx(0.7225)
+    assert scored["steady"].trend_score == pytest.approx(0.525)
+    assert scored["rising"].trend_score > scored["steady"].trend_score
 
 
 def test_scoring_precedes_the_content_bearing_filter():
@@ -1160,13 +1383,23 @@ def test_a_platform_seen_in_one_topic_is_excluded_from_the_mean():
     assert target.score_components["corroboration"] == 1.25
 
 
-def test_score_components_name_each_contributing_platform():
+def test_score_components_name_every_contributing_platform():
+    """Store.record_topics turns these keys into topic_scores rows, so a
+    platform missing here loses its cross-run history and its rank-delta
+    goes inert. Exact set, not a superset: dropping the corroborating
+    platform is the mutation that matters, and a superset check would let
+    it through.
+    """
     topics, items = _two_topics_one_corroborated()
 
     scored = score_topics(topics, items, NOW, previous={}, weights=ScoreWeights())
 
     corroborated = next(t for t in scored if t.id == "corroborated")
-    assert set(corroborated.score_components) >= {"lemmy", "corroboration"}
+    assert set(corroborated.score_components) == {
+        "lemmy",
+        "wikipedia",
+        "corroboration",
+    }
 
 
 def test_single_platform_run_matches_phase_one_ranking():
@@ -1181,9 +1414,40 @@ def test_single_platform_run_matches_phase_one_ranking():
     assert order == ["fast", "medium", "slow"]
 ```
 
+**This task changes the sentiment prompt, which breaks the test Task 3 added.** `test_prompt_reports_the_item_count` asserts `"Appears in 3 items."`, and the new prompt renders `"Appears in 3 items across 1 platform(s)."` — the substring with the full stop no longer occurs. Replace it in `tests/test_analysis_sentiment.py`:
+
+```python
+def test_prompt_reports_the_item_and_platform_counts():
+    """The platform count comes from score_components minus the
+    corroboration multiplier, which is not a platform: counting it would
+    report three platforms for a two-platform topic.
+    """
+    topic = Topic(
+        id="t",
+        label="T",
+        summary="S",
+        item_ids=["a", "b", "c"],
+        score_components={"lemmy": 0.5, "wikipedia": 0.4, "corroboration": 1.25},
+    )
+
+    prompt = _build_prompt(topic)
+
+    assert "Appears in 3 items across 2 platform(s)." in prompt
+
+
+def test_an_unscored_topic_reports_one_platform_rather_than_zero():
+    """judge_topics is reachable with empty score_components, and
+    "across 0 platform(s)" would be nonsense to the model.
+    """
+    topic = Topic(id="t", label="T", summary="S", item_ids=["a"])
+
+    assert "Appears in 1 items across 1 platform(s)." in _build_prompt(topic)
+```
+
 The five builders, as module-level helpers. Each constructs real `Item`s with real metrics — no mocks:
 
 ```python
+import pytest
 from datetime import UTC, date, datetime
 
 from zeitgeist.analysis.score import score_topics
@@ -1228,21 +1492,51 @@ def _topic(topic_id: str, item_ids: list[str]) -> Topic:
 
 
 def _two_topics_one_corroborated() -> tuple[list[Topic], list[Item]]:
-    """'solo' scores higher on Lemmy alone; 'corroborated' scores slightly
-    lower on Lemmy but is also seen by Wikipedia. Wikipedia needs two topics
-    to be rankable, so a third topic carries its second observation.
+    """Hand-derived so the corroboration bonus is load-bearing.
+
+    Lemmy velocities normalise to [1.0, 0.9, 0.0] and the two leading topics
+    each span two channels, so bases are [1.0, 0.93, 0.0] and — with no
+    history, so the delta term contributes nothing — the lemmy sub-scores
+    are 0.75 * base:
+        solo          0.75
+        corroborated  0.6975
+    Wikipedia ranks 3 and 800 normalise to [1.0, 0.0], so corroborated's
+    wikipedia sub-score is 0.75 and its mean is 0.72375 — BELOW solo's 0.75.
+    Only the x1.25 bonus (0.9046875) puts it ahead, which is what makes a
+    zeroed bonus fail rather than merely shrink the gap.
     """
     items = [
-        _lemmy("s1", score=900, channel="a@h", age_hours=2),
-        _lemmy("c1", score=800, channel="b@h", age_hours=2),
-        _lemmy("f1", score=100, channel="c@h", age_hours=2),
+        _lemmy("s1", score=1000, channel="a@h", age_hours=2),
+        _lemmy("s2", score=1000, channel="b@h", age_hours=2),
+        _lemmy("c1", score=910, channel="c@h", age_hours=2),
+        _lemmy("c2", score=910, channel="d@h", age_hours=2),
+        _lemmy("f1", score=100, channel="e@h", age_hours=2),
         _wiki("w1", rank=3),
         _wiki("w2", rank=800),
     ]
     topics = [
-        _topic("solo", ["s1"]),
-        _topic("corroborated", ["c1", "w1"]),
+        _topic("solo", ["s1", "s2"]),
+        _topic("corroborated", ["c1", "c2", "w1"]),
         _topic("filler", ["f1", "w2"]),
+    ]
+    return topics, items
+
+
+def _history_case() -> tuple[list[Topic], list[Item]]:
+    """Three Lemmy-only topics whose velocities normalise to [1.0, 0.9, 0.0],
+    so bases are [0.7, 0.63, 0.0]. Labels are two words on purpose: the
+    lookup key slugify("Rising Star") == "rising-star" differs from both the
+    raw label and the topic id, so a lookup on either finds nothing.
+    """
+    items = [
+        _lemmy("a", score=1000, channel="a@h", age_hours=2),
+        _lemmy("b", score=910, channel="b@h", age_hours=2),
+        _lemmy("c", score=100, channel="c@h", age_hours=2),
+    ]
+    topics = [
+        Topic(id="steady", label="Steady Eddie", summary="", item_ids=["a"]),
+        Topic(id="rising", label="Rising Star", summary="", item_ids=["b"]),
+        Topic(id="quiet", label="Quiet One", summary="", item_ids=["c"]),
     ]
     return topics, items
 
@@ -1438,7 +1732,7 @@ In `zeitgeist/config.py`, change the `ScoreWeights` import path if it is importe
 uv run pytest tests/test_analysis_score.py -v
 ```
 
-Expected: PASS, with four `xfail` entries pending Task 9.
+Expected: PASS, with five `xfail` entries pending Task 9.
 
 - [ ] **Step 5: Commit**
 
@@ -1611,6 +1905,79 @@ def test_a_fresh_database_is_stamped_with_the_current_version(tmp_path):
 ```
 
 Write `_topic(label, components)` as a module-level helper building a `Topic` with `item_ids=["x"]` and the given `score_components`.
+
+Deleting `previous_scores` orphans five existing tests in this file — `test_previous_scores_is_empty_on_first_run`, `test_most_recent_prior_run_wins`, `test_each_label_tracks_its_own_history`, `test_current_run_is_excluded_from_its_own_history` and `test_previous_scores_ignores_the_excluded_runs_own_history_in_the_max`. They cover the correlated `MAX(started_at)` subquery, which `previous_sub_scores` inherits and extends with a second correlation on `platform`. **Port them rather than dropping them** — every test above uses a single prior run, so without these the subquery has no coverage at all and dropping `MAX(...)`, dropping `s2.platform = s.platform`, or dropping the inner `s2.run_id != ?` all pass:
+
+```python
+def test_previous_sub_scores_is_empty_on_the_first_run(tmp_path):
+    store = Store(tmp_path / "z.db")
+    store.init_schema()
+
+    assert store.previous_sub_scores("r1") == {}
+
+
+def test_the_most_recent_prior_run_wins(tmp_path):
+    """Guards MAX(started_at): without it the lookup returns whichever row
+    SQLite happened to visit first, so rank-delta compares against an
+    arbitrarily old score.
+    """
+    store = Store(tmp_path / "z.db")
+    store.init_schema()
+    for run_id, sub_score in [("r1", 0.2), ("r2", 0.5), ("r3", 0.9)]:
+        store.start_run(run_id)
+        store.record_topics(run_id, [_topic("Cats", {"lemmy": sub_score})])
+        store.finish_run(run_id, status="ok", item_count=1)
+
+    assert store.previous_sub_scores("r4") == {"lemmy": {"cats": 0.9}}
+
+
+def test_each_label_and_platform_tracks_its_own_history(tmp_path):
+    """Guards both correlations: a naive MAX over all runs would give every
+    label the newest run's score, and dropping `s2.platform = s.platform`
+    would let one platform's newer row hide another platform's older one.
+    """
+    store = Store(tmp_path / "z.db")
+    store.init_schema()
+    store.start_run("r1")
+    store.record_topics(
+        "r1",
+        [
+            _topic("Cats", {"lemmy": 0.2, "wikipedia": 0.6}),
+            _topic("Dogs", {"lemmy": 0.9}),
+        ],
+    )
+    store.finish_run("r1", status="ok", item_count=2)
+
+    store.start_run("r2")
+    store.record_topics("r2", [_topic("Cats", {"lemmy": 0.7})])
+    store.finish_run("r2", status="ok", item_count=1)
+
+    assert store.previous_sub_scores("r3") == {
+        "lemmy": {"cats": 0.7, "dogs": 0.9},
+        "wikipedia": {"cats": 0.6},
+    }
+
+
+def test_the_excluded_runs_own_rows_do_not_hide_the_older_run(tmp_path):
+    """Guards the subquery's own `s2.run_id != ?`. Without it the excluded
+    run — the newest for this label and platform — sets MAX(started_at) to a
+    timestamp no included row can match, dropping the label from the result
+    entirely instead of falling back to the older run's score.
+    """
+    store = Store(tmp_path / "z.db")
+    store.init_schema()
+    store.start_run("r1")
+    store.record_topics("r1", [_topic("Cats", {"lemmy": 0.2})])
+    store.finish_run("r1", status="ok", item_count=1)
+
+    store.start_run("r2")
+    store.record_topics("r2", [_topic("Cats", {"lemmy": 0.99})])
+    store.finish_run("r2", status="ok", item_count=1)
+
+    assert store.previous_sub_scores("r2") == {"lemmy": {"cats": 0.2}}
+```
+
+Also port `test_relabelled_topic_is_still_matched_across_runs` — it pins the `slugify` normalisation that `previous_sub_scores` still depends on. Change its assertion to read through the platform level.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -1854,15 +2221,19 @@ def test_scores_stay_within_the_unit_interval():
     assert all(0.0 <= s <= 1.0 for s in scores)
 
 
-def test_wikipedia_is_not_content_bearing():
-    assert WikipediaMetrics.content_bearing is False
-
-
 def test_context_reports_views():
     assert _m(rank=4, views=411486).context == "411,486 views"
 ```
 
-Then remove the four `pytest.mark.xfail` markers added in Task 6.
+Extend the field-set guard added in Task 1 with the third model — `tests/test_models.py`'s parametrize list gains:
+
+```python
+        (WikipediaMetrics, {"platform", "views", "rank", "measured_on"}),
+```
+
+`content_bearing` needs no dedicated assertion: Task 6's `test_topics_with_no_content_bearing_platform_are_dropped` and `test_scoring_precedes_the_content_bearing_filter` both fail immediately if the flag flips, and they test the behaviour rather than the constant.
+
+Then remove the five `pytest.mark.xfail` markers added in Task 6.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -2022,12 +2393,13 @@ Create `tests/test_sources_wikipedia.py`:
 
 ```python
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
 import pytest
 
+from zeitgeist.config import Settings
 from zeitgeist.models import WikipediaMetrics
 from zeitgeist.sources.base import SourceError
 from zeitgeist.sources.wikipedia import MAX_DAY_ATTEMPTS, WikipediaSource
@@ -2128,20 +2500,31 @@ def test_permalink_points_at_the_article():
     assert hayden.permalink == "https://en.wikipedia.org/wiki/Hayden_Panettiere"
 
 
-def test_a_missing_day_falls_back_to_the_previous_one():
-    """Pageviews data is not available immediately for the current day, and
-    how far it lags is not something this source should need to know."""
-    client = _FakeClient(
-        [httpx.HTTPError("not ready"), _Response(_payload())]
-    )
+def _day_from_url(url: str) -> date:
+    """The trailing /YYYY/MM/DD of a pageviews URL."""
+    year, month, day = url.rsplit("/", 3)[-3:]
+    return date(int(year), int(month), int(day))
+
+
+def test_a_missing_day_falls_back_to_exactly_one_day_earlier():
+    """Pageviews data is not published immediately for the current day, and
+    how far it lags is not something this source should need to know. The
+    step must be one day backwards: forwards finds a day that will never
+    have data, and two days silently skips a day that does.
+
+    The URLs are compared to each other rather than to a literal because
+    fetch() derives the first day from datetime.now(UTC), and the suite must
+    not depend on the wall clock.
+    """
+    client = _FakeClient([httpx.HTTPError("not ready"), _Response(_payload())])
     source = WikipediaSource(client=client)
 
     items = source.fetch(limit=50)
 
     assert items
     assert len(client.urls) == 2
-    # Second URL must be one day earlier than the first.
-    assert client.urls[0] != client.urls[1]
+    first, second = (_day_from_url(url) for url in client.urls)
+    assert second == first - timedelta(days=1)
 
 
 def test_exhausting_every_attempt_raises_source_error():
@@ -2188,13 +2571,59 @@ def test_limit_is_applied_after_filtering():
     assert {i.title for i in items} == {"Hayden Panettiere", "Natalie Harp"}
 
 
-def test_the_user_agent_carries_the_configured_contact():
+def test_the_configured_contact_reaches_the_request_headers():
     """Wikimedia's API policy warns that generic agents may be rate-limited
-    or blocked outright, so this is a functional requirement."""
+    or blocked outright, so what matters is the header the client will send,
+    not the string the source happens to store. Asserting the attribute
+    would stay green if the headers= argument were dropped from the client.
+    """
     source = WikipediaSource(contact="https://example.org/bot")
 
+    # Substring, not equality: the version prefix is free to change, and
+    # pinning it would fail on a release bump that broke nothing. What must
+    # hold is that the header exists at all and carries the contact — the
+    # KeyError if headers= were dropped is the break worth catching.
+    assert "https://example.org/bot" in source._client.headers["User-Agent"]
+
+
+def test_a_non_default_project_reaches_the_url_the_id_and_the_permalink():
+    """`project` decides which wiki is measured and is threaded through three
+    places. Only the URL is obvious when it is dropped: a hardcoded
+    en.wikipedia.org permalink sends every reader of a de.wikipedia run to
+    the wrong article, and a project-less source_id makes the same article
+    on two wikis look like one item to CompositeSource.
+    """
+    client = _FakeClient([_Response(_payload())])
+    source = WikipediaSource(project="de.wikipedia", client=client)
+
+    items = source.fetch(limit=50)
+
+    hayden = next(i for i in items if i.title == "Hayden Panettiere")
+    assert "/de.wikipedia/all-access/" in client.urls[0]
+    assert hayden.source_id == "de.wikipedia:Hayden_Panettiere:2026-08-20"
+    assert hayden.permalink == "https://de.wikipedia.org/wiki/Hayden_Panettiere"
+
+
+def test_from_settings_wires_the_project_and_contact_through():
+    """from_settings is plumbing, so it fails silently: a dropped project or
+    contact only shows up in the request that goes out.
+    """
+    settings = Settings(
+        _env_file=None,
+        sources=["wikipedia"],
+        wikipedia_project="fr.wikipedia",
+        wikipedia_contact="https://example.org/bot",
+    )
+
+    source = WikipediaSource.from_settings(settings)
+    source._client = _FakeClient([_Response(_payload())])
+    source.fetch(limit=1)
+
+    assert "/fr.wikipedia/all-access/" in source._client.urls[0]
     assert "https://example.org/bot" in source.user_agent
 ```
+
+Note `test_from_settings_wires_the_project_and_contact_through` depends on the config keys added in Task 11; mark it `@pytest.mark.xfail(reason="Settings keys arrive in Task 11", strict=True)` here and remove the marker in Task 11.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -2342,7 +2771,10 @@ def _to_item(
         source_id=f"{project}:{article}:{measured.isoformat()}",
         title=article.replace("_", " "),
         body_excerpt=None,
-        permalink=f"https://en.wikipedia.org/wiki/{article}",
+        # Built from `project`, not hardcoded: a de.wikipedia run measures
+        # German pageviews, so linking to the English article would send
+        # every reader somewhere the numbers did not come from.
+        permalink=f"https://{project}.org/wiki/{article}",
         fetched_at=fetched_at,
         metrics=WikipediaMetrics(
             views=entry["views"],
@@ -2386,19 +2818,19 @@ In `tests/test_config.py`:
 ```python
 def test_wikipedia_needs_no_credentials():
     """Unlike Reddit, enabling it must not raise at startup — this is the
-    property that keeps the project runnable out of the box."""
+    property that keeps the project runnable out of the box. Fails if
+    _check_sources ever grows a credential branch for wikipedia.
+    """
     settings = Settings(_env_file=None, sources=["lemmy", "wikipedia"])
 
     assert settings.sources == ["lemmy", "wikipedia"]
-
-
-def test_wikipedia_project_defaults_to_english():
-    settings = Settings(_env_file=None)
-
-    assert settings.wikipedia_project == "en.wikipedia"
 ```
 
+There is deliberately **no** `test_wikipedia_project_defaults_to_english`. Asserting `settings.wikipedia_project == "en.wikipedia"` restates the default back at itself: the only change that fails it is someone deciding the default should be a different wiki, which is a decision they are entitled to make, not a bug. Task 10's `test_a_non_default_project_reaches_the_url_the_id_and_the_permalink` covers the part that can actually break — the value being threaded through rather than ignored.
+
 Add `"WIKIPEDIA_PROJECT"` and `"WIKIPEDIA_CONTACT"` to `_SETTINGS_ENV_VARS` in `tests/conftest.py` — without this the suite's result depends on the developer's shell, which the fixture exists to prevent.
+
+Remove the `xfail` marker from `test_from_settings_wires_the_project_and_contact_through` in `tests/test_sources_wikipedia.py`; the Settings keys it needs land in this task.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
