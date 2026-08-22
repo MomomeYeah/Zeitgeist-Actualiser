@@ -45,8 +45,33 @@ distribution-free, which is why it sidesteps the magnitude problem entirely.
 - Multiple Wikipedia language projects. `en.wikipedia` only.
 - Database migration. The project is early; the guard tells the user to delete
   `data/zeitgeist.db` and re-run.
-- Any change to `extract.py`, `consolidate.py`, `sentiment.py`, or the media
-  stages. The `Item` envelope exists precisely so those stay untouched.
+- Any change to the LLM providers or the media stages (`brief.py`,
+  `render.py`, `templates.py`). The `Item` envelope keeps those untouched.
+
+### Correction: the analysis stages are *not* untouched
+
+An earlier draft claimed `extract.py`, `consolidate.py` and `sentiment.py`
+needed no changes. Reading them disproves it:
+
+- `extract.py:70` builds its prompt from `post.channel`, which no longer
+  exists on the envelope and has no Wikipedia equivalent.
+- `consolidate.py:74-88` constructs `Topic(post_ids=...)`.
+- `sentiment.py:90` reads `len(topic.post_ids)`.
+
+The envelope keeps these changes *small* — none of them touch the LLM contract
+or the stage boundaries — but "untouched" was wrong.
+
+`extract.py` needs a per-platform hint to replace `channel`. Each metrics
+model gains a `context` property, delegated through `Item.context`:
+
+| Platform | `context` |
+|---|---|
+| Lemmy, Reddit | the channel, e.g. `"technology@lemmy.world"` |
+| Wikipedia | `f"{views:,} views"` |
+
+So the extraction prompt line becomes
+`f"- id={item.source_id} | {item.context} | {item.title}"`, keeping the same
+shape while giving each platform a hint that is meaningful for it.
 
 ## Platform selection
 
@@ -185,6 +210,11 @@ value is being provably behaviour-preserving.
 validation rather than silently drop the field. That is the right failure —
 loud, at the boundary — and old run directories are as disposable as the
 database at this stage.
+
+For the same reason the ingest checkpoint is renamed `posts.json` →
+`items.json`, the `runs.post_count` column becomes `item_count`, and the CLI
+line in `cli.py:102` reporting `"N posts"` becomes `"N items"`. Leaving these
+as "post" would preserve exactly the confusion this rename exists to remove.
 
 ## WikipediaSource
 
