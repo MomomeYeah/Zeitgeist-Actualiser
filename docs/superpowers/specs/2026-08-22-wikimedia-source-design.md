@@ -547,6 +547,31 @@ the work and carries no user-visible benefit on its own.
 - Multiple language projects. Would give `channel_spread` a natural meaning
   for Wikipedia (an article trending in five languages is bigger news than one
   trending in English), but needs cross-language title unification.
+- **Corroboration combination semantics.** Sub-scores are combined as
+  `mean(sub_scores) * (1 + 0.25 * (n_platforms - 1))`. Because each platform's
+  sub-scores are min-max normalised across the topics *that platform* saw, the
+  bottom of every platform's range is always exactly `0.0`, so a weak
+  corroboration pulls the mean down faster than the bonus lifts it. Break-even
+  is at `W > 0.6*L`: Lemmy 0.80 alone scores 0.800, but Lemmy 0.80 + Wikipedia
+  0.15 scores 0.594 — a 26% demotion for being noticed by a second platform.
+  No test catches this, because
+  `test_corroboration_makes_two_platforms_beat_one_stronger_platform` picks
+  `wikipedia = 0.75`, near the top of Wikipedia's range.
+
+  This may be correct behaviour: a barely-ranked article is arguably evidence
+  that a topic is *not* broadly trending, and the mean expresses that honestly.
+  The open question is whether this section's claim that the bonus is "the only
+  mechanism expressing" multi-platform zeitgeist matches what the arithmetic
+  does. Two alternatives if corroboration should never demote:
+
+  - `max(sub_scores) * (1 + k * (n - 1))` — rank on the strongest single-platform
+    signal, so breadth only ever adds and a weak second platform is ignored
+    rather than averaged in.
+  - `max(mean(sub_scores) * bonus, strongest_content_bearing_sub_score)` — keep
+    the mean's averaging behaviour but floor the result, so corroboration can
+    never push a topic below what it scored alone.
+
+  Revisit once real runs show how often Lemmy and Wikipedia actually overlap.
 - Tuning `corroboration_bonus` against real runs. `0.25` is a starting point.
 - Hacker News and YouTube, both now cheap to add.
 
