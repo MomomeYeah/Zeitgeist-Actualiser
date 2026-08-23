@@ -44,8 +44,8 @@ def test_groups_posts_by_their_tags():
     topics = consolidate(tags_by_post, provider)
 
     assert [t.label for t in topics] == ["Cats", "Space"]
-    assert sorted(topics[0].post_ids) == ["p1", "p2"]
-    assert topics[1].post_ids == ["p3"]
+    assert sorted(topics[0].item_ids) == ["p1", "p2"]
+    assert topics[1].item_ids == ["p3"]
 
 
 def test_assigns_slug_ids():
@@ -119,7 +119,7 @@ def test_matches_returned_tags_case_insensitively():
         ]
     )
     topics = consolidate({"p1": ["cats"]}, provider)
-    assert topics[0].post_ids == ["p1"]
+    assert topics[0].item_ids == ["p1"]
 
     # Also test the reverse: stored tags that are not normalized,
     # with model echoing lowercase.
@@ -131,7 +131,7 @@ def test_matches_returned_tags_case_insensitively():
         ]
     )
     topics = consolidate({"p1": ["Cats"], "p2": [" CATS "]}, provider)
-    assert sorted(topics[0].post_ids) == ["p1", "p2"]
+    assert sorted(topics[0].item_ids) == ["p1", "p2"]
 
 
 def test_failure_returns_empty_list():

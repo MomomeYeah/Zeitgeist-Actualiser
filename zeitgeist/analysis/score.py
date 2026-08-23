@@ -7,7 +7,7 @@ from datetime import datetime
 from pydantic import BaseModel
 
 from zeitgeist.analysis.consolidate import slugify
-from zeitgeist.models import Post, Topic
+from zeitgeist.models import Item, Topic
 
 MIN_AGE_HOURS = 0.5
 
@@ -21,7 +21,7 @@ class ScoreWeights(BaseModel):
 
 def score_topics(
     topics: list[Topic],
-    posts: list[Post],
+    items: list[Item],
     now: datetime,
     previous_scores: dict[str, float],
     weights: ScoreWeights | None = None,
@@ -33,11 +33,11 @@ def score_topics(
     with different case or punctuation across runs still finds its history.
     """
     weights = weights or ScoreWeights()
-    by_id = {post.source_id: post for post in posts}
+    by_id = {item.source_id: item for item in items}
 
-    live: list[tuple[Topic, list[Post]]] = []
+    live: list[tuple[Topic, list[Item]]] = []
     for topic in topics:
-        matched = [by_id[pid] for pid in topic.post_ids if pid in by_id]
+        matched = [by_id[iid] for iid in topic.item_ids if iid in by_id]
         if matched:
             live.append((topic, matched))
 
@@ -46,7 +46,7 @@ def score_topics(
 
     raw_uv = [_mean_velocity(p, now, "score") for _, p in live]
     raw_cv = [_mean_velocity(p, now, "comment_count") for _, p in live]
-    raw_cs = [float(len({post.channel for post in p})) for _, p in live]
+    raw_cs = [float(len(_channels(group))) for _, group in live]
 
     uv, cv, cs = _normalise(raw_uv), _normalise(raw_cv), _normalise(raw_cs)
 
@@ -91,12 +91,21 @@ def score_topics(
     return scored
 
 
-def _mean_velocity(posts: list[Post], now: datetime, attribute: str) -> float:
+def _mean_velocity(items: list[Item], now: datetime, attribute: str) -> float:
     values = []
-    for post in posts:
-        hours = (now - post.created_at).total_seconds() / 3600.0
-        values.append(getattr(post, attribute) / max(hours, MIN_AGE_HOURS))
+    for item in items:
+        # `metrics` is a Lemmy | Wikipedia union; `created_at` only exists on
+        # Lemmy. This module is Lemmy-only until Tasks 5/6 give it
+        # per-platform scoring, which is what actually resolves the union.
+        created_at = item.metrics.created_at  # ty: ignore[unresolved-attribute]
+        hours = (now - created_at).total_seconds() / 3600.0
+        values.append(getattr(item.metrics, attribute) / max(hours, MIN_AGE_HOURS))
     return sum(values) / len(values)
+
+
+def _channels(items: list[Item]) -> set[str]:
+    """Distinct channels among a topic's items. Lemmy-only, see above."""
+    return {item.metrics.channel for item in items}  # ty: ignore[unresolved-attribute]
 
 
 def _normalise(values: list[float]) -> list[float]:

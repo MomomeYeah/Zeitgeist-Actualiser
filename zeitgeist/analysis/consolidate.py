@@ -1,6 +1,6 @@
 """Reduce stage: merge the tag vocabulary into canonical topics.
 
-Only the vocabulary goes to the model, never the posts themselves. That is
+Only the vocabulary goes to the model, never the items themselves. That is
 what keeps this pass inside a small local model's context window.
 """
 
@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 # Every canonical topic must echo its input tags verbatim, so this is
 # the one reply in the pipeline whose size grows with the run: ~300
-# posts yield ~700 distinct tags and ~6k output tokens, well past the
+# items yield ~700 distinct tags and ~6k output tokens, well past the
 # provider default. Budgets above 16k must be streamed, which the
 # Anthropic provider always does.
 CONSOLIDATE_MAX_TOKENS = 32768
@@ -47,13 +47,13 @@ class Consolidation(BaseModel):
 
 
 def consolidate(
-    tags_by_post: dict[str, list[str]], provider: LLMProvider
+    tags_by_item: dict[str, list[str]], provider: LLMProvider
 ) -> list[Topic]:
-    """Turn a post-to-tags map into canonical topics carrying post ids."""
-    if not tags_by_post:
+    """Turn an item-to-tags map into canonical topics carrying item ids."""
+    if not tags_by_item:
         return []
 
-    vocabulary = Counter(tag for tags in tags_by_post.values() for tag in tags)
+    vocabulary = Counter(tag for tags in tags_by_item.values() for tag in tags)
 
     try:
         consolidation = provider.complete(
@@ -71,13 +71,13 @@ def consolidate(
 
     for entry in consolidation.topics:
         wanted = {tag.strip().lower() for tag in entry.tags}
-        post_ids = sorted(
-            post_id
-            for post_id, tags in tags_by_post.items()
+        item_ids = sorted(
+            item_id
+            for item_id, tags in tags_by_item.items()
             if wanted & {t.strip().lower() for t in tags}
         )
-        if not post_ids:
-            log.debug("Dropping topic %r: no posts matched its tags", entry.label)
+        if not item_ids:
+            log.debug("Dropping topic %r: no items matched its tags", entry.label)
             continue
 
         topics.append(
@@ -85,7 +85,7 @@ def consolidate(
                 id=_unique_slug(entry.label, used_ids),
                 label=entry.label,
                 summary=entry.summary,
-                post_ids=post_ids,
+                item_ids=item_ids,
             )
         )
 
@@ -93,7 +93,7 @@ def consolidate(
 
 
 def _build_prompt(vocabulary: Counter) -> str:
-    lines = [f"- {tag} ({count} posts)" for tag, count in vocabulary.most_common()]
+    lines = [f"- {tag} ({count} items)" for tag, count in vocabulary.most_common()]
     listing = "\n".join(lines)
     return (
         "Merge this tag vocabulary into canonical topics.\n\n"

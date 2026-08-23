@@ -87,6 +87,6 @@ def _build_prompt(topic: Topic) -> str:
     return (
         f"Topic: {topic.label}\n"
         f"Summary: {topic.summary}\n"
-        f"Appears in {len(topic.post_ids)} posts.\n\n"
+        f"Appears in {len(topic.item_ids)} items.\n\n"
         "Judge this topic's sentiment and meme potential."
     )

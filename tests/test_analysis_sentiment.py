@@ -1,6 +1,11 @@
 import logging
 
-from zeitgeist.analysis.sentiment import SentimentJudgement, judge_topics, select
+from zeitgeist.analysis.sentiment import (
+    SentimentJudgement,
+    _build_prompt,
+    judge_topics,
+    select,
+)
 from zeitgeist.config import DEFAULT_SENTIMENT_WEIGHTS
 from zeitgeist.llm.base import FakeLLMProvider, LLMError
 from zeitgeist.models import ScoredTopic, Sentiment, Topic
@@ -79,6 +84,16 @@ def test_prompt_contains_label_and_summary():
     judge_topics([_topic("cats")], provider)
     assert "Cats" in provider.calls[0].prompt
     assert "About cats." in provider.calls[0].prompt
+
+
+def test_prompt_reports_the_item_count():
+    """Phase 1 keeps prompt semantics identical apart from the noun, so this
+    asserts 'items' and NOT a platform count — that arrives in Phase 2."""
+    topic = Topic(id="t", label="T", summary="S", item_ids=["a", "b", "c"])
+
+    prompt = _build_prompt(topic)
+
+    assert "Appears in 3 items." in prompt
 
 
 def test_failed_topic_is_dropped_and_run_continues():
