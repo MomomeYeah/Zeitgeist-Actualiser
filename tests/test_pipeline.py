@@ -110,20 +110,29 @@ def test_produces_a_png(settings, sample_items):
 
 
 def test_records_the_run_in_the_store(settings, sample_items):
-    """`previous_sub_scores` can't stand in for `previous_scores` here: the
+    """Guards both that the run row is recorded (start_run/finish_run) and
+    that the pipeline's topics are persisted (record_topics).
+
+    `previous_sub_scores` can't stand in for the persisted-topics check: the
     stub provider consolidates everything into a single topic, and a
     platform contributing to only one topic can't be min-max normalised
     (score.py's MIN_TOPICS_TO_RANK), so it earns no score_components key and
-    no topic_scores row. That's the real boundary the store now has, not
-    something to route around — so this checks the run itself was recorded
-    instead.
+    no topic_scores row. That's a real boundary the store now has, not
+    something to route around — so the topic-persistence guard reads the
+    `topics` table directly instead of going through `previous_sub_scores`.
     """
     posts = sample_items[:3]
     store = _store(settings)
     run_pipeline(settings, StubSource(posts), _provider(posts), store, "run1")
+
     summary = store.run_summary("run1")
     assert summary is not None
     assert summary["status"] == "ok"
+
+    rows = store._conn.execute(
+        "SELECT label FROM topics WHERE run_id = ?", ("run1",)
+    ).fetchall()
+    assert rows == [("cats",)]
 
 
 def test_resume_from_generate_skips_scraping(settings, sample_items):
