@@ -9,15 +9,11 @@ from zeitgeist.models import Post
 FIXTURES = Path(__file__).parent / "fixtures"
 
 # Settings fields that read from the environment. A developer's real shell
-# can plausibly have any of these set (e.g. REDDIT_CLIENT_ID from other
+# can plausibly have any of these set (e.g. ANTHROPIC_API_KEY from other
 # work), and Settings(_env_file=None) only disables .env, not os.environ —
 # so left alone, the suite's result depends on who is running it.
 _SETTINGS_ENV_VARS = (
     "SOURCES",
-    "SUBREDDITS",
-    "REDDIT_CLIENT_ID",
-    "REDDIT_CLIENT_SECRET",
-    "REDDIT_USER_AGENT",
     "ANTHROPIC_API_KEY",
     "LLM_PROVIDER",
     "LLM_MODEL",

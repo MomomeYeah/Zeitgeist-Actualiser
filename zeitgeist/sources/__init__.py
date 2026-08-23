@@ -6,11 +6,9 @@ from zeitgeist.config import Settings
 from zeitgeist.sources.base import Source
 from zeitgeist.sources.composite import CompositeSource
 from zeitgeist.sources.lemmy import LemmySource
-from zeitgeist.sources.reddit import RedditSource
 
 BUILDERS: dict[str, Callable[[Settings], Source]] = {
     "lemmy": LemmySource.from_settings,
-    "reddit": RedditSource.from_settings,
 }
 
 

@@ -3,9 +3,9 @@ from datetime import UTC, datetime
 
 import pytest
 
-from zeitgeist.config import KNOWN_SOURCES, Settings
+from zeitgeist.config import KNOWN_SOURCES
 from zeitgeist.models import Post
-from zeitgeist.sources import BUILDERS, build_source
+from zeitgeist.sources import BUILDERS
 from zeitgeist.sources.base import SourceError
 from zeitgeist.sources.composite import CompositeSource
 from zeitgeist.sources.lemmy import LemmySource
@@ -73,11 +73,11 @@ def test_combines_posts_from_every_source():
     composite = CompositeSource(
         [
             StubSource("lemmy", [_post("lemmy", "l1")]),
-            StubSource("reddit", [_post("reddit", "r1")]),
+            StubSource("wikipedia", [_post("wikipedia", "r1")]),
         ]
     )
     platforms = {post.platform for post in composite.fetch(limit=10)}
-    assert platforms == {"lemmy", "reddit"}
+    assert platforms == {"lemmy", "wikipedia"}
 
 
 def test_divides_the_budget_across_sources():
@@ -85,7 +85,7 @@ def test_divides_the_budget_across_sources():
     others of their share.
     """
     first = StubSource("lemmy", [_post("lemmy", f"l{n}") for n in range(20)])
-    second = StubSource("reddit", [_post("reddit", f"r{n}") for n in range(20)])
+    second = StubSource("wikipedia", [_post("wikipedia", f"r{n}") for n in range(20)])
     CompositeSource([first, second]).fetch(limit=10)
     assert first.requested_limit == 5
     assert second.requested_limit == 5
@@ -94,26 +94,24 @@ def test_divides_the_budget_across_sources():
 def test_respects_the_limit():
     sources = [
         StubSource("lemmy", [_post("lemmy", f"l{n}") for n in range(20)]),
-        StubSource("reddit", [_post("reddit", f"r{n}") for n in range(20)]),
+        StubSource("wikipedia", [_post("wikipedia", f"r{n}") for n in range(20)]),
     ]
     assert len(CompositeSource(sources).fetch(limit=6)) == 6
 
 
 def test_same_id_on_different_platforms_is_not_a_duplicate():
     """source_id is only unique within a platform: Lemmy uses URLs and
-    Reddit uses short base36 ids, but nothing guarantees they never collide.
+    Wikipedia uses page titles, but nothing guarantees they never collide.
     """
     sources = [
         StubSource("lemmy", [_post("lemmy", "shared")]),
-        StubSource("reddit", [_post("reddit", "shared")]),
+        StubSource("wikipedia", [_post("wikipedia", "shared")]),
     ]
     assert len(CompositeSource(sources).fetch(limit=10)) == 2
 
 
 def test_a_failing_source_is_skipped_and_others_still_yield_posts(caplog):
-    """One platform being down must not lose the other's posts — the same
-    isolation RedditSource applies per subreddit.
-    """
+    """One platform being down must not lose the other's posts."""
     composite = CompositeSource(
         [FailingSource(), StubSource("lemmy", [_post("lemmy", "l1")])]
     )
@@ -170,32 +168,3 @@ def test_every_known_source_has_a_builder():
     KeyError once the run is already under way.
     """
     assert set(BUILDERS) == set(KNOWN_SOURCES)
-
-
-def test_build_source_builds_only_the_enabled_sources():
-    """A disabled platform must not be constructed at all: RedditSource's
-    __init__ builds a praw client, so building it anyway would demand
-    credentials the user was told they do not need.
-    """
-    # _env_file=None so a local .env enabling reddit cannot change the result.
-    settings = Settings(_env_file=None, anthropic_api_key="key", sources="lemmy")
-    composite = build_source(settings)
-    assert isinstance(composite, CompositeSource)
-    assert [type(source) for source in composite._sources] == [LemmySource]
-
-
-def test_build_source_preserves_the_configured_order():
-    """The budget is split per source in order, so a registry that reordered
-    them would silently change which platform gets the remainder.
-    """
-    settings = Settings(
-        _env_file=None,
-        anthropic_api_key="key",
-        reddit_client_id="id",
-        reddit_client_secret="secret",
-        sources="lemmy,reddit",
-    )
-    composite = build_source(settings)
-    assert isinstance(composite, CompositeSource)
-    names = [source.name for source in composite._sources]
-    assert names == ["lemmy", "reddit"]

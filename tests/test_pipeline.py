@@ -28,8 +28,6 @@ class StubSource:
 @pytest.fixture
 def settings(tmp_path):
     return Settings(
-        reddit_client_id="id",
-        reddit_client_secret="secret",
         anthropic_api_key="key",
         topic_count=1,
         output_dir=tmp_path / "output",

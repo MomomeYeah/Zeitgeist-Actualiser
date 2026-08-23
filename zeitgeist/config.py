@@ -13,7 +13,7 @@ PACKAGE_ROOT = Path(__file__).parent
 # Registry keys live here rather than in zeitgeist/sources/__init__.py:
 # that module imports Settings, so importing it back would be a cycle.
 # tests/test_sources_composite.py guards the two against drifting.
-KNOWN_SOURCES: tuple[str, ...] = ("lemmy", "reddit")
+KNOWN_SOURCES: tuple[str, ...] = ("lemmy",)
 
 # Favours positive output without excluding anything. The spread is moderate
 # on purpose: a negative topic needs roughly double the combined trend and
@@ -39,10 +39,6 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    reddit_client_id: str = ""
-    reddit_client_secret: str = ""
-    reddit_user_agent: str = "zeitgeist-actualiser/0.1 (by u/anonymous)"
-
     lemmy_instance: str = "https://lemmy.world"
     lemmy_include_nsfw: bool = False
 
@@ -55,7 +51,6 @@ class Settings(BaseSettings):
     # value before validators run, so a plain CSV string like "lemmy,reddit"
     # raises SettingsError before `_split_csv` ever sees it.
     sources: Annotated[list[str], NoDecode] = ["lemmy"]
-    subreddits: Annotated[list[str], NoDecode] = []
     post_limit: int = 500
     topic_count: int = 5
 
@@ -68,7 +63,7 @@ class Settings(BaseSettings):
     output_dir: Path = Path("output")
     db_path: Path = Path("data") / "zeitgeist.db"
 
-    @field_validator("subreddits", "sources", mode="before")
+    @field_validator("sources", mode="before")
     @classmethod
     def _split_csv(cls, value: object) -> object:
         if isinstance(value, str):
@@ -89,21 +84,6 @@ class Settings(BaseSettings):
         if unknown:
             raise ValueError(f"Unknown source(s): {', '.join(unknown)}. Valid: {valid}")
 
-        if "reddit" in self.sources:
-            missing = [
-                name
-                for name, value in (
-                    ("REDDIT_CLIENT_ID", self.reddit_client_id),
-                    ("REDDIT_CLIENT_SECRET", self.reddit_client_secret),
-                )
-                if not value
-            ]
-            if missing:
-                raise ValueError(
-                    f"{' and '.join(missing)} must be set when 'reddit' is in "
-                    "SOURCES. Reddit's Data API requires approved access; drop "
-                    "'reddit' from SOURCES to run without it."
-                )
         return self
 
     def weight_for(self, sentiment: Sentiment) -> float:

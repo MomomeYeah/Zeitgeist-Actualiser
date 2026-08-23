@@ -29,19 +29,6 @@ because instances federate, one already returns posts from across the
 network. `LEMMY_INCLUDE_NSFW` maps to the API's own `show_nsfw` flag and is
 off by default.
 
-Reddit is implemented and tested but ships disabled. Reddit's
-[Responsible Builder Policy](https://support.reddithelp.com/hc/en-us/articles/42728983564564-Responsible-Builder-Policy)
-requires approved access before using the Data API, and the self-serve route
-at `/prefs/apps` no longer issues credentials. If you are granted access, set
-`REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` and add it to the list:
-
-```
-SOURCES=lemmy,reddit
-```
-
-Enabling `reddit` without both credentials fails at startup with a message
-naming the missing variables.
-
 Trend scoring does not yet normalise scores across platforms, and Reddit's
 run orders of magnitude higher than Lemmy's. Running both together will rank
 Reddit-heavy topics too highly rather than raise an error, so treat mixed
