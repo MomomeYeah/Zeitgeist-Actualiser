@@ -120,6 +120,13 @@ All of the following was verified live on 2026-08-23 against
   `cooling`, `stale`.
 - Every one of 25 `link` values had the shape `/profile/{did}/feed/{rkey}`.
   No other shape occurred.
+- All 25 links carried the **same** DID, `did:plc:qrz3lhbyuxbeilrc6nekdqme`,
+  which `app.bsky.actor.getProfile` resolves to the handle
+  `trending.bsky.app` ("Bluesky Trending"). Only `rkey` varies per trend.
+- `app.bsky.feed.getFeedGenerator` on the first trend's `at://` URI returned a
+  feed generator named `'US-Canada tariffs'` — confirming that each trend is
+  backed by its own live custom feed, rather than the source having to select
+  posts itself.
 - `app.bsky.feed.getFeed` against the `at://{did}/app.bsky.feed.generator/
   {rkey}` built from each link → `200` for **25 of 25** trends. Posts carry
   `record.text`, `record.createdAt`, `record.langs`, `indexedAt`, `likeCount`,
@@ -298,6 +305,61 @@ one is told it directly.
 `per_trend` is `max(1, ceil(limit / len(trends)))`, matching how `LemmySource`
 splits its budget across sorts. As there, `limit` is an upper bound rather
 than a target: the loop returns early once `limit` unique items are collected.
+
+### How a trend becomes a list of posts
+
+The two-step shape above is not obvious, and it rests on AT Protocol
+addressing that the rest of this spec assumes rather than states.
+
+Every record in AT Protocol lives in a repository owned by an account and is
+addressed as `at://{did}/{collection}/{rkey}`:
+
+- **`did`** is a *Decentralized Identifier*, the account's permanent id.
+  Handles (`alice.bsky.social`) can be changed or transferred; a DID cannot,
+  so the protocol addresses by DID internally.
+- **`rkey`** is a *record key*, unique within one collection of one
+  repository.
+- **`collection`** is the record's lexicon type — `app.bsky.feed.post` for a
+  post, `app.bsky.feed.generator` for a feed.
+
+A **feed generator** is a record describing a custom feed: the same kind of
+object a user subscribes to in the app. The mechanism this source depends on
+is that **Bluesky mints one feed generator per trend and keeps it live**. We
+do not select or rank posts for a topic — Bluesky already has, and we read the
+result.
+
+Verified on 2026-08-23: all 25 trend links resolved to a **single** DID,
+`did:plc:qrz3lhbyuxbeilrc6nekdqme`, whose handle is `trending.bsky.app`
+("Bluesky Trending"), an official Bluesky service account. Only the `rkey`
+varies per trend. `getFeedGenerator` on the first trend's URI returned a feed
+named `'US-Canada tariffs'`, confirming one feed per trend.
+
+The DID is therefore constant in practice, and the source still parses it out
+of each `link` rather than hardcoding it. A service account DID is exactly the
+sort of thing that gets migrated without an announcement, and parsing costs
+nothing.
+
+Worked example of the conversion in step 2:
+
+```
+link (a web UI path, what bsky.app renders when a human clicks the trend)
+  /profile/did:plc:qrz3lhbyuxbeilrc6nekdqme/feed/b28e21eec571
+  └profile┘ └──────────── did ────────────┘ └feed┘└── rkey ──┘
+
+uri (a record address, what the API accepts)
+  at://did:plc:qrz3lhbyuxbeilrc6nekdqme/app.bsky.feed.generator/b28e21eec571
+       └─────────── did ─────────────┘ └───── collection ─────┘└── rkey ──┘
+```
+
+`did` and `rkey` are copied across verbatim. The only substitution is the UI
+path's human-facing `feed` segment becoming the lexicon name
+`app.bsky.feed.generator`. The resulting URI is URL-encoded into `getFeed`'s
+`feed` query parameter.
+
+Note that only step 1 uses an `unspecced` endpoint. `getFeed` is stable and
+documented, and is the same call the app makes to render any custom feed — so
+the instability risk is confined to *discovering* trends, not to reading their
+content.
 
 A `link` that does not match the `/profile/{did}/feed/{rkey}` shape is logged
 and skipped rather than raising. 25 of 25 matched when verified, but the field
