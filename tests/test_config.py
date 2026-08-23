@@ -63,6 +63,16 @@ def test_sources_parse_from_a_real_env_var(monkeypatch):
     assert Settings(_env_file=None).sources == ["lemmy"]
 
 
+def test_a_multi_source_env_var_splits_on_the_comma(monkeypatch):
+    """Two names in one env var is the shape a real .env carries, and the
+    only shape where the CSV split can be told apart from a no-op.
+    """
+    monkeypatch.setenv("SOURCES", "lemmy,wikipedia")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
+
+    assert Settings(_env_file=None).sources == ["lemmy", "wikipedia"]
+
+
 def test_sources_defaults_to_lemmy_only():
     """A fresh checkout must produce a working run without any credentials
     at all.
@@ -87,3 +97,14 @@ def test_lemmy_settings_have_usable_defaults():
     settings = _bare_settings()
     assert settings.lemmy_instance == "https://lemmy.world"
     assert settings.lemmy_include_nsfw is False
+
+
+def test_wikipedia_needs_no_credentials():
+    """Enabling it must not raise at startup — this is the property that
+    keeps the project runnable with no credentials at all, which is why
+    Wikimedia was chosen. Fails if _check_sources ever grows a credential
+    branch for wikipedia, as it once had for reddit.
+    """
+    settings = Settings(_env_file=None, sources=["lemmy", "wikipedia"])
+
+    assert settings.sources == ["lemmy", "wikipedia"]

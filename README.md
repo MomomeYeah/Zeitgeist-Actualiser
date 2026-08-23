@@ -29,10 +29,20 @@ because instances federate, one already returns posts from across the
 network. `LEMMY_INCLUDE_NSFW` maps to the API's own `show_nsfw` flag and is
 off by default.
 
-Trend scoring does not yet normalise scores across platforms, and Reddit's
-run orders of magnitude higher than Lemmy's. Running both together will rank
-Reddit-heavy topics too highly rather than raise an error, so treat mixed
-sources as experimental until that lands.
+`wikipedia` adds Wikimedia pageviews — the top 1000 most-viewed articles for
+the most recent day with data. It needs no credentials. Unlike Lemmy it
+measures *attention* rather than conversation: articles carry no comments and
+no body text, so a topic Wikipedia alone found is dropped rather than
+ranked. Its role is corroboration — a topic trending on Lemmy *and*
+spiking on Wikipedia outranks one trending on Lemmy alone.
+
+`WIKIPEDIA_CONTACT` is interpolated into the User-Agent. Wikimedia's API
+policy asks for contact information and may rate-limit or block generic
+agents, so set it to your own repository or contact URL if you fork this.
+
+Each platform scores its own contribution to a topic, normalised within that
+platform, before the results are combined. So a busy platform no longer
+swamps a quiet one, and mixing sources is expected rather than experimental.
 
 ## Running
 

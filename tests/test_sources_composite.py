@@ -3,12 +3,13 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from zeitgeist.config import KNOWN_SOURCES
+from zeitgeist.config import KNOWN_SOURCES, Settings
 from zeitgeist.models import Item, LemmyMetrics, Metrics, WikipediaMetrics
-from zeitgeist.sources import BUILDERS
+from zeitgeist.sources import BUILDERS, build_source
 from zeitgeist.sources.base import SourceError
 from zeitgeist.sources.composite import CompositeSource
 from zeitgeist.sources.lemmy import LemmySource
+from zeitgeist.sources.wikipedia import WikipediaSource
 
 
 def _item(platform: str, source_id: str, channel: str = "cats@lemmy.world") -> Item:
@@ -183,3 +184,48 @@ def test_every_known_source_has_a_builder():
     KeyError once the run is already under way.
     """
     assert set(BUILDERS) == set(KNOWN_SOURCES)
+
+
+def test_build_source_builds_only_the_enabled_sources():
+    """A disabled platform must not be constructed at all: build_source
+    indexes BUILDERS by the configured names, and building the rest anyway
+    would spend a client and a request budget on a platform nobody enabled.
+    """
+    settings = Settings(_env_file=None, anthropic_api_key="key", sources="lemmy")
+
+    composite = build_source(settings)
+
+    assert isinstance(composite, CompositeSource)
+    assert [type(source) for source in composite._sources] == [LemmySource]
+
+
+def test_each_registry_key_builds_its_own_source_class():
+    """BUILDERS is a name -> constructor map, so a key wired to the wrong
+    class fails silently. The registry drift tests compare key sets only and
+    would not notice.
+    """
+    settings = Settings(
+        _env_file=None, anthropic_api_key="key", sources="lemmy,wikipedia"
+    )
+
+    composite = build_source(settings)
+
+    assert isinstance(composite, CompositeSource)
+    assert [type(source) for source in composite._sources] == [
+        LemmySource,
+        WikipediaSource,
+    ]
+
+
+def test_build_source_preserves_the_configured_order():
+    """The budget is split per source in order, so a registry that reordered
+    them would silently change which platform gets the remainder.
+    """
+    settings = Settings(
+        _env_file=None, anthropic_api_key="key", sources="wikipedia,lemmy"
+    )
+
+    composite = build_source(settings)
+
+    assert isinstance(composite, CompositeSource)
+    assert [source.name for source in composite._sources] == ["wikipedia", "lemmy"]

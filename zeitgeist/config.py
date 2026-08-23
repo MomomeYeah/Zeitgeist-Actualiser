@@ -13,7 +13,7 @@ PACKAGE_ROOT = Path(__file__).parent
 # Registry keys live here rather than in zeitgeist/sources/__init__.py:
 # that module imports Settings, so importing it back would be a cycle.
 # tests/test_sources_composite.py guards the two against drifting.
-KNOWN_SOURCES: tuple[str, ...] = ("lemmy",)
+KNOWN_SOURCES: tuple[str, ...] = ("lemmy", "wikipedia")
 
 # Favours positive output without excluding anything. The spread is moderate
 # on purpose: a negative topic needs roughly double the combined trend and
@@ -41,6 +41,9 @@ class Settings(BaseSettings):
 
     lemmy_instance: str = "https://lemmy.world"
     lemmy_include_nsfw: bool = False
+
+    wikipedia_project: str = "en.wikipedia"
+    wikipedia_contact: str = "https://github.com/MomomeYeah/Zeitgeist-Actualiser"
 
     anthropic_api_key: str = ""
     llm_provider: Literal["anthropic", "ollama"] = "anthropic"

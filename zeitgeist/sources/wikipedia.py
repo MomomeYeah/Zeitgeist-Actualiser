@@ -63,10 +63,8 @@ class WikipediaSource:
     @classmethod
     def from_settings(cls, settings: Settings) -> WikipediaSource:
         return cls(
-            # Settings.wikipedia_project/wikipedia_contact arrive in Task 10;
-            # narrow suppression, tracked in progress.md, closed by Task 10.
-            project=settings.wikipedia_project,  # ty: ignore[unresolved-attribute]
-            contact=settings.wikipedia_contact,  # ty: ignore[unresolved-attribute]
+            project=settings.wikipedia_project,
+            contact=settings.wikipedia_contact,
         )
 
     def fetch(self, limit: int) -> list[Item]:

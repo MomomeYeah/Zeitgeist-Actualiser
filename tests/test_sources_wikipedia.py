@@ -218,18 +218,15 @@ def test_a_non_default_project_reaches_the_url_the_id_and_the_permalink():
     assert hayden.permalink == "https://de.wikipedia.org/wiki/Hayden_Panettiere"
 
 
-@pytest.mark.xfail(reason="Settings keys arrive in Task 10", strict=True)
 def test_from_settings_wires_the_project_and_contact_through():
     """from_settings is plumbing, so it fails silently: a dropped project or
     contact only shows up in the request that goes out.
     """
-    # wikipedia_project/wikipedia_contact arrive in Task 10; narrow
-    # suppression, tracked in progress.md, closed by Task 10.
     settings = Settings(
         _env_file=None,
         sources=["wikipedia"],
-        wikipedia_project="fr.wikipedia",  # ty: ignore[unknown-argument]
-        wikipedia_contact="https://example.org/bot",  # ty: ignore[unknown-argument]
+        wikipedia_project="fr.wikipedia",
+        wikipedia_contact="https://example.org/bot",
     )
 
     source = WikipediaSource.from_settings(settings)
