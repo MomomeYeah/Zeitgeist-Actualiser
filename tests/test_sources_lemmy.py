@@ -141,11 +141,11 @@ def test_maps_views_onto_posts():
     assert post.platform == "lemmy"
     assert post.source_id == "https://lemmy.world/post/a1"
     assert post.title == "Cat opens door"
-    assert post.score == 99
-    assert post.comment_count == 7
+    assert post.metrics.score == 99
+    assert post.metrics.comment_count == 7
     assert post.permalink == "https://lemmy.world/post/a1"
-    assert post.created_at == datetime(2026, 1, 15, 9, 0, 0, 123456, tzinfo=UTC)
-    assert post.fetched_at > post.created_at
+    assert post.metrics.created_at == datetime(2026, 1, 15, 9, 0, 0, 123456, tzinfo=UTC)
+    assert post.fetched_at > post.metrics.created_at
 
 
 def test_channel_is_qualified_by_instance_host():
@@ -154,7 +154,7 @@ def test_channel_is_qualified_by_instance_host():
     names would undercount the spread.
     """
     pages = {("Hot", 1): [_view("a1", "T", community="memes")]}
-    assert _source(pages).fetch(limit=10)[0].channel == "memes@lemmy.world"
+    assert _source(pages).fetch(limit=10)[0].metrics.channel == "memes@lemmy.world"
 
 
 def test_created_at_is_timezone_aware_when_the_instance_omits_the_zone():
@@ -164,7 +164,7 @@ def test_created_at_is_timezone_aware_when_the_instance_omits_the_zone():
     view = _view("a1", "T")
     view["post"]["published"] = "2026-01-15T09:00:00"
     post = _source({("Hot", 1): [view]}).fetch(limit=10)[0]
-    assert post.created_at == datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
+    assert post.metrics.created_at == datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
 
 
 def test_deduplicates_across_hot_and_scaled():
@@ -342,13 +342,13 @@ def test_malformed_payload_crashes_rather_than_looking_like_an_outage():
         source.fetch(limit=10)
 
 
-def test_mapping_bug_in_to_post_propagates_not_swallowed():
+def test_mapping_bug_in_to_item_propagates_not_swallowed():
     """A genuine bug in the mapping path must crash loudly, not be caught,
     logged as a listing skip, and silently return fewer posts.
     """
     source = _source({("Hot", 1): [_view("a1", "T")]})
-    with patch("zeitgeist.sources.lemmy._to_post") as mock_to_post:
-        mock_to_post.side_effect = ValueError("simulated mapping bug")
+    with patch("zeitgeist.sources.lemmy._to_item") as mock_to_item:
+        mock_to_item.side_effect = ValueError("simulated mapping bug")
         with pytest.raises(ValueError, match="simulated mapping bug"):
             source.fetch(limit=10)
 

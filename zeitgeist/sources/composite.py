@@ -8,7 +8,7 @@ import logging
 import math
 from collections.abc import Sequence
 
-from zeitgeist.models import Post
+from zeitgeist.models import Item
 from zeitgeist.sources.base import Source, SourceError
 
 log = logging.getLogger(__name__)
@@ -25,14 +25,14 @@ class CompositeSource:
         # run from a Lemmy+Reddit one.
         self.name = ",".join(source.name for source in sources)
 
-    def fetch(self, limit: int) -> list[Post]:
+    def fetch(self, limit: int) -> list[Item]:
         log.info("Fetching from sources: %s", self.name)
         per_source = max(1, math.ceil(limit / len(self._sources)))
 
         # Keyed by platform as well as id: source_id is only unique within a
         # platform, and a shortfall is not redistributed — a second pass to
         # top up would double the request count for a marginal gain.
-        seen: dict[tuple[str, str], Post] = {}
+        seen: dict[tuple[str, str], Item] = {}
         for source in self._sources:
             # Each source converts its own recoverable failures (transport
             # errors, an empty listing) into SourceError and lets everything
@@ -42,16 +42,16 @@ class CompositeSource:
             # a mapping error from a changed payload) and must crash here
             # rather than be logged as an unreachable platform.
             try:
-                posts = source.fetch(limit=per_source)
+                items = source.fetch(limit=per_source)
             except SourceError as exc:
                 log.warning("Skipping source %s: %s", source.name, exc)
                 continue
 
-            for post in posts:
-                key = (post.platform, post.source_id)
+            for item in items:
+                key = (item.platform, item.source_id)
                 if key in seen:
                     continue
-                seen[key] = post
+                seen[key] = item
                 if len(seen) >= limit:
                     return list(seen.values())
 

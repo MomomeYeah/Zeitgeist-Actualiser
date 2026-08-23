@@ -1,27 +1,42 @@
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
 from zeitgeist.config import KNOWN_SOURCES
-from zeitgeist.models import Post
+from zeitgeist.models import Item, LemmyMetrics, Metrics, WikipediaMetrics
 from zeitgeist.sources import BUILDERS
 from zeitgeist.sources.base import SourceError
 from zeitgeist.sources.composite import CompositeSource
 from zeitgeist.sources.lemmy import LemmySource
 
 
-def _post(platform, source_id, channel="cats"):
-    return Post(
-        platform=platform,
+def _item(platform: str, source_id: str, channel: str = "cats@lemmy.world") -> Item:
+    """Dispatches on platform so each item carries its own metrics class.
+    Every test in this file builds items through here, so the union is
+    exercised by the whole file rather than by one dedicated test.
+
+    The two branches take different keyword sets on purpose: WikipediaMetrics
+    has no score, comments or channel, and STRICT would reject them.
+    """
+    metrics: Metrics
+    if platform == "lemmy":
+        metrics = LemmyMetrics(
+            score=10,
+            comment_count=2,
+            channel=channel,
+            created_at=datetime(2026, 8, 16, 9, 0, tzinfo=UTC),
+        )
+    elif platform == "wikipedia":
+        metrics = WikipediaMetrics(views=1000, rank=7, measured_on=date(2026, 8, 16))
+    else:
+        raise AssertionError(f"no metrics class for platform {platform!r}")
+    return Item(
         source_id=source_id,
-        title=f"Title {source_id}",
-        permalink=f"https://example.test/{source_id}",
-        score=10,
-        comment_count=2,
-        created_at=datetime(2026, 8, 18, 9, 0, tzinfo=UTC),
-        fetched_at=datetime(2026, 8, 18, 12, 0, tzinfo=UTC),
-        channel=channel,
+        title=f"Post {source_id}",
+        permalink=f"https://example.com/{source_id}",
+        fetched_at=datetime(2026, 8, 16, 12, 0, tzinfo=UTC),
+        metrics=metrics,
     )
 
 
@@ -72,8 +87,8 @@ class _MalformedResponse:
 def test_combines_posts_from_every_source():
     composite = CompositeSource(
         [
-            StubSource("lemmy", [_post("lemmy", "l1")]),
-            StubSource("wikipedia", [_post("wikipedia", "r1")]),
+            StubSource("lemmy", [_item("lemmy", "l1")]),
+            StubSource("wikipedia", [_item("wikipedia", "r1")]),
         ]
     )
     platforms = {post.platform for post in composite.fetch(limit=10)}
@@ -84,8 +99,8 @@ def test_divides_the_budget_across_sources():
     """A single source must not spend the whole POST_LIMIT and starve the
     others of their share.
     """
-    first = StubSource("lemmy", [_post("lemmy", f"l{n}") for n in range(20)])
-    second = StubSource("wikipedia", [_post("wikipedia", f"r{n}") for n in range(20)])
+    first = StubSource("lemmy", [_item("lemmy", f"l{n}") for n in range(20)])
+    second = StubSource("wikipedia", [_item("wikipedia", f"r{n}") for n in range(20)])
     CompositeSource([first, second]).fetch(limit=10)
     assert first.requested_limit == 5
     assert second.requested_limit == 5
@@ -93,8 +108,8 @@ def test_divides_the_budget_across_sources():
 
 def test_respects_the_limit():
     sources = [
-        StubSource("lemmy", [_post("lemmy", f"l{n}") for n in range(20)]),
-        StubSource("wikipedia", [_post("wikipedia", f"r{n}") for n in range(20)]),
+        StubSource("lemmy", [_item("lemmy", f"l{n}") for n in range(20)]),
+        StubSource("wikipedia", [_item("wikipedia", f"r{n}") for n in range(20)]),
     ]
     assert len(CompositeSource(sources).fetch(limit=6)) == 6
 
@@ -104,8 +119,8 @@ def test_same_id_on_different_platforms_is_not_a_duplicate():
     Wikipedia uses page titles, but nothing guarantees they never collide.
     """
     sources = [
-        StubSource("lemmy", [_post("lemmy", "shared")]),
-        StubSource("wikipedia", [_post("wikipedia", "shared")]),
+        StubSource("lemmy", [_item("lemmy", "shared")]),
+        StubSource("wikipedia", [_item("wikipedia", "shared")]),
     ]
     assert len(CompositeSource(sources).fetch(limit=10)) == 2
 
@@ -113,7 +128,7 @@ def test_same_id_on_different_platforms_is_not_a_duplicate():
 def test_a_failing_source_is_skipped_and_others_still_yield_posts(caplog):
     """One platform being down must not lose the other's posts."""
     composite = CompositeSource(
-        [FailingSource(), StubSource("lemmy", [_post("lemmy", "l1")])]
+        [FailingSource(), StubSource("lemmy", [_item("lemmy", "l1")])]
     )
     with caplog.at_level(logging.WARNING):
         posts = composite.fetch(limit=10)
@@ -133,7 +148,7 @@ def test_a_non_source_error_propagates_rather_than_being_swallowed():
     be logged as an unreachable platform and skipped like FailingSource is.
     """
     composite = CompositeSource(
-        [BuggySource(), StubSource("lemmy", [_post("lemmy", "l1")])]
+        [BuggySource(), StubSource("lemmy", [_item("lemmy", "l1")])]
     )
     with pytest.raises(KeyError):
         composite.fetch(limit=10)
