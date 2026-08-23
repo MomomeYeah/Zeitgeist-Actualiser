@@ -78,10 +78,37 @@ class WikipediaMetrics(BaseModel):
         return f"{self.views:,} views"
 
 
+class BlueskyMetrics(BaseModel):
+    """Engagement as Bluesky reports it, plus the trend the post came from."""
+
+    model_config = STRICT
+
+    platform: Literal["bluesky"] = "bluesky"
+    # A post carries its own text, so Bluesky can originate topics.
+    content_bearing: ClassVar[bool] = True
+
+    like_count: int
+    reply_count: int
+    repost_count: int
+    # Trend-level, duplicated onto every post from that trend — as Lemmy's
+    # `channel` is community-level. `trend` gives the extraction prompt the
+    # referent a short post usually omits; `status` is the scorer's movement
+    # term, reported by Bluesky rather than inferred from our own history.
+    trend: str
+    status: Literal["trending", "cooling", "stale"]
+    # From the payload's `indexedAt`, never `record.createdAt`: the latter is
+    # client-supplied, and the scorer divides engagement by age.
+    created_at: datetime
+
+    @property
+    def context(self) -> str:
+        return self.trend
+
+
 # Discriminated on `platform`, so a checkpoint dict deserialises back to the
 # concrete class rather than to whichever union member happens to validate.
 Metrics = Annotated[
-    LemmyMetrics | WikipediaMetrics,
+    LemmyMetrics | WikipediaMetrics | BlueskyMetrics,
     Field(discriminator="platform"),
 ]
 

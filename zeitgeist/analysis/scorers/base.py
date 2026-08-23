@@ -47,8 +47,22 @@ class WikipediaWeights(PlatformWeights):
     platform: Literal["wikipedia"] = "wikipedia"
 
 
+class BlueskyWeights(PlatformWeights):
+    """No spread term. Bluesky caps at 25 trends and has already clustered
+    posts into them, so distinct-trend counts would be near-constant and
+    `normalise` would silently zero the axis. Repost velocity measures the
+    same property — travel beyond the origin audience — directly.
+    """
+
+    platform: Literal["bluesky"] = "bluesky"
+
+    like_velocity: float = 0.35
+    reply_velocity: float = 0.30
+    repost_velocity: float = 0.35
+
+
 PlatformWeightsUnion = Annotated[
-    LemmyWeights | WikipediaWeights,
+    LemmyWeights | WikipediaWeights | BlueskyWeights,
     Field(discriminator="platform"),
 ]
 
@@ -63,6 +77,7 @@ class ScoreWeights(BaseModel):
         default_factory=lambda: {
             "lemmy": LemmyWeights(),
             "wikipedia": WikipediaWeights(),
+            "bluesky": BlueskyWeights(),
         }
     )
 

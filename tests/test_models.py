@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from zeitgeist.models import (
+    BlueskyMetrics,
     Item,
     LemmyMetrics,
     MediaBrief,
@@ -134,6 +135,18 @@ _ENGAGEMENT_FIELDS = {"platform", "score", "comment_count", "channel", "created_
         ),
         (LemmyMetrics, _ENGAGEMENT_FIELDS),
         (WikipediaMetrics, {"platform", "views", "rank", "measured_on"}),
+        (
+            BlueskyMetrics,
+            {
+                "platform",
+                "like_count",
+                "reply_count",
+                "repost_count",
+                "trend",
+                "status",
+                "created_at",
+            },
+        ),
     ],
 )
 def test_models_carry_exactly_the_specified_fields(model, want):
