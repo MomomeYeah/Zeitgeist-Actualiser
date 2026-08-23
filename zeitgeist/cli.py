@@ -98,8 +98,8 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         store.close()
 
     memes = len(list(run_dir.glob("*.png")))
-    posts = (summary or {}).get("post_count", 0)
-    print(f"Run complete: {run_dir} ({posts} posts, {memes} memes)")
+    items = (summary or {}).get("item_count", 0)
+    print(f"Run complete: {run_dir} ({items} items, {memes} memes)")
     return 0
 
 

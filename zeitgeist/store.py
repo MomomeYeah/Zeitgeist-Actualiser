@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS runs (
     started_at  TEXT NOT NULL,
     finished_at TEXT,
     status      TEXT,
-    post_count  INTEGER
+    item_count  INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS topics (
@@ -45,11 +45,11 @@ class Store:
         )
         self._conn.commit()
 
-    def finish_run(self, run_id: str, status: str, post_count: int) -> None:
+    def finish_run(self, run_id: str, status: str, item_count: int) -> None:
         self._conn.execute(
-            "UPDATE runs SET finished_at = ?, status = ?, post_count = ? "
+            "UPDATE runs SET finished_at = ?, status = ?, item_count = ? "
             "WHERE run_id = ?",
-            (_now(), status, post_count, run_id),
+            (_now(), status, item_count, run_id),
         )
         self._conn.commit()
 
@@ -94,12 +94,12 @@ class Store:
         to report what a run actually did.
         """
         row = self._conn.execute(
-            "SELECT status, post_count, finished_at FROM runs WHERE run_id = ?",
+            "SELECT status, item_count, finished_at FROM runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
         if row is None:
             return None
-        return {"status": row[0], "post_count": row[1], "finished_at": row[2]}
+        return {"status": row[0], "item_count": row[1], "finished_at": row[2]}
 
     def close(self) -> None:
         self._conn.close()

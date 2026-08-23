@@ -28,7 +28,7 @@ def test_records_and_reads_back_topic_scores(tmp_path):
     store = _store(tmp_path)
     store.start_run("run1")
     store.record_topics("run1", [_topic("Cats", 0.8)])
-    store.finish_run("run1", status="ok", post_count=10)
+    store.finish_run("run1", status="ok", item_count=10)
 
     # Keyed on slugify(label), not the raw label: see
     # test_relabelled_topic_is_still_matched_across_runs below.
@@ -48,7 +48,7 @@ def test_most_recent_prior_run_wins(tmp_path):
     for run_id, score in [("run1", 0.2), ("run2", 0.5), ("run3", 0.9)]:
         store.start_run(run_id)
         store.record_topics(run_id, [_topic("Cats", score)])
-        store.finish_run(run_id, status="ok", post_count=10)
+        store.finish_run(run_id, status="ok", item_count=10)
 
     assert store.previous_scores(exclude_run_id="run4") == {"cats": 0.9}
 
@@ -60,11 +60,11 @@ def test_each_label_tracks_its_own_history(tmp_path):
     store = _store(tmp_path)
     store.start_run("run1")
     store.record_topics("run1", [_topic("Cats", 0.2), _topic("Dogs", 0.9)])
-    store.finish_run("run1", status="ok", post_count=10)
+    store.finish_run("run1", status="ok", item_count=10)
 
     store.start_run("run2")
     store.record_topics("run2", [_topic("Cats", 0.7)])
-    store.finish_run("run2", status="ok", post_count=10)
+    store.finish_run("run2", status="ok", item_count=10)
 
     assert store.previous_scores(exclude_run_id="run3") == {"cats": 0.7, "dogs": 0.9}
 
@@ -80,7 +80,7 @@ def test_relabelled_topic_is_still_matched_across_runs(tmp_path):
     store = _store(tmp_path)
     store.start_run("run1")
     store.record_topics("run1", [_topic("Shelter Dog Adoption", 0.8)])
-    store.finish_run("run1", status="ok", post_count=10)
+    store.finish_run("run1", status="ok", item_count=10)
 
     scores = store.previous_scores(exclude_run_id="run2")
     assert scores.get(slugify("shelter dog adoption")) == 0.8
@@ -96,16 +96,16 @@ def test_previous_scores_ignores_the_excluded_runs_own_history_in_the_max(tmp_pa
     store = _store(tmp_path)
     store.start_run("run1")
     store.record_topics("run1", [_topic("Cats", 0.2)])
-    store.finish_run("run1", status="ok", post_count=10)
+    store.finish_run("run1", status="ok", item_count=10)
 
     store.start_run("run2")
     store.record_topics("run2", [_topic("Cats", 0.99)])
-    store.finish_run("run2", status="ok", post_count=10)
+    store.finish_run("run2", status="ok", item_count=10)
 
     assert store.previous_scores(exclude_run_id="run2") == {"cats": 0.2}
 
 
-def test_finish_run_records_the_outcome(tmp_path):
+def test_finish_run_records_the_outcome_and_item_count(tmp_path):
     """Without this, deleting the body of finish_run breaks no test, and the
     CLI's closing summary silently reports nothing.
     """
@@ -113,15 +113,15 @@ def test_finish_run_records_the_outcome(tmp_path):
     store.start_run("run1")
     assert store.run_summary("run1") == {
         "status": None,
-        "post_count": None,
+        "item_count": None,
         "finished_at": None,
     }
 
-    store.finish_run("run1", status="ok", post_count=42)
+    store.finish_run("run1", status="ok", item_count=42)
     summary = store.run_summary("run1")
     assert summary is not None
     assert summary["status"] == "ok"
-    assert summary["post_count"] == 42
+    assert summary["item_count"] == 42
     assert summary["finished_at"] is not None
 
 
