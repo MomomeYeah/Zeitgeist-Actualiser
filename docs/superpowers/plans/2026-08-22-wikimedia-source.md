@@ -1346,8 +1346,21 @@ def test_scores_stay_within_the_unit_interval():
     assert all(0.0 <= s <= 1.0 for s in scores)
 
 
-def test_context_reports_views():
-    assert _m(rank=4, views=411486).context == "411,486 views"
+@pytest.mark.parametrize(
+    "views,rank,want",
+    [(411486, 4, "411,486 views"), (1000, 999, "1,000 views")],
+)
+def test_context_reports_views_not_rank(views, rank, want):
+    """The hint the extraction prompt carries for a Wikipedia item, standing
+    where a Lemmy item carries its channel. Rank is deliberately the odd one
+    out in each row: a context built from rank would render "4 views" and
+    "999 views" and fail both.
+
+    The thousands separator is pinned on purpose. It is there so the model
+    reads the magnitude correctly in the prompt, which makes it behaviour
+    rather than incidental formatting.
+    """
+    assert WikipediaMetrics(views=views, rank=rank, measured_on=DAY).context == want
 ```
 
 `content_bearing` needs no dedicated assertion: Task 6's `test_topics_with_no_content_bearing_platform_are_dropped` and `test_scoring_precedes_the_content_bearing_filter` both fail immediately if the flag flips, and they test the behaviour rather than the constant.
@@ -1712,7 +1725,7 @@ def test_single_platform_run_matches_phase_one_ranking():
     assert order == ["fast", "medium", "slow"]
 ```
 
-**This task changes the sentiment prompt, which breaks the test Task 3 added.** `test_prompt_reports_the_item_count` asserts `"Appears in 3 items."`, and the new prompt renders `"Appears in 3 items across 1 platform(s)."` — the substring with the full stop no longer occurs. Replace it in `tests/test_analysis_sentiment.py`:
+**This task changes the sentiment prompt, which breaks the test Task 3 added.** `test_prompt_reports_the_item_count` asserts `"Appears in 3 items."`, and the new prompt renders `"Appears in 3 items across 1 platform(s)."` — the substring with the full stop no longer occurs. Replace it in `tests/test_analysis_sentiment.py`, asserting the counts rather than the sentence so a later rewording of the prompt does not fail it:
 
 ```python
 def test_prompt_reports_the_item_and_platform_counts():
@@ -1730,16 +1743,24 @@ def test_prompt_reports_the_item_and_platform_counts():
 
     prompt = _build_prompt(topic)
 
-    assert "Appears in 3 items across 2 platform(s)." in prompt
+    # The counts, not the sentence: rewording the prompt is a decision
+    # someone is entitled to make, while counting the corroboration
+    # multiplier as a third platform is a bug.
+    assert "3 items" in prompt
+    assert "2 platform" in prompt
 
 
 def test_an_unscored_topic_reports_one_platform_rather_than_zero():
-    """judge_topics is reachable with empty score_components, and
-    "across 0 platform(s)" would be nonsense to the model.
+    """judge_topics is reachable with empty score_components — a topic no
+    scorer ranked — and "0 platform(s)" would be nonsense to the model.
+    Guards the max(len(platforms), 1) floor.
     """
     topic = Topic(id="t", label="T", summary="S", item_ids=["a"])
 
-    assert "Appears in 1 items across 1 platform(s)." in _build_prompt(topic)
+    prompt = _build_prompt(topic)
+
+    assert "1 platform" in prompt
+    assert "0 platform" not in prompt
 ```
 
 The five builders, as module-level helpers. Each constructs real `Item`s with real metrics — no mocks:
@@ -2199,7 +2220,12 @@ def test_a_stale_database_is_rejected_with_an_actionable_message(tmp_path):
     conn.commit()
     conn.close()
 
-    with pytest.raises(StoreSchemaError, match="Delete it and re-run"):
+    # Matches the variable part — which file, and which versions — rather
+    # than the fixed prose, following the same pattern as
+    # tests/test_config.py's match="mastodon". Rewording the instruction is
+    # a decision; failing to name the file the user must delete is a bug,
+    # because the message is the only place that path appears.
+    with pytest.raises(StoreSchemaError, match=r"z\.db.*version 1.*expects 2"):
         Store(path).init_schema()
 
 
