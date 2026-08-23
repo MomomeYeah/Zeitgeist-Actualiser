@@ -17,12 +17,12 @@ import logging
 import math
 import re
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any
 
 import httpx
 
 from zeitgeist.config import Settings
-from zeitgeist.models import BlueskyMetrics, Item
+from zeitgeist.models import BlueskyMetrics, Item, TrendStatus
 from zeitgeist.sources.base import SourceError
 
 log = logging.getLogger(__name__)
@@ -43,13 +43,18 @@ LINK_PATTERN = re.compile(r"^/profile/(?P<did>[^/]+)/feed/(?P<rkey>[^/]+)$")
 LANGUAGE = "en"
 
 # trendView#status is typed `{"type": "string", "knownValues": ["hot"]}`.
-# knownValues is explicitly non-exhaustive in AT Protocol, so "trending" /
-# "cooling" / "stale" (observed live) are legitimate alongside "hot" (the one
-# value actually documented) — but BlueskyMetrics.status stays a closed
-# Literal on the model side, so the mapping happens here at the boundary.
-STATUS_MAP: dict[str, Literal["trending", "cooling", "stale"]] = {
+# knownValues is explicitly non-exhaustive in AT Protocol, so every value
+# observed live — "trending", "saturating", "cooling", "stale" — is
+# legitimate alongside "hot", the one value actually documented.
+# BlueskyMetrics.status stays a closed Literal on the model side, so the
+# open set is collapsed onto it here, at the boundary. Anything not listed
+# below degrades to the middle of the scale with a warning rather than
+# raising: an enum that widens again is not a contract break.
+STATUS_MAP: dict[str, TrendStatus] = {
     "hot": "trending",
     "trending": "trending",
+    # Undocumented but real: 2 of 25 live trends carried it on 2026-08-23.
+    "saturating": "saturating",
     "cooling": "cooling",
     "stale": "stale",
 }
@@ -190,7 +195,7 @@ def _to_item(
     )
 
 
-def _normalise_status(raw: str | None) -> Literal["trending", "cooling", "stale"]:
+def _normalise_status(raw: str | None) -> TrendStatus:
     """A missing or unrecognised status is the open enum working as
     documented, not a contract break, so this degrades to the neutral middle
     of STATUS_MOVEMENT's scale rather than crashing the run. The warning is

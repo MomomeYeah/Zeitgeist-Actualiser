@@ -1,5 +1,4 @@
 from datetime import UTC, datetime
-from typing import Literal
 
 import pytest
 from pydantic import ValidationError
@@ -7,13 +6,14 @@ from pydantic import ValidationError
 from zeitgeist.analysis.score import score_topics
 from zeitgeist.analysis.scorers import build_scorer
 from zeitgeist.analysis.scorers.base import BlueskyWeights, ScoreWeights
-from zeitgeist.models import BlueskyMetrics, Item, Topic
+from zeitgeist.models import BlueskyMetrics, Item, Topic, TrendStatus
 
 NOW = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
 
 # Aliased because `status: str` does not type-check against the model's
 # Literal field, and ty covers tests/ as part of the definition of done.
-Status = Literal["trending", "cooling", "stale"]
+# Aliased from the model so the two cannot drift.
+Status = TrendStatus
 
 
 def _m(
@@ -94,7 +94,12 @@ def test_a_topic_averages_its_posts_rather_than_summing_them():
 
 @pytest.mark.parametrize(
     "higher,lower",
-    [("trending", "cooling"), ("cooling", "stale"), ("trending", "stale")],
+    [
+        ("trending", "saturating"),
+        ("saturating", "cooling"),
+        ("cooling", "stale"),
+        ("trending", "stale"),
+    ],
 )
 def test_status_orders_topics_with_an_identical_base(higher, lower):
     """Every engagement figure is equal, so the status term is the only thing

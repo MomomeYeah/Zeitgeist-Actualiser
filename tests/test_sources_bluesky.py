@@ -229,6 +229,24 @@ def test_a_trend_with_hot_status_maps_to_trending():
     assert _metrics(items[0]).status == "trending"
 
 
+def test_a_saturating_trend_passes_through_without_warning(caplog):
+    """`saturating` is undocumented but real: 2 of 25 live trends carried it on
+    2026-08-23. It means still large with growth flattening, so it is a known
+    value with its own place on the scale, not an unrecognised one — and it
+    must not spend the warning that exists to surface genuinely new values.
+    """
+    source = _source(
+        {"trends": [_trend("t1", "A trend", status="saturating")]},
+        {"t1": {"feed": [_post("p1")]}},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        items = source.fetch(limit=10)
+
+    assert _metrics(items[0]).status == "saturating"
+    assert caplog.records == []
+
+
 def test_a_trend_with_an_unrecognised_status_defaults_to_cooling_and_warns(caplog):
     """`knownValues` is explicitly non-exhaustive in AT Protocol, so a fifth
     value must survive rather than crash the whole run — but still be

@@ -17,7 +17,15 @@ from zeitgeist.models import BlueskyMetrics
 
 # Bluesky reports movement directly, so unlike the other scorers this one
 # never consults the previous run.
-STATUS_MOVEMENT = {"trending": 1.0, "cooling": 0.5, "stale": 0.0}
+# `saturating` sits between trending and cooling on purpose: it means the
+# trend is still large but its growth has flattened, which is more movement
+# than cooling and less than still climbing.
+STATUS_MOVEMENT = {
+    "trending": 1.0,
+    "saturating": 0.75,
+    "cooling": 0.5,
+    "stale": 0.0,
+}
 
 
 class BlueskyScorer:

@@ -78,6 +78,12 @@ class WikipediaMetrics(BaseModel):
         return f"{self.views:,} views"
 
 
+# Named because the source, the model and the scorer all have to agree on
+# this set. `saturating` is undocumented by Bluesky but real; see STATUS_MAP
+# in sources/bluesky.py for how unknown values are handled at the boundary.
+TrendStatus = Literal["trending", "saturating", "cooling", "stale"]
+
+
 class BlueskyMetrics(BaseModel):
     """Engagement as Bluesky reports it, plus the trend the post came from."""
 
@@ -95,7 +101,7 @@ class BlueskyMetrics(BaseModel):
     # referent a short post usually omits; `status` is the scorer's movement
     # term, reported by Bluesky rather than inferred from our own history.
     trend: str
-    status: Literal["trending", "cooling", "stale"]
+    status: TrendStatus
     # From the payload's `indexedAt`, never `record.createdAt`: the latter is
     # client-supplied, and the scorer divides engagement by age.
     created_at: datetime
