@@ -1,0 +1,142 @@
+[
+  {
+    "source_id": "https://lemmy.world/post/1801",
+    "title": "My rescue cat finally learned to open the bedroom door",
+    "body_excerpt": null,
+    "permalink": "https://lemmy.world/post/1801",
+    "fetched_at": "2026-08-16T12:00:00Z",
+    "metrics": {
+      "platform": "lemmy",
+      "score": 482,
+      "comment_count": 37,
+      "channel": "cats@lemmy.world",
+      "created_at": "2026-08-16T09:00:00Z"
+    }
+  },
+  {
+    "source_id": "https://lemmy.world/post/1802",
+    "title": "Shelter dog meets the family that adopted him",
+    "body_excerpt": null,
+    "permalink": "https://lemmy.world/post/1802",
+    "fetched_at": "2026-08-16T12:00:00Z",
+    "metrics": {
+      "platform": "lemmy",
+      "score": 391,
+      "comment_count": 22,
+      "channel": "aww@lemmy.world",
+      "created_at": "2026-08-16T10:30:00Z"
+    }
+  },
+  {
+    "source_id": "https://lemmy.world/post/1803",
+    "title": "Kitten discovers its reflection for the first time",
+    "body_excerpt": null,
+    "permalink": "https://lemmy.world/post/1803",
+    "fetched_at": "2026-08-16T12:00:00Z",
+    "metrics": {
+      "platform": "lemmy",
+      "score": 214,
+      "comment_count": 15,
+      "channel": "aww@lemmy.world",
+      "created_at": "2026-08-16T11:00:00Z"
+    }
+  },
+  {
+    "source_id": "https://lemmy.ml/post/9004",
+    "title": "New telescope image shows a galaxy nobody expected",
+    "body_excerpt": "The survey team says the structure is far older than models predicted.",
+    "permalink": "https://lemmy.ml/post/9004",
+    "fetched_at": "2026-08-16T12:00:00Z",
+    "metrics": {
+      "platform": "lemmy",
+      "score": 330,
+      "comment_count": 41,
+      "channel": "space@lemmy.ml",
+      "created_at": "2026-08-16T08:00:00Z"
+    }
+  },
+  {
+    "source_id": "https://lemmy.ml/post/9005",
+    "title": "Astronomers confirm the unexpected galaxy finding",
+    "body_excerpt": null,
+    "permalink": "https://lemmy.ml/post/9005",
+    "fetched_at": "2026-08-16T12:00:00Z",
+    "metrics": {
+      "platform": "lemmy",
+      "score": 128,
+      "comment_count": 19,
+      "channel": "science@lemmy.ml",
+      "created_at": "2026-08-16T11:15:00Z"
+    }
+  },
+  {
+    "source_id": "https://sh.itjust.works/post/331",
+    "title": "My sourdough finally worked after eleven failures",
+    "body_excerpt": "Eleven. I counted.",
+    "permalink": "https://sh.itjust.works/post/331",
+    "fetched_at": "2026-08-16T12:00:00Z",
+    "metrics": {
+      "platform": "lemmy",
+      "score": 94,
+      "comment_count": 11,
+      "channel": "baking@sh.itjust.works",
+      "created_at": "2026-08-16T07:00:00Z"
+    }
+  },
+  {
+    "source_id": "https://sh.itjust.works/post/332",
+    "title": "Bread bakers of Reddit, what is your worst loaf?",
+    "body_excerpt": null,
+    "permalink": "https://sh.itjust.works/post/332",
+    "fetched_at": "2026-08-16T12:00:00Z",
+    "metrics": {
+      "platform": "lemmy",
+      "score": 31,
+      "comment_count": 28,
+      "channel": "baking@sh.itjust.works",
+      "created_at": "2026-08-16T11:45:00Z"
+    }
+  },
+  {
+    "source_id": "https://lemmy.world/post/1808",
+    "title": "This new phone launch has gone about as well as expected",
+    "body_excerpt": null,
+    "permalink": "https://lemmy.world/post/1808",
+    "fetched_at": "2026-08-16T12:00:00Z",
+    "metrics": {
+      "platform": "lemmy",
+      "score": 276,
+      "comment_count": 64,
+      "channel": "technology@lemmy.world",
+      "created_at": "2026-08-16T06:00:00Z"
+    }
+  },
+  {
+    "source_id": "https://lemmy.world/post/1809",
+    "title": "Company walks back the phone launch pricing after backlash",
+    "body_excerpt": null,
+    "permalink": "https://lemmy.world/post/1809",
+    "fetched_at": "2026-08-16T12:00:00Z",
+    "metrics": {
+      "platform": "lemmy",
+      "score": 189,
+      "comment_count": 51,
+      "channel": "technology@lemmy.world",
+      "created_at": "2026-08-16T11:30:00Z"
+    }
+  },
+  {
+    "source_id": "https://lemmy.ml/post/9010",
+    "title": "Mildly interesting: my coffee formed a perfect spiral",
+    "body_excerpt": null,
+    "permalink": "https://lemmy.ml/post/9010",
+    "fetched_at": "2026-08-16T12:00:00Z",
+    "metrics": {
+      "platform": "lemmy",
+      "score": 8,
+      "comment_count": 4,
+      "channel": "mildlyinteresting@lemmy.ml",
+      "created_at": "2026-08-16T05:00:00Z"
+    }
+  }
+]

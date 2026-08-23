@@ -11,7 +11,7 @@ import logging
 from pydantic import BaseModel, Field
 
 from zeitgeist.llm.base import LLMProvider
-from zeitgeist.models import ScoredTopic, Sentiment, Topic
+from zeitgeist.models import NON_PLATFORM_COMPONENTS, ScoredTopic, Sentiment, Topic
 
 log = logging.getLogger(__name__)
 
@@ -84,9 +84,13 @@ def select(
 
 
 def _build_prompt(topic: Topic) -> str:
+    platforms = [
+        key for key in topic.score_components if key not in NON_PLATFORM_COMPONENTS
+    ]
     return (
         f"Topic: {topic.label}\n"
         f"Summary: {topic.summary}\n"
-        f"Appears in {len(topic.post_ids)} posts.\n\n"
+        f"Appears in {len(topic.item_ids)} items across "
+        f"{max(len(platforms), 1)} platform(s).\n\n"
         "Judge this topic's sentiment and meme potential."
     )

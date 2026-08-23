@@ -19,7 +19,7 @@ def _view(ap_id, title, score=10, comments=2, community="cats", body=""):
     """Mirrors a real lemmy.world post view, including fields the mapper
     ignores. Captured from the live API on 2026-08-18.
 
-    Trimming this to only what `_to_post` reads today would let a later
+    Trimming this to only what `_to_item` reads today would let a later
     change reference a field that was never in the test data — the tests
     would pass while the real payload broke.
     """
@@ -141,11 +141,11 @@ def test_maps_views_onto_posts():
     assert post.platform == "lemmy"
     assert post.source_id == "https://lemmy.world/post/a1"
     assert post.title == "Cat opens door"
-    assert post.score == 99
-    assert post.comment_count == 7
+    assert post.metrics.score == 99
+    assert post.metrics.comment_count == 7
     assert post.permalink == "https://lemmy.world/post/a1"
-    assert post.created_at == datetime(2026, 1, 15, 9, 0, 0, 123456, tzinfo=UTC)
-    assert post.fetched_at > post.created_at
+    assert post.metrics.created_at == datetime(2026, 1, 15, 9, 0, 0, 123456, tzinfo=UTC)
+    assert post.fetched_at > post.metrics.created_at
 
 
 def test_channel_is_qualified_by_instance_host():
@@ -154,7 +154,7 @@ def test_channel_is_qualified_by_instance_host():
     names would undercount the spread.
     """
     pages = {("Hot", 1): [_view("a1", "T", community="memes")]}
-    assert _source(pages).fetch(limit=10)[0].channel == "memes@lemmy.world"
+    assert _source(pages).fetch(limit=10)[0].metrics.channel == "memes@lemmy.world"
 
 
 def test_created_at_is_timezone_aware_when_the_instance_omits_the_zone():
@@ -164,11 +164,11 @@ def test_created_at_is_timezone_aware_when_the_instance_omits_the_zone():
     view = _view("a1", "T")
     view["post"]["published"] = "2026-01-15T09:00:00"
     post = _source({("Hot", 1): [view]}).fetch(limit=10)[0]
-    assert post.created_at == datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
+    assert post.metrics.created_at == datetime(2026, 1, 15, 9, 0, tzinfo=UTC)
 
 
 def test_deduplicates_across_hot_and_scaled():
-    """The two listings overlap heavily, as hot and rising do on Reddit."""
+    """The two listings overlap heavily: hot posts are usually also rising."""
     same = _view("a1", "Same post")
     pages = {("Hot", 1): [same], ("Scaled", 1): [same]}
     assert len(_source(pages).fetch(limit=10)) == 1
@@ -307,8 +307,8 @@ def test_network_failure_raises_source_error():
 
 
 def test_one_failing_listing_still_yields_the_other(caplog):
-    """Mirrors the per-subreddit isolation in RedditSource: Stage A is fatal
-    only when nothing worked.
+    """Mirrors the per-listing isolation contract in base.py: Stage A is
+    fatal only when nothing worked.
     """
 
     class HalfFailingClient(StubClient):
@@ -342,12 +342,29 @@ def test_malformed_payload_crashes_rather_than_looking_like_an_outage():
         source.fetch(limit=10)
 
 
-def test_mapping_bug_in_to_post_propagates_not_swallowed():
+def test_mapping_bug_in_to_item_propagates_not_swallowed():
     """A genuine bug in the mapping path must crash loudly, not be caught,
     logged as a listing skip, and silently return fewer posts.
     """
     source = _source({("Hot", 1): [_view("a1", "T")]})
-    with patch("zeitgeist.sources.lemmy._to_post") as mock_to_post:
-        mock_to_post.side_effect = ValueError("simulated mapping bug")
+    with patch("zeitgeist.sources.lemmy._to_item") as mock_to_item:
+        mock_to_item.side_effect = ValueError("simulated mapping bug")
         with pytest.raises(ValueError, match="simulated mapping bug"):
             source.fetch(limit=10)
+
+
+def test_fixture_meets_the_preconditions_later_tests_assume(sample_items):
+    """items.json is shared by the extract, pipeline and scoring suites,
+    which assume a spread of channels and unique ids. Trimming it must fail
+    loudly here rather than quietly flattening channel_spread everywhere.
+
+    source_id == permalink because the Lemmy source sets both from ap_id
+    (see _to_item), so a fixture where they differ describes a payload no
+    source can emit.
+    """
+    assert len(sample_items) >= 10
+    assert len({item.metrics.channel for item in sample_items}) >= 4
+    assert all("@" in item.metrics.channel for item in sample_items)
+    assert all(item.metrics.created_at.tzinfo is not None for item in sample_items)
+    assert len({item.source_id for item in sample_items}) == len(sample_items)
+    assert all(item.source_id == item.permalink for item in sample_items)

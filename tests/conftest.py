@@ -4,26 +4,24 @@ from pathlib import Path
 
 import pytest
 
-from zeitgeist.models import Post
+from zeitgeist.models import Item
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 # Settings fields that read from the environment. A developer's real shell
-# can plausibly have any of these set (e.g. REDDIT_CLIENT_ID from other
+# can plausibly have any of these set (e.g. ANTHROPIC_API_KEY from other
 # work), and Settings(_env_file=None) only disables .env, not os.environ —
 # so left alone, the suite's result depends on who is running it.
 _SETTINGS_ENV_VARS = (
     "SOURCES",
-    "SUBREDDITS",
-    "REDDIT_CLIENT_ID",
-    "REDDIT_CLIENT_SECRET",
-    "REDDIT_USER_AGENT",
     "ANTHROPIC_API_KEY",
     "LLM_PROVIDER",
     "LLM_MODEL",
     "OLLAMA_HOST",
     "LEMMY_INSTANCE",
     "LEMMY_INCLUDE_NSFW",
+    "WIKIPEDIA_PROJECT",
+    "WIKIPEDIA_CONTACT",
     "SENTIMENT_WEIGHTS",
     "POST_LIMIT",
     "TOPIC_COUNT",
@@ -43,12 +41,12 @@ def _clean_settings_env(monkeypatch):
 
 
 @pytest.fixture
-def sample_posts() -> list[Post]:
-    raw = json.loads((FIXTURES / "posts.json").read_text(encoding="utf-8"))
-    return [Post.model_validate(entry) for entry in raw]
+def sample_items() -> list[Item]:
+    raw = json.loads((FIXTURES / "items.json").read_text(encoding="utf-8"))
+    return [Item.model_validate(entry) for entry in raw]
 
 
 @pytest.fixture
 def fixture_now() -> datetime:
-    """The `fetched_at` shared by every fixture post."""
+    """The `fetched_at` shared by every fixture item."""
     return datetime(2026, 8, 16, 12, 0, tzinfo=UTC)

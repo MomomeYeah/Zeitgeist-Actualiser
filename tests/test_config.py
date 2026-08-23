@@ -8,44 +8,9 @@ from zeitgeist.models import Sentiment
 
 def _settings(**overrides: Any) -> Settings:
     defaults: dict[str, Any] = dict(
-        reddit_client_id="id",
-        reddit_client_secret="secret",
         anthropic_api_key="key",
     )
     return Settings(**{**defaults, **overrides})
-
-
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        ("cats,aww", ["cats", "aww"]),
-        ("cats, aww ,mildlyinteresting", ["cats", "aww", "mildlyinteresting"]),
-        ("cats,,aww,", ["cats", "aww"]),
-        ("  ", []),
-        ("", []),
-        (["cats", "aww"], ["cats", "aww"]),
-    ],
-)
-def test_subreddits_parse_from_env_strings(raw, expected):
-    """Env vars arrive as strings; the validator has to survive the messy
-    ways a human writes a list into a .env file.
-    """
-    assert _settings(subreddits=raw).subreddits == expected
-
-
-def test_subreddits_parse_from_a_real_env_var(monkeypatch):
-    """pydantic-settings JSON-decodes list-typed fields before validators
-    run when the value comes from a real env var, so a plain CSV string
-    here would raise SettingsError unless the field opts out of that
-    pre-decode. The kwargs-based tests above go through InitSettingsSource,
-    which never JSON-decodes, so they cannot catch a regression here.
-    """
-    monkeypatch.setenv("SUBREDDITS", "cats,aww")
-    monkeypatch.setenv("REDDIT_CLIENT_ID", "id")
-    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "secret")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
-    settings = Settings(_env_file=None)
-    assert settings.subreddits == ["cats", "aww"]
 
 
 def test_every_sentiment_has_a_default_weight():
@@ -65,7 +30,7 @@ def test_weight_for_falls_back_to_neutral_when_unconfigured():
 
 
 def _bare_settings(**overrides) -> Settings:
-    """No .env, no Reddit credentials — a fresh checkout's starting point."""
+    """No .env — a fresh checkout's starting point."""
     return Settings(_env_file=None, anthropic_api_key="key", **overrides)
 
 
@@ -73,52 +38,46 @@ def _bare_settings(**overrides) -> Settings:
     "raw,expected",
     [
         ("lemmy", ["lemmy"]),
-        ("lemmy,reddit", ["lemmy", "reddit"]),
-        ("lemmy, reddit ", ["lemmy", "reddit"]),
-        ("LEMMY,Reddit", ["lemmy", "reddit"]),
+        (" lemmy ", ["lemmy"]),
+        ("LEMMY", ["lemmy"]),
+        ("lemmy,,", ["lemmy"]),
         (["lemmy"], ["lemmy"]),
     ],
 )
 def test_sources_parse_from_env_strings(raw, expected):
     """SOURCES arrives from .env as one string, and the names are registry
-    keys, so case must not decide whether a platform runs.
+    keys, so case and stray separators must not decide whether a platform runs.
     """
     assert _settings(sources=raw).sources == expected
 
 
 def test_sources_parse_from_a_real_env_var(monkeypatch):
-    """Same JSON-pre-decode hazard as subreddits above, checked through the
-    real env-var path rather than the InitSettingsSource kwargs path.
+    """pydantic-settings JSON-decodes list-typed fields before validators run
+    when the value comes from a real env var, so a plain CSV string here
+    raises SettingsError unless the field opts out via NoDecode. The
+    kwargs-based tests above go through InitSettingsSource, which never
+    JSON-decodes, so they cannot catch a regression here.
     """
-    monkeypatch.setenv("SOURCES", "lemmy,reddit")
-    monkeypatch.setenv("REDDIT_CLIENT_ID", "id")
-    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("SOURCES", "lemmy")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
-    settings = Settings(_env_file=None)
-    assert settings.sources == ["lemmy", "reddit"]
+    assert Settings(_env_file=None).sources == ["lemmy"]
+
+
+def test_a_multi_source_env_var_splits_on_the_comma(monkeypatch):
+    """Two names in one env var is the shape a real .env carries, and the
+    only shape where the CSV split can be told apart from a no-op.
+    """
+    monkeypatch.setenv("SOURCES", "lemmy,wikipedia")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
+
+    assert Settings(_env_file=None).sources == ["lemmy", "wikipedia"]
 
 
 def test_sources_defaults_to_lemmy_only():
-    """Reddit's Data API needs approved access, so a fresh checkout must
-    produce a working run without any credentials at all.
+    """A fresh checkout must produce a working run without any credentials
+    at all.
     """
     assert _bare_settings().sources == ["lemmy"]
-
-
-def test_enabling_reddit_without_credentials_is_rejected():
-    """The failure has to name the missing variables: 'validation error' on
-    a field the user never set is not an actionable message.
-    """
-    with pytest.raises(ValueError) as err:
-        _bare_settings(sources="reddit")
-    message = str(err.value)
-    assert "REDDIT_CLIENT_ID" in message
-    assert "REDDIT_CLIENT_SECRET" in message
-
-
-def test_enabling_reddit_with_credentials_is_accepted():
-    settings = _settings(sources="lemmy,reddit")
-    assert settings.sources == ["lemmy", "reddit"]
 
 
 def test_unknown_source_is_rejected_with_the_valid_names():
@@ -138,3 +97,14 @@ def test_lemmy_settings_have_usable_defaults():
     settings = _bare_settings()
     assert settings.lemmy_instance == "https://lemmy.world"
     assert settings.lemmy_include_nsfw is False
+
+
+def test_wikipedia_needs_no_credentials():
+    """Enabling it must not raise at startup — this is the property that
+    keeps the project runnable with no credentials at all, which is why
+    Wikimedia was chosen. Fails if _check_sources ever grows a credential
+    branch for wikipedia, as it once had for reddit.
+    """
+    settings = Settings(_env_file=None, sources=["lemmy", "wikipedia"])
+
+    assert settings.sources == ["lemmy", "wikipedia"]

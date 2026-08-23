@@ -1,107 +1,109 @@
-"""Trend scoring. Pure Python on purpose: reproducible and unit-testable,
-which an LLM's numeric judgment is not.
+"""Trend scoring coordinator.
+
+Each platform scores its own contribution to a topic, normalised within that
+platform; this module dispatches to those scorers and combines what they
+return. Keeping the arithmetic here pure — no I/O, no LLM — is deliberate:
+it is reproducible and unit-testable, which an LLM's numeric judgment is not.
 """
 
 from datetime import datetime
 
-from pydantic import BaseModel
-
 from zeitgeist.analysis.consolidate import slugify
-from zeitgeist.models import Post, Topic
+from zeitgeist.analysis.scorers import build_scorer
+from zeitgeist.analysis.scorers.base import ScoreWeights
+from zeitgeist.models import Item, Topic
 
-MIN_AGE_HOURS = 0.5
+__all__ = ["ScoreWeights", "score_topics"]
 
-
-class ScoreWeights(BaseModel):
-    upvote_velocity: float = 0.4
-    comment_velocity: float = 0.3
-    channel_spread: float = 0.3
-    rank_delta: float = 0.25
+# A platform contributing to fewer topics than this cannot be min-max
+# normalised: the range is degenerate. Its presence still counts toward
+# corroboration, but it contributes no number to the mean.
+MIN_TOPICS_TO_RANK = 2
 
 
 def score_topics(
     topics: list[Topic],
-    posts: list[Post],
+    items: list[Item],
     now: datetime,
-    previous_scores: dict[str, float],
+    previous: dict[str, dict[str, float]],
     weights: ScoreWeights | None = None,
 ) -> list[Topic]:
     """Attach a trend score and its component breakdown to each topic.
 
-    `previous_scores` is keyed by ``slugify(label)`` (see
-    ``Store.previous_scores``), not the raw label, so a topic relabelled
+    `previous` is keyed platform -> slugify(label) -> sub-score (see
+    ``Store.previous_sub_scores``), not the raw label, so a topic relabelled
     with different case or punctuation across runs still finds its history.
     """
     weights = weights or ScoreWeights()
-    by_id = {post.source_id: post for post in posts}
+    by_id = {item.source_id: item for item in items}
 
-    live: list[tuple[Topic, list[Post]]] = []
+    live: list[tuple[Topic, list[Item]]] = []
     for topic in topics:
-        matched = [by_id[pid] for pid in topic.post_ids if pid in by_id]
+        matched = [by_id[iid] for iid in topic.item_ids if iid in by_id]
         if matched:
             live.append((topic, matched))
 
     if not live:
         return []
 
-    raw_uv = [_mean_velocity(p, now, "score") for _, p in live]
-    raw_cv = [_mean_velocity(p, now, "comment_count") for _, p in live]
-    raw_cs = [float(len({post.channel for post in p})) for _, p in live]
+    platforms = sorted({item.platform for _, group in live for item in group})
 
-    uv, cv, cs = _normalise(raw_uv), _normalise(raw_cv), _normalise(raw_cs)
+    # Step 2 of the spec's ordering: score across ALL live topics, before the
+    # content-bearing filter runs. Filtering first would hand a scorer a single
+    # value, and min-max over one value is 0.0 — so a corroborating platform
+    # would penalise the topic it is meant to lift.
+    presence: dict[str, list[bool]] = {}
+    scores: dict[str, list[float | None]] = {}
 
-    base_total = (
-        weights.upvote_velocity + weights.comment_velocity + weights.channel_spread
-    )
-    bases = [
-        (
-            weights.upvote_velocity * uv[i]
-            + weights.comment_velocity * cv[i]
-            + weights.channel_spread * cs[i]
+    for platform in platforms:
+        groups = [
+            [item.metrics for item in group if item.platform == platform]
+            for _, group in live
+        ]
+        presence[platform] = [bool(g) for g in groups]
+        scores[platform] = [None] * len(live)
+
+        present = [i for i, g in enumerate(groups) if g]
+        if len(present) < MIN_TOPICS_TO_RANK:
+            continue
+
+        scorer = build_scorer(platform, weights, now)
+        values = scorer.score(
+            per_topic=[groups[i] for i in present],
+            previous=[
+                previous.get(platform, {}).get(slugify(live[i][0].label))
+                for i in present
+            ],
         )
-        / base_total
-        if base_total
-        else 0.0
-        for i in range(len(live))
-    ]
-
-    raw_delta = [
-        bases[i] - previous_scores.get(slugify(topic.label), bases[i])
-        for i, (topic, _) in enumerate(live)
-    ]
-    delta = _normalise(raw_delta)
+        for position, index in enumerate(present):
+            scores[platform][index] = values[position]
 
     scored: list[Topic] = []
-    for i, (topic, _) in enumerate(live):
-        trend = (1.0 - weights.rank_delta) * bases[i] + weights.rank_delta * delta[i]
+    for index, (topic, group) in enumerate(live):
+        if not any(item.content_bearing for item in group):
+            continue
+
+        contributing = [p for p in platforms if presence[p][index]]
+        # Built with an explicit loop rather than a comprehension: ty does not
+        # narrow `float | None` away across a repeated subscript expression,
+        # so binding the value to a local is what makes `ranked` a
+        # dict[str, float] and keeps `sum` well-typed.
+        ranked: dict[str, float] = {}
+        for platform in contributing:
+            value = scores[platform][index]
+            if value is not None:
+                ranked[platform] = value
+
+        mean = sum(ranked.values()) / len(ranked) if ranked else 0.0
+        bonus = 1.0 + weights.corroboration_bonus * (len(contributing) - 1)
+
+        components: dict[str, float] = dict(ranked)
+        components["corroboration"] = bonus
+
         scored.append(
             topic.model_copy(
-                update={
-                    "trend_score": trend,
-                    "score_components": {
-                        "upvote_velocity": uv[i],
-                        "comment_velocity": cv[i],
-                        "channel_spread": cs[i],
-                        "rank_delta": delta[i],
-                        "base": bases[i],
-                    },
-                }
+                update={"trend_score": mean * bonus, "score_components": components}
             )
         )
+
     return scored
-
-
-def _mean_velocity(posts: list[Post], now: datetime, attribute: str) -> float:
-    values = []
-    for post in posts:
-        hours = (now - post.created_at).total_seconds() / 3600.0
-        values.append(getattr(post, attribute) / max(hours, MIN_AGE_HOURS))
-    return sum(values) / len(values)
-
-
-def _normalise(values: list[float]) -> list[float]:
-    """Min-max normalise. A zero range yields zeros, never a division error."""
-    low, high = min(values), max(values)
-    if high - low == 0:
-        return [0.0] * len(values)
-    return [(value - low) / (high - low) for value in values]

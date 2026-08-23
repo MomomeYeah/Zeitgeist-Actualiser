@@ -3,12 +3,12 @@ import json
 import pytest
 
 from zeitgeist.analysis.consolidate import ConsolidatedTopic, Consolidation
-from zeitgeist.analysis.extract import PostTags, TagExtraction
+from zeitgeist.analysis.extract import ItemTags, TagExtraction
 from zeitgeist.analysis.sentiment import SentimentJudgement
 from zeitgeist.config import Settings
 from zeitgeist.llm.base import FakeLLMProvider, LLMError
 from zeitgeist.media.brief import BriefChoice
-from zeitgeist.models import Sentiment
+from zeitgeist.models import Item, LemmyMetrics, Sentiment
 from zeitgeist.pipeline import Stage, run_pipeline
 from zeitgeist.store import Store
 
@@ -28,8 +28,6 @@ class StubSource:
 @pytest.fixture
 def settings(tmp_path):
     return Settings(
-        reddit_client_id="id",
-        reddit_client_secret="secret",
         anthropic_api_key="key",
         topic_count=1,
         output_dir=tmp_path / "output",
@@ -42,7 +40,7 @@ def _provider(posts):
         [
             TagExtraction(
                 assignments=[
-                    PostTags(post_id=post.source_id, tags=["cats"]) for post in posts
+                    ItemTags(item_id=post.source_id, tags=["cats"]) for post in posts
                 ]
             ),
             Consolidation(
@@ -73,32 +71,72 @@ def _store(settings):
     return store
 
 
-def test_writes_every_checkpoint(settings, sample_posts):
-    posts = sample_posts[:3]
+def test_writes_every_checkpoint(settings, sample_items):
+    posts = sample_items[:3]
     run_dir = run_pipeline(
         settings, StubSource(posts), _provider(posts), _store(settings), "run1"
     )
-    for name in ("posts.json", "topics.json", "ranked.json", "briefs.json"):
+    for name in ("items.json", "topics.json", "ranked.json", "briefs.json"):
         assert (run_dir / name).is_file()
 
 
-def test_produces_a_png(settings, sample_posts):
-    posts = sample_posts[:3]
+def test_the_ingest_checkpoint_round_trips_through_item(settings, sample_items):
+    """Checkpoint JSON must deserialise back to the concrete metrics class
+    with its values intact, or --resume-from silently produces
+    differently-shaped items than the run that wrote them.
+    """
+    items = sample_items[:3]
+    run_dir = run_pipeline(
+        settings, StubSource(items), _provider(items), _store(settings), "run1"
+    )
+
+    raw = json.loads((run_dir / "items.json").read_text(encoding="utf-8"))
+    restored = [Item.model_validate(entry) for entry in raw]
+
+    assert [i.source_id for i in restored] == [i.source_id for i in items]
+    assert all(isinstance(i.metrics, LemmyMetrics) for i in restored)
+    first_metrics = restored[0].metrics
+    assert isinstance(first_metrics, LemmyMetrics)  # narrows for ty below
+    assert first_metrics.channel == "cats@lemmy.world"
+    assert first_metrics.score == 482
+
+
+def test_produces_a_png(settings, sample_items):
+    posts = sample_items[:3]
     run_dir = run_pipeline(
         settings, StubSource(posts), _provider(posts), _store(settings), "run1"
     )
     assert list(run_dir.glob("*.png"))
 
 
-def test_records_the_run_in_the_store(settings, sample_posts):
-    posts = sample_posts[:3]
+def test_records_the_run_in_the_store(settings, sample_items):
+    """Guards both that the run row is recorded (start_run/finish_run) and
+    that the pipeline's topics are persisted (record_topics).
+
+    `previous_sub_scores` can't stand in for the persisted-topics check: the
+    stub provider consolidates everything into a single topic, and a
+    platform contributing to only one topic can't be min-max normalised
+    (score.py's MIN_TOPICS_TO_RANK), so it earns no score_components key and
+    no topic_scores row. That's a real boundary the store now has, not
+    something to route around — so the topic-persistence guard reads the
+    `topics` table directly instead of going through `previous_sub_scores`.
+    """
+    posts = sample_items[:3]
     store = _store(settings)
     run_pipeline(settings, StubSource(posts), _provider(posts), store, "run1")
-    assert store.previous_scores(exclude_run_id="run2") != {}
+
+    summary = store.run_summary("run1")
+    assert summary is not None
+    assert summary["status"] == "ok"
+
+    rows = store._conn.execute(
+        "SELECT label FROM topics WHERE run_id = ?", ("run1",)
+    ).fetchall()
+    assert rows == [("cats",)]
 
 
-def test_resume_from_generate_skips_scraping(settings, sample_posts):
-    posts = sample_posts[:3]
+def test_resume_from_generate_skips_scraping(settings, sample_items):
+    posts = sample_items[:3]
     source = StubSource(posts)
     run_pipeline(settings, source, _provider(posts), _store(settings), "run1")
     assert source.fetch_calls == 1
@@ -123,11 +161,11 @@ def test_resume_from_generate_skips_scraping(settings, sample_posts):
     assert source.fetch_calls == 1
 
 
-def test_resume_without_checkpoint_raises(settings, sample_posts):
+def test_resume_without_checkpoint_raises(settings, sample_items):
     with pytest.raises(FileNotFoundError):
         run_pipeline(
             settings,
-            StubSource(sample_posts),
+            StubSource(sample_items),
             FakeLLMProvider(),
             _store(settings),
             "never-ran",
@@ -135,17 +173,17 @@ def test_resume_without_checkpoint_raises(settings, sample_posts):
         )
 
 
-def test_a_failing_stage_degrades_rather_than_killing_the_run(settings, sample_posts):
+def test_a_failing_stage_degrades_rather_than_killing_the_run(settings, sample_items):
     """The spec's central error rule: fewer memes is a success, no output is
     a failure. One topic's sentiment call fails; the other must still reach
     a rendered PNG.
     """
-    posts = sample_posts[:3]
+    posts = sample_items[:3]
     provider = FakeLLMProvider(
         [
             TagExtraction(
                 assignments=[
-                    PostTags(post_id=post.source_id, tags=["cats"]) for post in posts
+                    ItemTags(item_id=post.source_id, tags=["cats"]) for post in posts
                 ]
             ),
             Consolidation(
@@ -185,8 +223,8 @@ def test_a_failing_stage_degrades_rather_than_killing_the_run(settings, sample_p
     assert len(list(run_dir.glob("*.png"))) == 1
 
 
-def test_checkpoints_are_valid_json(settings, sample_posts):
-    posts = sample_posts[:3]
+def test_checkpoints_are_valid_json(settings, sample_items):
+    posts = sample_items[:3]
     run_dir = run_pipeline(
         settings, StubSource(posts), _provider(posts), _store(settings), "run1"
     )

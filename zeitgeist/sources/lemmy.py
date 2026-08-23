@@ -2,8 +2,8 @@
 
 Needs no credentials: Lemmy's API is open and unauthenticated. Pulls `Hot`
 (what is currently large) and `Scaled` (Hot normalised by community size, so
-posts climbing in smaller communities surface), mirroring the hot/rising pair
-the Reddit source uses.
+posts climbing in smaller communities surface) — two listings covering both
+what is already big and what is newly rising.
 """
 
 import logging
@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from zeitgeist.config import Settings
-from zeitgeist.models import Post
+from zeitgeist.models import Item, LemmyMetrics
 from zeitgeist.sources.base import SourceError
 
 log = logging.getLogger(__name__)
@@ -26,8 +26,8 @@ PAGE_SIZE = 50
 SORTS = ("Hot", "Scaled")
 TIMEOUT_SECONDS = 30.0
 # Some instances sit behind a CDN that filters the default httpx UA. Static
-# rather than configurable: unlike Reddit's, this API needs no per-app
-# identity, just something that is not the bare library default.
+# rather than configurable: this API needs no per-app identity, just
+# something that is not the bare library default.
 USER_AGENT = "zeitgeist-actualiser/0.1"
 
 
@@ -53,7 +53,7 @@ class LemmySource:
             include_nsfw=settings.lemmy_include_nsfw,
         )
 
-    def fetch(self, limit: int) -> list[Post]:
+    def fetch(self, limit: int) -> list[Item]:
         # Split the budget evenly between the two listings. Hot and Scaled
         # overlap heavily, so dedup typically removes a meaningful share of
         # what each contributes — a run yields fewer than `limit` unique
@@ -61,7 +61,7 @@ class LemmySource:
         per_sort = max(1, math.ceil(limit / len(SORTS)))
         fetched_at = datetime.now(UTC)
 
-        seen: dict[str, Post] = {}
+        seen: dict[str, Item] = {}
         for sort in SORTS:
             # Only transport failure is tolerated. A KeyError from a changed
             # payload propagates: that is a contract break, not an outage.
@@ -74,10 +74,10 @@ class LemmySource:
             # Mapping is pure: a bug here must crash, not look like an
             # unreachable instance.
             for view in views:
-                post = _to_post(view, fetched_at)
-                if post.source_id in seen:
+                item = _to_item(view, fetched_at)
+                if item.source_id in seen:
                     continue
-                seen[post.source_id] = post
+                seen[item.source_id] = item
                 if len(seen) >= limit:
                     return list(seen.values())
 
@@ -116,22 +116,23 @@ class LemmySource:
         return collected[:budget]
 
 
-def _to_post(view: dict[str, Any], fetched_at: datetime) -> Post:
+def _to_item(view: dict[str, Any], fetched_at: datetime) -> Item:
     post = view["post"]
     counts = view["counts"]
     body = (post.get("body") or "").strip()
-    return Post(
-        platform="lemmy",
+    return Item(
         source_id=post["ap_id"],
         title=post["name"],
         body_excerpt=body[:BODY_EXCERPT_CHARS] or None,
         # ap_id is the canonical URL of the post on its home instance.
         permalink=post["ap_id"],
-        score=counts["score"],
-        comment_count=counts["comments"],
-        created_at=_parse_published(post["published"]),
         fetched_at=fetched_at,
-        channel=_channel(view["community"]),
+        metrics=LemmyMetrics(
+            score=counts["score"],
+            comment_count=counts["comments"],
+            channel=_channel(view["community"]),
+            created_at=_parse_published(post["published"]),
+        ),
     )
 
 

@@ -2,7 +2,7 @@
 
 from typing import Protocol
 
-from zeitgeist.models import Post
+from zeitgeist.models import Item
 
 
 class SourceError(Exception):
@@ -12,4 +12,4 @@ class SourceError(Exception):
 class Source(Protocol):
     name: str
 
-    def fetch(self, limit: int) -> list[Post]: ...
+    def fetch(self, limit: int) -> list[Item]: ...

@@ -23,7 +23,7 @@ from zeitgeist.llm.base import LLMProvider
 from zeitgeist.media.brief import generate_briefs
 from zeitgeist.media.render import RenderError, render_meme
 from zeitgeist.media.templates import TemplateManifest, load_templates
-from zeitgeist.models import MediaBrief, Post, ScoredTopic, Topic
+from zeitgeist.models import Item, MediaBrief, ScoredTopic, Topic
 from zeitgeist.sources.base import Source
 from zeitgeist.store import Store
 
@@ -57,21 +57,21 @@ def run_pipeline(
     resuming = ORDER.index(start_at)
 
     store.start_run(run_id)
-    posts: list[Post] = []
+    items: list[Item] = []
 
-    # Stage A — fatal on failure: with no posts there is nothing to analyse.
+    # Stage A — fatal on failure: with no items there is nothing to analyse.
     if resuming <= ORDER.index(Stage.INGEST):
-        posts = source.fetch(limit=settings.post_limit)
-        log.info("Fetched %d posts", len(posts))
-        _write(run_dir / "posts.json", posts)
+        items = source.fetch(limit=settings.post_limit)
+        log.info("Fetched %d items", len(items))
+        _write(run_dir / "items.json", items)
     else:
-        posts = _read(run_dir / "posts.json", Post)
+        items = _read(run_dir / "items.json", Item)
 
     if resuming <= ORDER.index(Stage.ANALYSE):
-        tags = extract_tags(posts, provider)
+        tags = extract_tags(items, provider)
         topics = consolidate(tags, provider)
         topics = score_topics(
-            topics, posts, datetime.now(UTC), store.previous_scores(run_id)
+            topics, items, datetime.now(UTC), store.previous_sub_scores(run_id)
         )
         log.info("Identified %d topics", len(topics))
         store.record_topics(run_id, topics)
@@ -95,7 +95,7 @@ def run_pipeline(
     rendered = _render_all(briefs, templates, settings, run_dir)
     log.info("Rendered %d memes into %s", rendered, run_dir)
 
-    store.finish_run(run_id, status="ok", post_count=len(posts))
+    store.finish_run(run_id, status="ok", item_count=len(items))
     return run_dir
 
 
@@ -121,7 +121,7 @@ def _render_all(
     return count
 
 
-# Sequence rather than list: list is invariant, so a list[Post] is not a
+# Sequence rather than list: list is invariant, so a list[Item] is not a
 # list[BaseModel] and every call site was rejected. _write only iterates.
 def _write(path: Path, models: Sequence[BaseModel]) -> None:
     payload = [model.model_dump(mode="json") for model in models]

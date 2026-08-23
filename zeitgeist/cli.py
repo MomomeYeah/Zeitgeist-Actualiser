@@ -11,7 +11,7 @@ from zeitgeist.media.templates import TemplateError, validate_templates
 from zeitgeist.pipeline import Stage, new_run_id, run_pipeline
 from zeitgeist.sources import build_source
 from zeitgeist.sources.base import SourceError
-from zeitgeist.store import Store
+from zeitgeist.store import Store, StoreSchemaError
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -78,10 +78,10 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
 
     settings = _settings_or_exit(parser)
     store = Store(settings.db_path)
-    store.init_schema()
 
     try:
         try:
+            store.init_schema()
             run_dir = run_pipeline(
                 settings=settings,
                 source=build_source(settings),
@@ -90,7 +90,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
                 run_id=args.run_id or new_run_id(),
                 start_at=start_at,
             )
-        except (SourceError, TemplateError) as exc:
+        except (SourceError, TemplateError, StoreSchemaError) as exc:
             print(f"Run failed: {exc}")
             return 1
         summary = store.run_summary(args.run_id or run_dir.name)
@@ -98,8 +98,8 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         store.close()
 
     memes = len(list(run_dir.glob("*.png")))
-    posts = (summary or {}).get("post_count", 0)
-    print(f"Run complete: {run_dir} ({posts} posts, {memes} memes)")
+    items = (summary or {}).get("item_count", 0)
+    print(f"Run complete: {run_dir} ({items} items, {memes} memes)")
     return 0
 
 

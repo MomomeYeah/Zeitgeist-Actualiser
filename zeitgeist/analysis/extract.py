@@ -1,4 +1,4 @@
-"""Map stage: each batch of posts becomes a set of topic tags.
+"""Map stage: each batch of items becomes a set of topic tags.
 
 Batches are independent, so a failure loses one batch rather than the run.
 """
@@ -8,44 +8,44 @@ import logging
 from pydantic import BaseModel
 
 from zeitgeist.llm.base import LLMProvider
-from zeitgeist.models import Post
+from zeitgeist.models import Item
 
 log = logging.getLogger(__name__)
 
 BATCH_SIZE = 40
-MAX_TAGS_PER_POST = 3
+MAX_TAGS_PER_ITEM = 3
 
 EXTRACT_SYSTEM = (
-    "You label social media posts with the topics they are about. "
+    "You label social media items with the topics they are about. "
     "Topic tags are short noun phrases in lower case, two or three words at "
     "most, describing the subject rather than the reaction to it. Prefer "
     "specific tags over generic ones: 'shelter dog adoption' beats 'animals'. "
-    f"Give each post at most {MAX_TAGS_PER_POST} tags."
+    f"Give each item at most {MAX_TAGS_PER_ITEM} tags."
 )
 
 
-class PostTags(BaseModel):
-    """Topic tags for one post."""
+class ItemTags(BaseModel):
+    """Topic tags for one item."""
 
-    post_id: str
+    item_id: str
     tags: list[str]
 
 
 class TagExtraction(BaseModel):
-    """Tags for every post in one batch."""
+    """Tags for every item in one batch."""
 
-    assignments: list[PostTags]
+    assignments: list[ItemTags]
 
 
 def extract_tags(
-    posts: list[Post], provider: LLMProvider, *, batch_size: int = BATCH_SIZE
+    items: list[Item], provider: LLMProvider, *, batch_size: int = BATCH_SIZE
 ) -> dict[str, list[str]]:
-    """Map every post to its topic tags. Failed batches are skipped."""
-    known_ids = {post.source_id for post in posts}
+    """Map every item to its topic tags. Failed batches are skipped."""
+    known_ids = {item.source_id for item in items}
     tags: dict[str, list[str]] = {}
 
-    for start in range(0, len(posts), batch_size):
-        batch = posts[start : start + batch_size]
+    for start in range(0, len(items), batch_size):
+        batch = items[start : start + batch_size]
         # Built outside the try: a bug here must crash loudly, not be
         # misreported as a failed batch and silently skipped.
         prompt = _build_prompt(batch)
@@ -58,20 +58,20 @@ def extract_tags(
             continue
 
         for assignment in extraction.assignments:
-            if assignment.post_id not in known_ids:
+            if assignment.item_id not in known_ids:
                 continue
-            tags[assignment.post_id] = _clean(assignment.tags)
+            tags[assignment.item_id] = _clean(assignment.tags)
 
     return tags
 
 
-def _build_prompt(batch: list[Post]) -> str:
-    lines = [f"- id={post.source_id} | {post.channel} | {post.title}" for post in batch]
+def _build_prompt(batch: list[Item]) -> str:
+    lines = [f"- id={item.source_id} | {item.context} | {item.title}" for item in batch]
     listing = "\n".join(lines)
     return (
-        "Label each of these posts with its topics.\n\n"
+        "Label each of these items with its topics.\n\n"
         f"{listing}\n\n"
-        "Return one entry per post, using the exact id given."
+        "Return one entry per item, using the exact id given."
     )
 
 
@@ -81,4 +81,4 @@ def _clean(tags: list[str]) -> list[str]:
         normalised = tag.strip().lower()
         if normalised and normalised not in seen:
             seen.append(normalised)
-    return seen[:MAX_TAGS_PER_POST]
+    return seen[:MAX_TAGS_PER_ITEM]
