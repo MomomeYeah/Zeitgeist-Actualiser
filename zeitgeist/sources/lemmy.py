@@ -2,8 +2,8 @@
 
 Needs no credentials: Lemmy's API is open and unauthenticated. Pulls `Hot`
 (what is currently large) and `Scaled` (Hot normalised by community size, so
-posts climbing in smaller communities surface), mirroring the hot/rising pair
-the Reddit source uses.
+posts climbing in smaller communities surface) — two listings covering both
+what is already big and what is newly rising.
 """
 
 import logging
@@ -26,8 +26,8 @@ PAGE_SIZE = 50
 SORTS = ("Hot", "Scaled")
 TIMEOUT_SECONDS = 30.0
 # Some instances sit behind a CDN that filters the default httpx UA. Static
-# rather than configurable: unlike Reddit's, this API needs no per-app
-# identity, just something that is not the bare library default.
+# rather than configurable: this API needs no per-app identity, just
+# something that is not the bare library default.
 USER_AGENT = "zeitgeist-actualiser/0.1"
 
 

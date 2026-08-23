@@ -119,6 +119,12 @@ class Item(BaseModel):
         return self.metrics.content_bearing
 
 
+# score_components carries this alongside the real platform sub-scores. It is
+# a multiplier, not a platform's opinion, so it must never reach topic_scores
+# or be counted as a platform contributing to a topic.
+NON_PLATFORM_COMPONENTS = frozenset({"corroboration"})
+
+
 class Topic(BaseModel):
     """A cluster of items about the same thing."""
 

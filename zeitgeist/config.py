@@ -51,8 +51,8 @@ class Settings(BaseSettings):
     ollama_host: str = "http://localhost:11434"
 
     # NoDecode: pydantic-settings otherwise JSON-decodes any list-typed env
-    # value before validators run, so a plain CSV string like "lemmy,reddit"
-    # raises SettingsError before `_split_csv` ever sees it.
+    # value before validators run, so a plain CSV string like
+    # "lemmy,wikipedia" raises SettingsError before `_split_csv` ever sees it.
     sources: Annotated[list[str], NoDecode] = ["lemmy"]
     post_limit: int = 500
     topic_count: int = 5

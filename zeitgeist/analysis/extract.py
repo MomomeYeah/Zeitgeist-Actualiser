@@ -13,14 +13,14 @@ from zeitgeist.models import Item
 log = logging.getLogger(__name__)
 
 BATCH_SIZE = 40
-MAX_TAGS_PER_POST = 3
+MAX_TAGS_PER_ITEM = 3
 
 EXTRACT_SYSTEM = (
     "You label social media items with the topics they are about. "
     "Topic tags are short noun phrases in lower case, two or three words at "
     "most, describing the subject rather than the reaction to it. Prefer "
     "specific tags over generic ones: 'shelter dog adoption' beats 'animals'. "
-    f"Give each item at most {MAX_TAGS_PER_POST} tags."
+    f"Give each item at most {MAX_TAGS_PER_ITEM} tags."
 )
 
 
@@ -81,4 +81,4 @@ def _clean(tags: list[str]) -> list[str]:
         normalised = tag.strip().lower()
         if normalised and normalised not in seen:
             seen.append(normalised)
-    return seen[:MAX_TAGS_PER_POST]
+    return seen[:MAX_TAGS_PER_ITEM]

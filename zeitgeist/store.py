@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from zeitgeist.analysis.consolidate import slugify
-from zeitgeist.models import Topic
+from zeitgeist.models import NON_PLATFORM_COMPONENTS, Topic
 
 SCHEMA_VERSION = 2
 
@@ -37,10 +37,6 @@ CREATE TABLE IF NOT EXISTS topic_scores (
 CREATE INDEX IF NOT EXISTS idx_topics_label ON topics (label);
 CREATE INDEX IF NOT EXISTS idx_topic_scores_label ON topic_scores (label);
 """
-
-# score_components carries this alongside the real platform sub-scores. It is
-# a multiplier, not a platform's opinion, so it must never reach topic_scores.
-NON_PLATFORM_COMPONENTS = frozenset({"corroboration"})
 
 
 class StoreSchemaError(RuntimeError):

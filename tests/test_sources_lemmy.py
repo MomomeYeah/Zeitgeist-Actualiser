@@ -19,7 +19,7 @@ def _view(ap_id, title, score=10, comments=2, community="cats", body=""):
     """Mirrors a real lemmy.world post view, including fields the mapper
     ignores. Captured from the live API on 2026-08-18.
 
-    Trimming this to only what `_to_post` reads today would let a later
+    Trimming this to only what `_to_item` reads today would let a later
     change reference a field that was never in the test data — the tests
     would pass while the real payload broke.
     """
@@ -168,7 +168,7 @@ def test_created_at_is_timezone_aware_when_the_instance_omits_the_zone():
 
 
 def test_deduplicates_across_hot_and_scaled():
-    """The two listings overlap heavily, as hot and rising do on Reddit."""
+    """The two listings overlap heavily: hot posts are usually also rising."""
     same = _view("a1", "Same post")
     pages = {("Hot", 1): [same], ("Scaled", 1): [same]}
     assert len(_source(pages).fetch(limit=10)) == 1
@@ -307,8 +307,8 @@ def test_network_failure_raises_source_error():
 
 
 def test_one_failing_listing_still_yields_the_other(caplog):
-    """Mirrors the per-subreddit isolation in RedditSource: Stage A is fatal
-    only when nothing worked.
+    """Mirrors the per-listing isolation contract in base.py: Stage A is
+    fatal only when nothing worked.
     """
 
     class HalfFailingClient(StubClient):

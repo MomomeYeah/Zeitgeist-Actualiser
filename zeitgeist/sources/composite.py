@@ -22,7 +22,7 @@ class CompositeSource:
             raise ValueError("CompositeSource needs at least one source")
         self._sources = sources
         # Names what actually ran, so a log line distinguishes a Lemmy-only
-        # run from a Lemmy+Reddit one.
+        # run from a Lemmy+Wikipedia one.
         self.name = ",".join(source.name for source in sources)
 
     def fetch(self, limit: int) -> list[Item]:
@@ -56,5 +56,5 @@ class CompositeSource:
                     return list(seen.values())
 
         if not seen:
-            raise SourceError("No source returned any posts")
+            raise SourceError("No source returned any items")
         return list(seen.values())

@@ -2,9 +2,11 @@
 existing BUILDERS/KNOWN_SOURCES check in tests/test_sources_composite.py.
 """
 
+from datetime import UTC, datetime
 from typing import get_args
 
-from zeitgeist.analysis.scorers import SCORERS
+from zeitgeist.analysis.scorers import SCORERS, build_scorer
+from zeitgeist.analysis.scorers.base import ScoreWeights
 from zeitgeist.models import Metrics
 from zeitgeist.sources import BUILDERS
 
@@ -38,3 +40,16 @@ def test_every_source_has_a_scorer():
     nothing can score — is the failure this catches.
     """
     assert set(BUILDERS) <= set(SCORERS)
+
+
+def test_each_scorer_agrees_with_the_key_it_is_registered_under():
+    """`platform` is otherwise never read, so it can drift from its registry
+    key while still looking authoritative to the next reader. build_scorer
+    dispatches on the key, so a mismatch means a scorer that reports one
+    platform and is used as another.
+    """
+    weights = ScoreWeights()
+    now = datetime(2026, 8, 16, 12, 0, tzinfo=UTC)
+
+    for key in SCORERS:
+        assert build_scorer(key, weights, now).platform == key
