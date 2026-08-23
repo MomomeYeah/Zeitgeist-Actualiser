@@ -573,6 +573,14 @@ the work and carries no user-visible benefit on its own.
 
   Revisit once real runs show how often Lemmy and Wikipedia actually overlap.
 - Tuning `corroboration_bonus` against real runs. `0.25` is a starting point.
+- **`STRUCTURAL_PREFIXES` is English-only.** `Special:`, `Wikipedia:`,
+  `Portal:` and friends are the English namespace names, so a `de.wikipedia`
+  run would not filter `Spezial:` and would let namespace pages set the
+  min-max range — the exact failure the filter exists to prevent. `en.wikipedia`
+  is the default and the only project this spec scopes to, but
+  `WIKIPEDIA_PROJECT` is a configurable knob and `WikipediaSource`'s own tests
+  make non-English projects a first-class path. Localise the prefix list before
+  recommending any other project.
 - Hacker News and YouTube, both now cheap to add.
 
 ## Decisions and rationale
