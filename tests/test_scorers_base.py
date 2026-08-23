@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from zeitgeist.analysis.scorers.base import (
+    BlueskyWeights,
     LemmyWeights,
     ScoreWeights,
     WikipediaWeights,
@@ -114,3 +115,23 @@ def test_the_default_mapping_covers_every_registered_scorer():
     from zeitgeist.analysis.scorers import SCORERS
 
     assert set(SCORERS) <= set(ScoreWeights().platforms)
+
+
+def test_a_partial_platform_override_is_filled_from_the_defaults():
+    """Without this, `platforms={"bluesky": ...}` would silently drop lemmy
+    and wikipedia's defaults, surfacing later as a KeyError mid-run — after
+    the fetch that run needed is already paid for.
+    """
+    weights = ScoreWeights(platforms={"bluesky": BlueskyWeights(like_velocity=0.9)})
+
+    assert weights.for_platform("lemmy", LemmyWeights) == LemmyWeights()
+    assert weights.for_platform("bluesky", BlueskyWeights).like_velocity == 0.9
+
+
+def test_a_platform_key_disagreeing_with_its_discriminator_is_rejected():
+    """`{"lemmy": {"platform": "bluesky"}}` is bad input, not a gap to fill —
+    letting it through would mean `for_platform("lemmy", LemmyWeights)`
+    raises TypeError deep inside a scorer instead of at construction.
+    """
+    with pytest.raises(ValidationError):
+        ScoreWeights(platforms={"lemmy": BlueskyWeights()})

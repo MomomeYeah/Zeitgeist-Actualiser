@@ -17,7 +17,7 @@ import logging
 import math
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -41,6 +41,18 @@ USER_AGENT = "zeitgeist-actualiser/0.1"
 LINK_PATTERN = re.compile(r"^/profile/(?P<did>[^/]+)/feed/(?P<rkey>[^/]+)$")
 
 LANGUAGE = "en"
+
+# trendView#status is typed `{"type": "string", "knownValues": ["hot"]}`.
+# knownValues is explicitly non-exhaustive in AT Protocol, so "trending" /
+# "cooling" / "stale" (observed live) are legitimate alongside "hot" (the one
+# value actually documented) — but BlueskyMetrics.status stays a closed
+# Literal on the model side, so the mapping happens here at the boundary.
+STATUS_MAP: dict[str, Literal["trending", "cooling", "stale"]] = {
+    "hot": "trending",
+    "trending": "trending",
+    "cooling": "cooling",
+    "stale": "stale",
+}
 
 
 class BlueskySource:
@@ -98,7 +110,10 @@ class BlueskySource:
                 # First trend wins, mirroring LemmySource's dedup.
                 if post["uri"] in seen:
                     continue
-                seen[post["uri"]] = _to_item(post, trend, fetched_at)
+                item = _to_item(post, trend, fetched_at)
+                if item is None:
+                    continue
+                seen[post["uri"]] = item
                 if len(seen) >= limit:
                     return list(seen.values())
 
@@ -124,18 +139,31 @@ class BlueskySource:
 
 
 def _is_usable(post: dict[str, Any]) -> bool:
-    if post["labels"]:
+    # `labels` is optional in postView; a post the labeler never touched
+    # omits the key entirely rather than sending an empty list.
+    if post.get("labels", []):
         return False
     if not post["record"]["text"].strip():
         return False
     # `langs` is optional and client-set, so absence means unknown rather than
     # non-English. Dropping those would discard a real share of every fetch.
+    # Compared on the primary subtag: langs is BCP-47, so "en-US"/"en-GB" are
+    # valid English tags that exact membership would otherwise drop.
     langs = post["record"].get("langs")
-    return langs is None or LANGUAGE in langs
+    return langs is None or any(lang.split("-")[0] == LANGUAGE for lang in langs)
 
 
-def _to_item(post: dict[str, Any], trend: dict[str, Any], fetched_at: datetime) -> Item:
-    did, rkey = _split_uri(post["uri"])
+def _to_item(
+    post: dict[str, Any], trend: dict[str, Any], fetched_at: datetime
+) -> Item | None:
+    split = _split_uri(post["uri"])
+    if split is None:
+        # Same standard as a malformed trend link: a shape violation in an
+        # identifier that isn't a documented contract costs one post, not
+        # the run — and never a permalink that merely looks valid.
+        log.warning("Skipping Bluesky post with malformed uri %r", post["uri"])
+        return None
+    did, rkey = split
     return Item(
         source_id=post["uri"],
         # Posts cap at 300 graphemes, so the text fits a title without
@@ -146,11 +174,13 @@ def _to_item(post: dict[str, Any], trend: dict[str, Any], fetched_at: datetime) 
         permalink=f"https://bsky.app/profile/{did}/post/{rkey}",
         fetched_at=fetched_at,
         metrics=BlueskyMetrics(
-            like_count=post["likeCount"],
-            reply_count=post["replyCount"],
-            repost_count=post["repostCount"],
+            # likeCount/replyCount/repostCount are all optional in postView:
+            # a post with no engagement yet omits them rather than sending 0.
+            like_count=post.get("likeCount", 0),
+            reply_count=post.get("replyCount", 0),
+            repost_count=post.get("repostCount", 0),
             trend=trend["displayName"],
-            status=trend["status"],
+            status=_normalise_status(trend.get("status")),
             # `indexedAt`, assigned by the relay, never `record.createdAt`,
             # which the posting client supplies and can back- or future-date.
             # The scorer divides engagement by age, so a future date would
@@ -160,9 +190,31 @@ def _to_item(post: dict[str, Any], trend: dict[str, Any], fetched_at: datetime) 
     )
 
 
-def _split_uri(uri: str) -> tuple[str, str]:
-    """`at://{did}/{collection}/{rkey}` -> (did, rkey)."""
+def _normalise_status(raw: str | None) -> Literal["trending", "cooling", "stale"]:
+    """A missing or unrecognised status is the open enum working as
+    documented, not a contract break, so this degrades to the neutral middle
+    of STATUS_MOVEMENT's scale rather than crashing the run. The warning is
+    what makes a future widening of the enum actually get noticed.
+    """
+    status = STATUS_MAP.get(raw) if raw is not None else None
+    if status is None:
+        log.warning("Unrecognised Bluesky trend status %r; treating as cooling", raw)
+        return "cooling"
+    return status
+
+
+def _split_uri(uri: str) -> tuple[str, str] | None:
+    """`at://{did}/{collection}/{rkey}` -> (did, rkey), or None if the URI
+    does not have exactly that shape.
+
+    A too-short URI would otherwise still produce a plausible-looking
+    permalink: with fewer than three segments, `parts[0]` and `parts[-1]`
+    collapse to the same value, so `did:plc:x` alone yields
+    `.../profile/did:plc:x/post/did:plc:x` — a 404 stored as though valid.
+    """
     parts = uri.removeprefix("at://").split("/")
+    if len(parts) != 3:
+        return None
     return parts[0], parts[-1]
 
 

@@ -5,9 +5,10 @@ needs it and `score.py` imports the scorers — the other direction would be a
 cycle.
 """
 
+from datetime import datetime
 from typing import Annotated, Literal, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from zeitgeist.models import STRICT
 
@@ -67,6 +68,14 @@ PlatformWeightsUnion = Annotated[
 ]
 
 
+def _default_platform_weights() -> dict[str, PlatformWeightsUnion]:
+    return {
+        "lemmy": LemmyWeights(),
+        "wikipedia": WikipediaWeights(),
+        "bluesky": BlueskyWeights(),
+    }
+
+
 class ScoreWeights(BaseModel):
     model_config = STRICT
 
@@ -74,12 +83,27 @@ class ScoreWeights(BaseModel):
     # so it does not belong in the per-platform mapping.
     corroboration_bonus: float = 0.25
     platforms: dict[str, PlatformWeightsUnion] = Field(
-        default_factory=lambda: {
-            "lemmy": LemmyWeights(),
-            "wikipedia": WikipediaWeights(),
-            "bluesky": BlueskyWeights(),
-        }
+        default_factory=_default_platform_weights
     )
+
+    @model_validator(mode="after")
+    def _normalise_platforms(self) -> ScoreWeights:
+        """A partial override (`platforms={"bluesky": ...}`) would otherwise
+        silently discard the other platforms' defaults, surfacing later as a
+        KeyError mid-run after the fetch is paid for — so missing platforms
+        are filled from the defaults here. A key whose discriminator
+        disagrees with its value (`{"lemmy": {"platform": "bluesky"}}`) is
+        rejected outright: that is bad input, not a gap to fill.
+        """
+        for key, weights in self.platforms.items():
+            if weights.platform != key:
+                raise ValueError(
+                    f"platforms[{key!r}] holds {weights.platform!r} weights"
+                )
+        merged = _default_platform_weights()
+        merged.update(self.platforms)
+        self.platforms = merged
+        return self
 
     def for_platform[W: PlatformWeights](self, platform: str, expected: type[W]) -> W:
         """This platform's weights, narrowed to the type its scorer needs.
@@ -134,6 +158,38 @@ def blend(bases: list[float], deltas: list[float], weight: float) -> list[float]
     return [(1.0 - weight) * bases[i] + weight * deltas[i] for i in range(len(bases))]
 
 
+# Below this, a post's or item's age is treated as this many hours old rather
+# than its true age, so something seconds old cannot divide by ~0 and swamp a
+# run purely for being new. Shared rather than declared per scorer: two
+# copies of this exact value is the drift hazard the age floor cannot afford.
+MIN_AGE_HOURS = 0.5
+
+
+class _HasCreatedAt(Protocol):
+    """Structural bound for `mean_velocity`: any metrics model with a
+    `created_at` an age can be computed from, regardless of platform."""
+
+    created_at: datetime
+
+
+def mean_velocity[M: _HasCreatedAt](
+    group: list[M], attribute: str, now: datetime
+) -> float:
+    """Mean of `getattr(metrics, attribute)` per hour of age across `group`,
+    each age floored at `MIN_AGE_HOURS`.
+
+    Lifted out of LemmyScorer and BlueskyScorer, which carried this method
+    body verbatim apart from the metrics type — the same duplication that
+    `blend` and `historical_delta` were hoisted here to remove in the first
+    place.
+    """
+    values = []
+    for metrics in group:
+        hours = (now - metrics.created_at).total_seconds() / 3600.0
+        values.append(getattr(metrics, attribute) / max(hours, MIN_AGE_HOURS))
+    return sum(values) / len(values)
+
+
 class TrendScorer[M: BaseModel](Protocol):
     """One platform's opinion of how much each topic is trending.
 
@@ -143,7 +199,10 @@ class TrendScorer[M: BaseModel](Protocol):
     prior run, or None if it has no history for this platform.
 
     The return value is normalised **within this platform** across the topics
-    given, which is what makes different platforms' scores comparable.
+    given for every scorer except one: `BlueskyScorer` blends in a status
+    movement term that is deliberately not min-max normalised (see its
+    module docstring), so its output, while still bounded to the unit
+    interval, is not rescaled the same way the other platforms' are.
     """
 
     platform: str

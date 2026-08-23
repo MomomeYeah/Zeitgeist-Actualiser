@@ -10,11 +10,10 @@ from zeitgeist.analysis.scorers.base import (
     BlueskyWeights,
     ScoreWeights,
     blend,
+    mean_velocity,
     normalise,
 )
 from zeitgeist.models import BlueskyMetrics
-
-MIN_AGE_HOURS = 0.5
 
 # Bluesky reports movement directly, so unlike the other scorers this one
 # never consults the previous run.
@@ -39,9 +38,9 @@ class BlueskyScorer:
         """
         weights = self._weights
 
-        lv = normalise([self._mean_velocity(g, "like_count") for g in per_topic])
-        rv = normalise([self._mean_velocity(g, "reply_count") for g in per_topic])
-        pv = normalise([self._mean_velocity(g, "repost_count") for g in per_topic])
+        lv = normalise([mean_velocity(g, "like_count", self._now) for g in per_topic])
+        rv = normalise([mean_velocity(g, "reply_count", self._now) for g in per_topic])
+        pv = normalise([mean_velocity(g, "repost_count", self._now) for g in per_topic])
 
         base_total = (
             weights.like_velocity + weights.reply_velocity + weights.repost_velocity
@@ -68,10 +67,3 @@ class BlueskyScorer:
         movement = [max(STATUS_MOVEMENT[m.status] for m in g) for g in per_topic]
 
         return blend(bases, movement, weights.rank_delta)
-
-    def _mean_velocity(self, group: list[BlueskyMetrics], attribute: str) -> float:
-        values = []
-        for metrics in group:
-            hours = (self._now - metrics.created_at).total_seconds() / 3600.0
-            values.append(getattr(metrics, attribute) / max(hours, MIN_AGE_HOURS))
-        return sum(values) / len(values)

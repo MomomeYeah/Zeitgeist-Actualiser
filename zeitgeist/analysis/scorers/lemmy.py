@@ -11,11 +11,10 @@ from zeitgeist.analysis.scorers.base import (
     ScoreWeights,
     blend,
     historical_delta,
+    mean_velocity,
     normalise,
 )
 from zeitgeist.models import LemmyMetrics
-
-MIN_AGE_HOURS = 0.5
 
 
 class LemmyScorer:
@@ -30,8 +29,8 @@ class LemmyScorer:
     ) -> list[float]:
         weights = self._weights
 
-        raw_uv = [self._mean_velocity(g, "score") for g in per_topic]
-        raw_cv = [self._mean_velocity(g, "comment_count") for g in per_topic]
+        raw_uv = [mean_velocity(g, "score", self._now) for g in per_topic]
+        raw_cv = [mean_velocity(g, "comment_count", self._now) for g in per_topic]
         raw_cs = [float(len({m.channel for m in g})) for g in per_topic]
 
         uv, cv, cs = normalise(raw_uv), normalise(raw_cv), normalise(raw_cs)
@@ -53,10 +52,3 @@ class LemmyScorer:
 
         deltas = historical_delta(bases, previous)
         return blend(bases, deltas, weights.rank_delta)
-
-    def _mean_velocity(self, group: list[LemmyMetrics], attribute: str) -> float:
-        values = []
-        for metrics in group:
-            hours = (self._now - metrics.created_at).total_seconds() / 3600.0
-            values.append(getattr(metrics, attribute) / max(hours, MIN_AGE_HOURS))
-        return sum(values) / len(values)

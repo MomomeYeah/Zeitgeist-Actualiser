@@ -5,6 +5,7 @@ two endpoints return different shapes and the source calls one of them 25
 times.
 """
 
+import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
 
@@ -166,6 +167,24 @@ def test_engagement_counts_are_carried_through():
     assert _metrics(items[0]).repost_count == 13
 
 
+def test_a_post_missing_engagement_counts_defaults_to_zero():
+    """likeCount/replyCount/repostCount are all optional in postView — a post
+    with no engagement yet omits them rather than sending 0. A missing key
+    here is the contract as published, not a changed payload.
+    """
+    post = _post("p1")
+    del post["post"]["likeCount"]
+    del post["post"]["replyCount"]
+    del post["post"]["repostCount"]
+    source = _source({"trends": [_trend("t1", "A trend")]}, {"t1": {"feed": [post]}})
+
+    items = source.fetch(limit=10)
+
+    assert _metrics(items[0]).like_count == 0
+    assert _metrics(items[0]).reply_count == 0
+    assert _metrics(items[0]).repost_count == 0
+
+
 def test_the_trend_status_is_carried_onto_every_post():
     source = _source(
         {"trends": [_trend("t1", "A cooling trend", status="cooling")]},
@@ -175,6 +194,56 @@ def test_the_trend_status_is_carried_onto_every_post():
     items = source.fetch(limit=10)
 
     assert [_metrics(item).status for item in items] == ["cooling", "cooling"]
+
+
+def test_a_trend_with_no_status_defaults_to_cooling_and_warns(caplog):
+    """status is optional in trendView — a missing value is the contract as
+    published, not a changed payload, so it must not crash. It maps to the
+    neutral middle of the scorer's scale rather than a silent default, which
+    is why this also warns: the warning is how a future enum widening
+    actually gets noticed.
+    """
+    trend = _trend("t1", "A trend")
+    del trend["status"]
+    source = _source({"trends": [trend]}, {"t1": {"feed": [_post("p1")]}})
+
+    with caplog.at_level(logging.WARNING):
+        items = source.fetch(limit=10)
+
+    assert _metrics(items[0]).status == "cooling"
+    assert "None" in caplog.text
+
+
+def test_a_trend_with_hot_status_maps_to_trending():
+    """ "hot" is the one value the lexicon actually documents (`knownValues`),
+    but the model's Literal only knows trending/cooling/stale — observed
+    live — so "hot" must be mapped onto "trending" rather than rejected.
+    """
+    source = _source(
+        {"trends": [_trend("t1", "A trend", status="hot")]},
+        {"t1": {"feed": [_post("p1")]}},
+    )
+
+    items = source.fetch(limit=10)
+
+    assert _metrics(items[0]).status == "trending"
+
+
+def test_a_trend_with_an_unrecognised_status_defaults_to_cooling_and_warns(caplog):
+    """`knownValues` is explicitly non-exhaustive in AT Protocol, so a fifth
+    value must survive rather than crash the whole run — but still be
+    logged, which is how a future enum widening actually gets noticed.
+    """
+    source = _source(
+        {"trends": [_trend("t1", "A trend", status="smouldering")]},
+        {"t1": {"feed": [_post("p1")]}},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        items = source.fetch(limit=10)
+
+    assert _metrics(items[0]).status == "cooling"
+    assert "smouldering" in caplog.text
 
 
 def test_created_at_comes_from_indexed_at_not_the_client_clock():
@@ -260,6 +329,15 @@ def test_a_multilingual_post_including_english_is_kept():
     assert [item.title for item in items] == ["bilingual"]
 
 
+def test_a_regional_language_tag_is_kept():
+    """langs is BCP-47 (`format: "language"`), so "en-US" is a valid English
+    tag that exact membership against "en" would otherwise drop.
+    """
+    items = _one_trend_one_post(text="regional", langs=["en-US"]).fetch(limit=10)
+
+    assert [item.title for item in items] == ["regional"]
+
+
 def test_labelled_posts_are_dropped():
     """Trend feeds appear to filter already, so this changes nothing today and
     exists so a change upstream cannot put graphic content into a meme.
@@ -275,6 +353,19 @@ def test_labelled_posts_are_dropped():
             }
         },
     )
+
+    items = source.fetch(limit=10)
+
+    assert [item.title for item in items] == ["clean"]
+
+
+def test_a_post_with_no_labels_key_is_kept():
+    """`labels` is optional in postView; a post the labeler never touched
+    omits the key rather than sending an empty list.
+    """
+    post = _post("p1", "clean")
+    del post["post"]["labels"]
+    source = _source({"trends": [_trend("t1", "A trend")]}, {"t1": {"feed": [post]}})
 
     items = source.fetch(limit=10)
 
@@ -326,6 +417,25 @@ def test_a_malformed_trend_link_skips_only_that_trend():
     assert [item.title for item in items] == ["survivor"]
 
 
+def test_a_malformed_post_uri_is_skipped(caplog):
+    """A too-short uri would otherwise still collapse `parts[0]` and
+    `parts[-1]` to the same value, producing a plausible-looking permalink
+    that 404s instead of failing visibly.
+    """
+    broken = _post("p1")
+    broken["post"]["uri"] = "at://did:plc:onlyanauthority"
+    source = _source(
+        {"trends": [_trend("t1", "A trend")]},
+        {"t1": {"feed": [broken, _post("p2", "survivor")]}},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        items = source.fetch(limit=10)
+
+    assert [item.title for item in items] == ["survivor"]
+    assert "malformed uri" in caplog.text
+
+
 def test_one_failing_feed_skips_only_that_trend():
     source = _source(
         {"trends": [_trend("t1", "Broken"), _trend("t2", "Fine")]},
@@ -374,11 +484,12 @@ def test_every_post_being_filtered_out_raises_source_error():
 
 
 def test_a_changed_payload_shape_propagates_rather_than_being_swallowed():
-    """A missing key is a contract break, not an outage, so it must crash
-    rather than look like an empty platform.
+    """A missing REQUIRED key is a contract break, not an outage, so it must
+    crash rather than look like an empty platform. `displayName` is required
+    by trendView, unlike `status`, which the lexicon marks optional.
     """
     trend = _trend("t1", "A trend")
-    del trend["status"]
+    del trend["displayName"]
     source = _source({"trends": [trend]}, {"t1": {"feed": [_post("p1")]}})
 
     with pytest.raises(KeyError):
@@ -468,6 +579,9 @@ def test_from_settings_wires_the_api_base_into_the_request():
     """
     settings = Settings(_env_file=None, bluesky_api_base="https://mirror.example")
     source = BlueskySource.from_settings(settings)
+    # from_settings builds a real httpx.Client; close it before the fake
+    # replaces it so the test does not leak a live connection pool.
+    source._client.close()
     source._client = _FakeClient(
         {"trends": [_trend("t1", "A trend")]},
         {"t1": {"feed": [_post("p1")]}},
