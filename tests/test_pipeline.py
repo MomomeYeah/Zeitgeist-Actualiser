@@ -110,10 +110,20 @@ def test_produces_a_png(settings, sample_items):
 
 
 def test_records_the_run_in_the_store(settings, sample_items):
+    """`previous_sub_scores` can't stand in for `previous_scores` here: the
+    stub provider consolidates everything into a single topic, and a
+    platform contributing to only one topic can't be min-max normalised
+    (score.py's MIN_TOPICS_TO_RANK), so it earns no score_components key and
+    no topic_scores row. That's the real boundary the store now has, not
+    something to route around — so this checks the run itself was recorded
+    instead.
+    """
     posts = sample_items[:3]
     store = _store(settings)
     run_pipeline(settings, StubSource(posts), _provider(posts), store, "run1")
-    assert store.previous_scores(exclude_run_id="run2") != {}
+    summary = store.run_summary("run1")
+    assert summary is not None
+    assert summary["status"] == "ok"
 
 
 def test_resume_from_generate_skips_scraping(settings, sample_items):

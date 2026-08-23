@@ -70,16 +70,8 @@ def run_pipeline(
     if resuming <= ORDER.index(Stage.ANALYSE):
         tags = extract_tags(items, provider)
         topics = consolidate(tags, provider)
-        # The store still keeps one score per topic, not one per platform, so
-        # its history is filed under the only content-bearing platform there
-        # is. Task 8 replaces this with `store.previous_sub_scores(run_id)`;
-        # until then a Lemmy-only run's trend score IS its lemmy sub-score,
-        # because the corroboration multiplier is 1.0.
         topics = score_topics(
-            topics,
-            items,
-            datetime.now(UTC),
-            {"lemmy": store.previous_scores(run_id)},
+            topics, items, datetime.now(UTC), store.previous_sub_scores(run_id)
         )
         log.info("Identified %d topics", len(topics))
         store.record_topics(run_id, topics)
