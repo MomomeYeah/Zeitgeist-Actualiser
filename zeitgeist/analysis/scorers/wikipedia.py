@@ -8,6 +8,7 @@ from datetime import datetime
 
 from zeitgeist.analysis.scorers.base import (
     ScoreWeights,
+    WikipediaWeights,
     blend,
     historical_delta,
     normalise,
@@ -19,7 +20,7 @@ class WikipediaScorer:
     platform = "wikipedia"
 
     def __init__(self, weights: ScoreWeights, now: datetime) -> None:
-        self._weights = weights
+        self._weights = weights.for_platform("wikipedia", WikipediaWeights)
 
     def score(
         self, per_topic: list[list[WikipediaMetrics]], previous: list[float | None]

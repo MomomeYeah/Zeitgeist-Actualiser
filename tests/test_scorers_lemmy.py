@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from zeitgeist.analysis.scorers import build_scorer
-from zeitgeist.analysis.scorers.base import ScoreWeights, normalise
+from zeitgeist.analysis.scorers.base import LemmyWeights, ScoreWeights, normalise
 from zeitgeist.models import LemmyMetrics
 
 NOW = datetime(2026, 8, 16, 12, 0, tzinfo=UTC)
@@ -151,10 +151,14 @@ def test_weights_redirect_the_score_between_the_terms_they_name():
     discussed topic must win despite having none of the upvotes.
     """
     weights = ScoreWeights(
-        upvote_velocity=0.0,
-        comment_velocity=1.0,
-        channel_spread=0.0,
-        rank_delta=0.0,
+        platforms={
+            "lemmy": LemmyWeights(
+                upvote_velocity=0.0,
+                comment_velocity=1.0,
+                channel_spread=0.0,
+                rank_delta=0.0,
+            )
+        }
     )
     scorer = build_scorer("lemmy", weights, NOW)
 

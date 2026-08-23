@@ -6,8 +6,15 @@ edit to one scorer cannot quietly change the other.
 """
 
 import pytest
+from pydantic import ValidationError
 
-from zeitgeist.analysis.scorers.base import blend, historical_delta
+from zeitgeist.analysis.scorers.base import (
+    LemmyWeights,
+    ScoreWeights,
+    WikipediaWeights,
+    blend,
+    historical_delta,
+)
 
 
 def test_historical_delta_defaults_an_unseen_topic_to_its_own_base():
@@ -48,3 +55,62 @@ def test_historical_delta_normalises_to_the_unit_interval():
 )
 def test_blend_weights_base_against_delta(bases, deltas, weight, want):
     assert blend(bases, deltas, weight) == want
+
+
+def test_for_platform_rejects_a_mismatched_pairing():
+    """A registry-drift guard: reaching this means SCORERS and `platforms`
+    disagree about what a platform is, which is a bug in this package rather
+    than bad input.
+    """
+    with pytest.raises(TypeError):
+        ScoreWeights().for_platform("lemmy", WikipediaWeights)
+
+
+def test_for_platform_raises_for_an_unregistered_platform():
+    """Matches build_scorer, so both halves of the same drift bug fail alike."""
+    with pytest.raises(KeyError):
+        ScoreWeights().for_platform("myspace", LemmyWeights)
+
+
+def test_platforms_are_weighted_independently():
+    """The point of the split. One platform's rank_delta must be settable
+    without touching another's — impossible under the flat model, where the
+    two shared one field.
+    """
+    weights = ScoreWeights(
+        platforms={
+            "lemmy": LemmyWeights(rank_delta=0.9),
+            "wikipedia": WikipediaWeights(rank_delta=0.1),
+        }
+    )
+
+    assert weights.for_platform("lemmy", LemmyWeights).rank_delta == 0.9
+    assert weights.for_platform("wikipedia", WikipediaWeights).rank_delta == 0.1
+
+
+def test_platform_weights_reject_a_weight_belonging_to_another_platform():
+    """STRICT on the weights models. Without extra="forbid", `upvote_velocity`
+    mistyped under wikipedia would be dropped in silence and the run would
+    score with defaults nobody chose.
+    """
+    with pytest.raises(ValidationError):
+        WikipediaWeights(upvote_velocity=0.5)
+
+
+def test_score_weights_reject_the_per_platform_fields_they_used_to_carry():
+    """The migration hazard this split creates. `upvote_velocity` and its three
+    neighbours moved off ScoreWeights onto LemmyWeights; without extra="forbid"
+    a call site left on the old flat shape is accepted, its value dropped in
+    silence, and the run scores with defaults nobody chose.
+    """
+    with pytest.raises(ValidationError):
+        ScoreWeights(upvote_velocity=0.0)
+
+
+def test_the_default_mapping_covers_every_registered_scorer():
+    """A platform with a scorer but no default weights is a KeyError partway
+    through a run, after the fetch has already been paid for.
+    """
+    from zeitgeist.analysis.scorers import SCORERS
+
+    assert set(SCORERS) <= set(ScoreWeights().platforms)

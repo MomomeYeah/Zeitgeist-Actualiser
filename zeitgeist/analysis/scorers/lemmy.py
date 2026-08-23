@@ -7,6 +7,7 @@ numeric judgment is not.
 from datetime import datetime
 
 from zeitgeist.analysis.scorers.base import (
+    LemmyWeights,
     ScoreWeights,
     blend,
     historical_delta,
@@ -21,7 +22,7 @@ class LemmyScorer:
     platform = "lemmy"
 
     def __init__(self, weights: ScoreWeights, now: datetime) -> None:
-        self._weights = weights
+        self._weights = weights.for_platform("lemmy", LemmyWeights)
         self._now = now
 
     def score(
