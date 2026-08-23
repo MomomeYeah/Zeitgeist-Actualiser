@@ -86,14 +86,39 @@ def test_prompt_contains_label_and_summary():
     assert "About cats." in provider.calls[0].prompt
 
 
-def test_prompt_reports_the_item_count():
-    """Phase 1 keeps prompt semantics identical apart from the noun, so this
-    asserts 'items' and NOT a platform count — that arrives in Phase 2."""
-    topic = Topic(id="t", label="T", summary="S", item_ids=["a", "b", "c"])
+def test_prompt_reports_the_item_and_platform_counts():
+    """The platform count comes from score_components minus the
+    corroboration multiplier, which is not a platform: counting it would
+    report three platforms for a two-platform topic.
+    """
+    topic = Topic(
+        id="t",
+        label="T",
+        summary="S",
+        item_ids=["a", "b", "c"],
+        score_components={"lemmy": 0.5, "wikipedia": 0.4, "corroboration": 1.25},
+    )
 
     prompt = _build_prompt(topic)
 
-    assert "Appears in 3 items." in prompt
+    # The counts, not the sentence: rewording the prompt is a decision
+    # someone is entitled to make, while counting the corroboration
+    # multiplier as a third platform is a bug.
+    assert "3 items" in prompt
+    assert "2 platform" in prompt
+
+
+def test_an_unscored_topic_reports_one_platform_rather_than_zero():
+    """judge_topics is reachable with empty score_components — a topic no
+    scorer ranked — and "0 platform(s)" would be nonsense to the model.
+    Guards the max(len(platforms), 1) floor.
+    """
+    topic = Topic(id="t", label="T", summary="S", item_ids=["a"])
+
+    prompt = _build_prompt(topic)
+
+    assert "1 platform" in prompt
+    assert "0 platform" not in prompt
 
 
 def test_failed_topic_is_dropped_and_run_continues():

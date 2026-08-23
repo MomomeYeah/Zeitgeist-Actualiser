@@ -84,9 +84,11 @@ def select(
 
 
 def _build_prompt(topic: Topic) -> str:
+    platforms = [key for key in topic.score_components if key != "corroboration"]
     return (
         f"Topic: {topic.label}\n"
         f"Summary: {topic.summary}\n"
-        f"Appears in {len(topic.item_ids)} items.\n\n"
+        f"Appears in {len(topic.item_ids)} items across "
+        f"{max(len(platforms), 1)} platform(s).\n\n"
         "Judge this topic's sentiment and meme potential."
     )
