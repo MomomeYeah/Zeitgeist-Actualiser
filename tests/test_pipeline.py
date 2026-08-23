@@ -71,8 +71,8 @@ def _store(settings):
     return store
 
 
-def test_writes_every_checkpoint(settings, sample_posts):
-    posts = sample_posts[:3]
+def test_writes_every_checkpoint(settings, sample_items):
+    posts = sample_items[:3]
     run_dir = run_pipeline(
         settings, StubSource(posts), _provider(posts), _store(settings), "run1"
     )
@@ -80,23 +80,23 @@ def test_writes_every_checkpoint(settings, sample_posts):
         assert (run_dir / name).is_file()
 
 
-def test_produces_a_png(settings, sample_posts):
-    posts = sample_posts[:3]
+def test_produces_a_png(settings, sample_items):
+    posts = sample_items[:3]
     run_dir = run_pipeline(
         settings, StubSource(posts), _provider(posts), _store(settings), "run1"
     )
     assert list(run_dir.glob("*.png"))
 
 
-def test_records_the_run_in_the_store(settings, sample_posts):
-    posts = sample_posts[:3]
+def test_records_the_run_in_the_store(settings, sample_items):
+    posts = sample_items[:3]
     store = _store(settings)
     run_pipeline(settings, StubSource(posts), _provider(posts), store, "run1")
     assert store.previous_scores(exclude_run_id="run2") != {}
 
 
-def test_resume_from_generate_skips_scraping(settings, sample_posts):
-    posts = sample_posts[:3]
+def test_resume_from_generate_skips_scraping(settings, sample_items):
+    posts = sample_items[:3]
     source = StubSource(posts)
     run_pipeline(settings, source, _provider(posts), _store(settings), "run1")
     assert source.fetch_calls == 1
@@ -121,11 +121,11 @@ def test_resume_from_generate_skips_scraping(settings, sample_posts):
     assert source.fetch_calls == 1
 
 
-def test_resume_without_checkpoint_raises(settings, sample_posts):
+def test_resume_without_checkpoint_raises(settings, sample_items):
     with pytest.raises(FileNotFoundError):
         run_pipeline(
             settings,
-            StubSource(sample_posts),
+            StubSource(sample_items),
             FakeLLMProvider(),
             _store(settings),
             "never-ran",
@@ -133,12 +133,12 @@ def test_resume_without_checkpoint_raises(settings, sample_posts):
         )
 
 
-def test_a_failing_stage_degrades_rather_than_killing_the_run(settings, sample_posts):
+def test_a_failing_stage_degrades_rather_than_killing_the_run(settings, sample_items):
     """The spec's central error rule: fewer memes is a success, no output is
     a failure. One topic's sentiment call fails; the other must still reach
     a rendered PNG.
     """
-    posts = sample_posts[:3]
+    posts = sample_items[:3]
     provider = FakeLLMProvider(
         [
             TagExtraction(
@@ -183,8 +183,8 @@ def test_a_failing_stage_degrades_rather_than_killing_the_run(settings, sample_p
     assert len(list(run_dir.glob("*.png"))) == 1
 
 
-def test_checkpoints_are_valid_json(settings, sample_posts):
-    posts = sample_posts[:3]
+def test_checkpoints_are_valid_json(settings, sample_items):
+    posts = sample_items[:3]
     run_dir = run_pipeline(
         settings, StubSource(posts), _provider(posts), _store(settings), "run1"
     )

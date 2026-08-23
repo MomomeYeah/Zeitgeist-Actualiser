@@ -13,8 +13,8 @@ from zeitgeist.llm.base import FakeLLMProvider, LLMError
 from zeitgeist.models import Post
 
 
-def test_returns_tags_keyed_by_post_id(sample_posts):
-    posts = sample_posts[:2]
+def test_returns_tags_keyed_by_post_id(sample_items):
+    posts = sample_items[:2]
     provider = FakeLLMProvider(
         [
             TagExtraction(
@@ -30,19 +30,19 @@ def test_returns_tags_keyed_by_post_id(sample_posts):
     assert tags[posts[1].source_id] == ["dogs"]
 
 
-def test_splits_into_batches(sample_posts):
+def test_splits_into_batches(sample_items):
     provider = FakeLLMProvider(
         [TagExtraction(assignments=[]), TagExtraction(assignments=[])]
     )
-    extract_tags(sample_posts[:6], provider, batch_size=3)
+    extract_tags(sample_items[:6], provider, batch_size=3)
     assert len(provider.calls) == 2
 
 
-def test_prompt_carries_the_title_and_the_id_the_model_must_echo(sample_posts):
+def test_prompt_carries_the_title_and_the_id_the_model_must_echo(sample_items):
     """The model keys its answers by post id, so dropping the id from the
     prompt makes every assignment unmatchable and silently yields no tags.
     """
-    post = sample_posts[0]
+    post = sample_items[0]
     provider = FakeLLMProvider([TagExtraction(assignments=[])])
     extract_tags([post], provider, batch_size=40)
 
@@ -73,11 +73,11 @@ def test_channel_rendered_without_platform_prefix():
     assert "r/memes@lemmy.world" not in prompt
 
 
-def test_caps_tags_per_post(sample_posts):
+def test_caps_tags_per_post(sample_items):
     """Bounds the vocabulary handed to the reduce stage; an uncapped model
     response would inflate the consolidation prompt without limit.
     """
-    posts = sample_posts[:1]
+    posts = sample_items[:1]
     provider = FakeLLMProvider(
         [
             TagExtraction(
@@ -95,8 +95,8 @@ def test_caps_tags_per_post(sample_posts):
     }
 
 
-def test_failed_batch_is_skipped_not_fatal(sample_posts):
-    posts = sample_posts[:6]
+def test_failed_batch_is_skipped_not_fatal(sample_items):
+    posts = sample_items[:6]
     provider = FakeLLMProvider(
         [
             LLMError("batch one exploded"),
@@ -109,11 +109,11 @@ def test_failed_batch_is_skipped_not_fatal(sample_posts):
     assert tags == {posts[3].source_id: ["kept"]}
 
 
-def test_failed_batch_logs_the_exception_detail(sample_posts, caplog):
+def test_failed_batch_logs_the_exception_detail(sample_items, caplog):
     """A static 'skipping' message with no exception text gives no clue
     whether a failure during a live run was auth, schema, or timeout.
     """
-    posts = sample_posts[:6]
+    posts = sample_items[:6]
     provider = FakeLLMProvider(
         [
             LLMError("batch one exploded"),
@@ -126,7 +126,7 @@ def test_failed_batch_logs_the_exception_detail(sample_posts, caplog):
 
 
 def test_prompt_formatting_bug_is_not_swallowed_as_a_failed_batch(
-    sample_posts, monkeypatch
+    sample_items, monkeypatch
 ):
     """_build_prompt must run outside the try/except around the provider
     call, so a bug in prompt formatting is a real crash rather than being
@@ -139,11 +139,11 @@ def test_prompt_formatting_bug_is_not_swallowed_as_a_failed_batch(
     monkeypatch.setattr("zeitgeist.analysis.extract._build_prompt", boom)
     provider = FakeLLMProvider([TagExtraction(assignments=[])])
     with pytest.raises(ValueError, match="prompt bug"):
-        extract_tags(sample_posts[:3], provider, batch_size=40)
+        extract_tags(sample_items[:3], provider, batch_size=40)
 
 
-def test_unknown_post_ids_from_model_are_discarded(sample_posts):
-    posts = sample_posts[:1]
+def test_unknown_post_ids_from_model_are_discarded(sample_items):
+    posts = sample_items[:1]
     provider = FakeLLMProvider(
         [
             TagExtraction(
@@ -158,8 +158,8 @@ def test_unknown_post_ids_from_model_are_discarded(sample_posts):
     assert tags == {posts[0].source_id: ["real"]}
 
 
-def test_tags_are_lowercased_and_deduplicated(sample_posts):
-    posts = sample_posts[:1]
+def test_tags_are_lowercased_and_deduplicated(sample_items):
+    posts = sample_items[:1]
     provider = FakeLLMProvider(
         [
             TagExtraction(

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from zeitgeist.models import Post
+from zeitgeist.models import Item
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -39,12 +39,12 @@ def _clean_settings_env(monkeypatch):
 
 
 @pytest.fixture
-def sample_posts() -> list[Post]:
-    raw = json.loads((FIXTURES / "posts.json").read_text(encoding="utf-8"))
-    return [Post.model_validate(entry) for entry in raw]
+def sample_items() -> list[Item]:
+    raw = json.loads((FIXTURES / "items.json").read_text(encoding="utf-8"))
+    return [Item.model_validate(entry) for entry in raw]
 
 
 @pytest.fixture
 def fixture_now() -> datetime:
-    """The `fetched_at` shared by every fixture post."""
+    """The `fetched_at` shared by every fixture item."""
     return datetime(2026, 8, 16, 12, 0, tzinfo=UTC)

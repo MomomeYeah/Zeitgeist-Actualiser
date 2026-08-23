@@ -351,3 +351,20 @@ def test_mapping_bug_in_to_post_propagates_not_swallowed():
         mock_to_post.side_effect = ValueError("simulated mapping bug")
         with pytest.raises(ValueError, match="simulated mapping bug"):
             source.fetch(limit=10)
+
+
+def test_fixture_meets_the_preconditions_later_tests_assume(sample_items):
+    """items.json is shared by the extract, pipeline and scoring suites,
+    which assume a spread of channels and unique ids. Trimming it must fail
+    loudly here rather than quietly flattening channel_spread everywhere.
+
+    source_id == permalink because the Lemmy source sets both from ap_id
+    (see _to_item), so a fixture where they differ describes a payload no
+    source can emit.
+    """
+    assert len(sample_items) >= 10
+    assert len({item.metrics.channel for item in sample_items}) >= 4
+    assert all("@" in item.metrics.channel for item in sample_items)
+    assert all(item.metrics.created_at.tzinfo is not None for item in sample_items)
+    assert len({item.source_id for item in sample_items}) == len(sample_items)
+    assert all(item.source_id == item.permalink for item in sample_items)

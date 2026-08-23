@@ -11,7 +11,7 @@ def _topic(tid: str, score: float = 0.5) -> Topic:
         id=tid,
         label=tid.title(),
         summary=f"About {tid}.",
-        post_ids=["p1"],
+        item_ids=["p1"],
         trend_score=score,
     )
 
@@ -30,7 +30,7 @@ def _scored(tid: str, sentiment: Sentiment, trend: float, meme: float = 1.0):
         id=tid,
         label=tid.title(),
         summary="",
-        post_ids=["p1"],
+        item_ids=["p1"],
         trend_score=trend,
         primary_sentiment=sentiment,
         valence=0.0,

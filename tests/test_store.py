@@ -8,7 +8,7 @@ def _topic(label: str, score: float) -> Topic:
         id=label.lower(),
         label=label,
         summary=f"About {label}.",
-        post_ids=["p1"],
+        item_ids=["p1"],
         trend_score=score,
     )
 
