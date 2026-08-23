@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from zeitgeist.config import Settings
 from zeitgeist.sources.base import Source
+from zeitgeist.sources.bluesky import BlueskySource
 from zeitgeist.sources.composite import CompositeSource
 from zeitgeist.sources.lemmy import LemmySource
 from zeitgeist.sources.wikipedia import WikipediaSource
@@ -11,6 +12,7 @@ from zeitgeist.sources.wikipedia import WikipediaSource
 BUILDERS: dict[str, Callable[[Settings], Source]] = {
     "lemmy": LemmySource.from_settings,
     "wikipedia": WikipediaSource.from_settings,
+    "bluesky": BlueskySource.from_settings,
 }
 
 

@@ -40,6 +40,24 @@ spiking on Wikipedia outranks one trending on Lemmy alone.
 policy asks for contact information and may rate-limit or block generic
 agents, so set it to your own repository or contact URL if you fork this.
 
+`bluesky` adds Bluesky posts and needs no credentials — the AT Protocol
+AppView answers these endpoints unauthenticated. It fetches in two steps: the
+25 current trends, then the posts behind each one. Bluesky maintains a live
+feed for every trend, so the ranking within a topic is the platform's own
+rather than ours.
+
+Like Lemmy it is content-bearing, so it can originate topics rather than only
+corroborate them. Unlike Lemmy its audience is general rather than technical,
+which is the reason it is here. Two caveats worth knowing: trending skews
+heavily toward US politics, which the sentiment weights push back against
+rather than the source filtering out; and trend discovery uses an endpoint in
+Bluesky's `unspecced` namespace, which is explicitly not a stable API. Reading
+the posts themselves uses stable endpoints.
+
+`BLUESKY_API_BASE` exists to point at a mirror and should not normally be
+changed. Note that `public.api.bsky.app` is not a valid substitute — it
+returns 403 on parts of the API.
+
 Each platform scores its own contribution to a topic, normalised within that
 platform, before the results are combined. So a busy platform no longer
 swamps a quiet one, and mixing sources is expected rather than experimental.
