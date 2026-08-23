@@ -6,7 +6,12 @@ numeric judgment is not.
 
 from datetime import datetime
 
-from zeitgeist.analysis.scorers.base import ScoreWeights, normalise
+from zeitgeist.analysis.scorers.base import (
+    ScoreWeights,
+    blend,
+    historical_delta,
+    normalise,
+)
 from zeitgeist.models import LemmyMetrics
 
 MIN_AGE_HOURS = 0.5
@@ -45,19 +50,8 @@ class LemmyScorer:
             for i in range(len(per_topic))
         ]
 
-        # Defaulting to the topic's own base, not 0.0: an unseen topic has
-        # not risen, so its delta must be zero rather than full marks.
-        # `prior` is bound to a local so ty can narrow away the `None` in the
-        # `is not None` branch — narrowing does not carry across repeated
-        # subscript expressions like `previous[i]`.
-        raw_delta = []
-        for i in range(len(per_topic)):
-            prior = previous[i]
-            raw_delta.append(bases[i] - (prior if prior is not None else bases[i]))
-        delta = normalise(raw_delta)
-
-        w = weights.rank_delta
-        return [(1.0 - w) * bases[i] + w * delta[i] for i in range(len(per_topic))]
+        deltas = historical_delta(bases, previous)
+        return blend(bases, deltas, weights.rank_delta)
 
     def _mean_velocity(self, group: list[LemmyMetrics], attribute: str) -> float:
         values = []

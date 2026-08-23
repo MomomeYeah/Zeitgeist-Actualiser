@@ -28,6 +28,28 @@ def normalise(values: list[float]) -> list[float]:
     return [(value - low) / (high - low) for value in values]
 
 
+def historical_delta(bases: list[float], previous: list[float | None]) -> list[float]:
+    """Normalised movement of each topic against its own prior sub-score.
+
+    Defaulting to the topic's own base, not 0.0: an unseen topic has not
+    risen, so its delta must be zero rather than full marks.
+
+    `prior` is bound to a local so ty can narrow away the `None` in the
+    `is not None` branch — narrowing does not carry across repeated subscript
+    expressions like `previous[i]`.
+    """
+    raw = []
+    for i in range(len(bases)):
+        prior = previous[i]
+        raw.append(bases[i] - (prior if prior is not None else bases[i]))
+    return normalise(raw)
+
+
+def blend(bases: list[float], deltas: list[float], weight: float) -> list[float]:
+    """`(1 - weight) * base + weight * delta`, elementwise."""
+    return [(1.0 - weight) * bases[i] + weight * deltas[i] for i in range(len(bases))]
+
+
 class TrendScorer[M: BaseModel](Protocol):
     """One platform's opinion of how much each topic is trending.
 
