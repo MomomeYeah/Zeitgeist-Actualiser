@@ -80,6 +80,8 @@ verbatim. These tests pin the behaviour that duplication encoded, so a future
 edit to one scorer cannot quietly change the other.
 """
 
+import pytest
+
 from zeitgeist.analysis.scorers.base import blend, historical_delta
 
 
@@ -108,20 +110,23 @@ def test_historical_delta_normalises_to_the_unit_interval():
     assert max(deltas) == 1.0
 
 
-def test_blend_weights_base_against_delta():
-    """Asserting exact values, not an ordering: a swapped pair of arguments
-    still produces a plausible ordering but the wrong numbers.
-    """
-    assert blend([1.0, 0.0], [0.0, 1.0], 0.25) == [0.75, 0.25]
-
-
-def test_blend_at_zero_weight_returns_the_bases_untouched():
-    assert blend([0.3, 0.7], [1.0, 1.0], 0.0) == [0.3, 0.7]
-
-
-def test_blend_at_full_weight_returns_the_deltas_untouched():
-    assert blend([0.3, 0.7], [1.0, 0.0], 1.0) == [1.0, 0.0]
+@pytest.mark.parametrize(
+    "bases,deltas,weight,want",
+    [
+        # Exact values rather than an ordering: a swapped pair of arguments
+        # still produces a plausible ordering but the wrong numbers.
+        ([1.0, 0.0], [0.0, 1.0], 0.25, [0.75, 0.25]),
+        # The two boundaries, where one term has to vanish entirely.
+        ([0.3, 0.7], [1.0, 1.0], 0.0, [0.3, 0.7]),
+        ([0.3, 0.7], [1.0, 0.0], 1.0, [1.0, 0.0]),
+    ],
+)
+def test_blend_weights_base_against_delta(bases, deltas, weight, want):
+    assert blend(bases, deltas, weight) == want
 ```
+
+Every `want` above is exact in binary floating point, so `==` is safe: the
+coefficients are 0.25/0.75 and the boundaries multiply by 0.0 and 1.0.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -260,10 +265,6 @@ from zeitgeist.analysis.scorers.base import (
 Then append these tests to the end of the file:
 
 ```python
-def test_for_platform_returns_the_narrowed_subclass():
-    assert isinstance(ScoreWeights().for_platform("lemmy", LemmyWeights), LemmyWeights)
-
-
 def test_for_platform_rejects_a_mismatched_pairing():
     """A registry-drift guard: reaching this means SCORERS and `platforms`
     disagree about what a platform is, which is a bug in this package rather
@@ -1267,6 +1268,17 @@ def test_created_at_comes_from_indexed_at_not_the_client_clock():
     assert items[0].metrics.created_at == datetime(2026, 8, 23, 10, 0, tzinfo=UTC)
 
 
+def test_created_at_is_timezone_aware_when_the_payload_omits_the_zone():
+    """`_parse_timestamp` has a naive-datetime fallback, and untested
+    defensive code is worse than none. The scorer subtracts created_at from an
+    aware `now`, so a naive value raises there — three stages downstream —
+    rather than here. Mirrors the same guard on LemmySource.
+    """
+    items = _one_trend_one_post(indexed="2026-08-23T10:00:00").fetch(limit=10)
+
+    assert items[0].metrics.created_at == datetime(2026, 8, 23, 10, 0, tzinfo=UTC)
+
+
 def test_permalink_is_built_from_the_at_uri():
     """An at:// URI is an identifier, not an address, so unlike Lemmy's ap_id
     it cannot be used as the permalink directly.
@@ -1892,3 +1904,35 @@ Four gaps in coverage were filled: the `getFeed` page cap (a real production fai
 Two items outside the test code were folded in: `BLUESKY_API_BASE` must join `_SETTINGS_ENV_VARS` in `tests/conftest.py`, and the Task 2 test block's imports belong at the top of the file rather than appended after Task 1's functions, which ruff rejects with `E402`.
 
 **Change-detector pass.** The skill records that its reviewer reliably misses this category, so the remaining tests were walked again asking only *if this failed, would it mean a bug or a changed mind?* Three survive scrutiny that look like candidates: `test_the_trend_listing_is_requested_at_the_api_cap` asserts `limit=25`, which is an API-imposed ceiling rather than a preference — above it Bluesky returns 400; `test_the_budget_splits_across_trends` asserts `limit=2`, which is derived arithmetic rather than a chosen constant; and `test_wikipedia_weights`' replacement asserts rejection behaviour rather than a field list. No further deletions.
+
+### Second pass against `writing-good-tests.md`
+
+The rubric was then read directly and applied by hand, which found three
+things the dispatched review did not.
+
+**An untested defensive branch.** `_parse_timestamp` falls back to
+`replace(tzinfo=UTC)` for a naive timestamp, and every fixture ended in `Z`,
+so that branch never ran. Deleting it would have failed nothing here and
+raised a `TypeError` three stages downstream in the scorer.
+`test_created_at_is_timezone_aware_when_the_payload_omits_the_zone` closes it,
+mirroring `LemmySource`'s equivalent guard. Untested defensive code is worse
+than none: it reads as protection while protecting nothing.
+
+**Three tests for a three-line pure function.** `blend` had an exact-value
+test plus two boundary tests. The rubric names table-driven tests with literal
+`want` values as the preferred shape, so the three collapse into one
+`parametrize` covering the same three cases — the coverage is identical and
+the maintenance surface is a third the size.
+
+**One subsumed test.** `test_for_platform_returns_the_narrowed_subclass`
+asserted only the returned type. `test_platforms_are_weighted_independently`
+already calls `for_platform` for two platforms and asserts distinct values, so
+every mutation the first could catch — wrong key, wrong entry, no return at
+all — fails the second too. Deleted.
+
+**One kept under tension.** `test_metrics_context_is_the_trend_name` asserts a
+plain forwarding property, which the rubric's "your code, not the framework"
+paragraph would normally exclude. It stays because the suite has an explicit
+precedent in `test_item_context_is_the_channel_for_lemmy`, whose docstring
+gives the reason: `context` feeds the extraction prompt, and an edit that
+silently empties it is a bug rather than a decision.
