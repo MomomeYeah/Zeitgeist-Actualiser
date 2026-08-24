@@ -94,6 +94,21 @@ def score_topics(
             if value is not None:
                 ranked[platform] = value
 
+        # Averaging sub-scores across platforms assumes they share a scale.
+        # That holds for every platform whose movement term is min-max
+        # normalised — normalisation is relative, so it forces some topic to
+        # 0.0 and some to 1.0 and cannot lift a whole platform.
+        #
+        # Bluesky is the deliberate exception. It reports movement itself
+        # (`trending`/`saturating`/`cooling`/`stale`) and BlueskyScorer uses
+        # that raw, because min-max over a status every trend shares would
+        # collapse to zeros and silence the axis exactly when the platform is
+        # most confident. The cost is that Bluesky's sub-scores are shifted up
+        # by `rank_delta * status` when its topics all share a status: a
+        # uniformly `trending` run floors them at 0.25 where Lemmy's floor is
+        # 0.0. Bounded by rank_delta, and absent as soon as statuses vary,
+        # which live data says is the normal case — but it is a real thumb on
+        # the scale here, in the one place platforms are compared.
         mean = sum(ranked.values()) / len(ranked) if ranked else 0.0
         bonus = 1.0 + weights.corroboration_bonus * (len(contributing) - 1)
 

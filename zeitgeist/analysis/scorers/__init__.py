@@ -8,6 +8,7 @@ from collections.abc import Callable
 from datetime import datetime
 
 from zeitgeist.analysis.scorers.base import ScoreWeights, TrendScorer
+from zeitgeist.analysis.scorers.bluesky import BlueskyScorer
 from zeitgeist.analysis.scorers.lemmy import LemmyScorer
 from zeitgeist.analysis.scorers.wikipedia import WikipediaScorer
 
@@ -16,6 +17,7 @@ ScorerBuilder = Callable[[ScoreWeights, datetime], TrendScorer]
 SCORERS: dict[str, ScorerBuilder] = {
     "lemmy": LemmyScorer,
     "wikipedia": WikipediaScorer,
+    "bluesky": BlueskyScorer,
 }
 
 

@@ -1,13 +1,18 @@
 from datetime import UTC, date, datetime
+from typing import Literal
 
 import pytest
 
 from zeitgeist.analysis.score import score_topics
 from zeitgeist.analysis.scorers.base import ScoreWeights
-from zeitgeist.models import Item, LemmyMetrics, Topic, WikipediaMetrics
+from zeitgeist.models import BlueskyMetrics, Item, LemmyMetrics, Topic, WikipediaMetrics
 
 NOW = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 DAY = date(2026, 8, 20)
+
+# Aliased because `status: str` does not type-check against BlueskyMetrics'
+# Literal field, and ty covers tests/ as part of the definition of done.
+Status = Literal["trending", "cooling", "stale"]
 
 
 def _lemmy(source_id: str, score: int, channel: str, age_hours: float) -> Item:
@@ -34,6 +39,31 @@ def _wiki(source_id: str, rank: int) -> Item:
         permalink=f"https://en.wikipedia.org/wiki/{source_id}",
         fetched_at=NOW,
         metrics=WikipediaMetrics(views=100_000 - rank, rank=rank, measured_on=DAY),
+    )
+
+
+def _bluesky(
+    source_id: str,
+    likes: int,
+    trend: str,
+    age_hours: float,
+    status: Status = "trending",
+) -> Item:
+    return Item(
+        source_id=source_id,
+        title=f"Post {source_id}",
+        permalink=f"https://bsky.app/profile/did:plc:x/post/{source_id}",
+        fetched_at=NOW,
+        metrics=BlueskyMetrics(
+            like_count=likes,
+            reply_count=likes // 10,
+            repost_count=likes // 20,
+            trend=trend,
+            status=status,
+            created_at=datetime.fromtimestamp(
+                NOW.timestamp() - age_hours * 3600, tz=UTC
+            ),
+        ),
     )
 
 
@@ -123,6 +153,38 @@ def _single_contribution_case() -> tuple[list[Topic], list[Item]]:
         _topic("plain", ["l2"]),
     ]
     return topics, items
+
+
+def _lemmy_and_bluesky_corroborated() -> tuple[list[Topic], list[Item]]:
+    """Mirrors `_two_topics_one_corroborated` with Bluesky standing in for
+    Wikipedia, so the coordinator is exercised with all three platforms in
+    play rather than Bluesky running alone. Two Bluesky items land in
+    different topics so Bluesky clears MIN_TOPICS_TO_RANK and actually
+    contributes a sub-score rather than only counting toward corroboration.
+    """
+    items = [
+        _lemmy("s1", score=1000, channel="a@h", age_hours=2),
+        _lemmy("s2", score=1000, channel="b@h", age_hours=2),
+        _lemmy("c1", score=910, channel="c@h", age_hours=2),
+        _lemmy("c2", score=910, channel="d@h", age_hours=2),
+        _lemmy("f1", score=100, channel="e@h", age_hours=2),
+        _bluesky("b1", likes=1000, trend="Trend A", age_hours=2),
+        _bluesky("b2", likes=10, trend="Trend B", age_hours=2),
+    ]
+    topics = [
+        _topic("solo", ["s1", "s2"]),
+        _topic("corroborated", ["c1", "c2", "b1"]),
+        _topic("filler", ["f1", "b2"]),
+    ]
+    return topics, items
+
+
+def _bluesky_only_topics() -> tuple[list[Topic], list[Item]]:
+    items = [
+        _bluesky("b1", likes=1000, trend="A", age_hours=2),
+        _bluesky("b2", likes=10, trend="B", age_hours=2),
+    ]
+    return [_topic("bsky-a", ["b1"]), _topic("bsky-b", ["b2"])], items
 
 
 def _lemmy_only_run() -> tuple[list[Topic], list[Item]]:
@@ -260,3 +322,32 @@ def test_single_platform_run_matches_phase_one_ranking():
 
     order = [t.id for t in sorted(scored, key=lambda t: -t.trend_score)]
     assert order == ["fast", "medium", "slow"]
+
+
+def test_a_topic_corroborated_across_bluesky_and_lemmy_earns_both_sub_scores():
+    """Coordinator-level check that the newest platform combines with another
+    platform's sub-score rather than only ever being exercised alone —
+    mirrors test_score_components_name_every_contributing_platform's
+    Wikipedia case with Bluesky instead.
+    """
+    topics, items = _lemmy_and_bluesky_corroborated()
+
+    scored = score_topics(topics, items, NOW, previous={}, weights=ScoreWeights())
+
+    corroborated = next(t for t in scored if t.id == "corroborated")
+    assert set(corroborated.score_components) == {"lemmy", "bluesky", "corroboration"}
+    assert corroborated.score_components["corroboration"] == 1.25
+    assert corroborated.trend_score > 0.0
+
+
+def test_a_bluesky_only_topic_survives_the_content_bearing_filter():
+    """Unlike Wikipedia (test_topics_with_no_content_bearing_platform_are_dropped),
+    a Bluesky post carries its own text, so a topic Bluesky is the only
+    platform for must survive score_topics's content-bearing filter rather
+    than being dropped.
+    """
+    topics, items = _bluesky_only_topics()
+
+    scored = score_topics(topics, items, NOW, previous={}, weights=ScoreWeights())
+
+    assert {t.id for t in scored} == {"bsky-a", "bsky-b"}

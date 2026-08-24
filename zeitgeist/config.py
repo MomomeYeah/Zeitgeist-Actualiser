@@ -13,7 +13,7 @@ PACKAGE_ROOT = Path(__file__).parent
 # Registry keys live here rather than in zeitgeist/sources/__init__.py:
 # that module imports Settings, so importing it back would be a cycle.
 # tests/test_sources_composite.py guards the two against drifting.
-KNOWN_SOURCES: tuple[str, ...] = ("lemmy", "wikipedia")
+KNOWN_SOURCES: tuple[str, ...] = ("lemmy", "wikipedia", "bluesky")
 
 # Favours positive output without excluding anything. The spread is moderate
 # on purpose: a negative topic needs roughly double the combined trend and
@@ -44,6 +44,11 @@ class Settings(BaseSettings):
 
     wikipedia_project: str = "en.wikipedia"
     wikipedia_contact: str = "https://github.com/MomomeYeah/Zeitgeist-Actualiser"
+
+    # Exists so the host can be pointed at a mirror or a test double, not
+    # because anyone is expected to change it. `public.api.bsky.app` is NOT a
+    # valid substitute: it returns 403 on parts of the API.
+    bluesky_api_base: str = "https://api.bsky.app"
 
     anthropic_api_key: str = ""
     llm_provider: Literal["anthropic", "ollama"] = "anthropic"
