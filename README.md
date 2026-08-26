@@ -105,9 +105,12 @@ Output lands in `output/<run-id>/`: the four stage checkpoints as JSON, plus
 one PNG per selected topic.
 
 Re-run only the meme generation against an existing run — this re-runs stage
-4 against the frozen `ranked.json` from that run, with no network calls, so
-it finishes in seconds. It is the loop for tuning meme templates and the
-caption prompt without re-scraping or paying for analysis again:
+4 against the frozen `ranked.json` from that run. Ingest and analysis are
+skipped entirely, so there is no re-scraping and no re-paying for
+distillation; caption writing itself still calls the model once per
+selected topic, so this is not free with a hosted provider, just far
+cheaper than a full run. It is the loop for tuning meme templates and the
+caption prompt:
 
 ```bash
 uv run zeitgeist run --run-id 20260816T120000Z --resume-from generate
