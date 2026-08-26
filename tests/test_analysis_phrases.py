@@ -7,7 +7,9 @@ they have to be measured.
 
 from datetime import UTC, datetime
 
-from zeitgeist.analysis.phrases import mine_phrases
+import pytest
+
+from zeitgeist.analysis.phrases import mine_phrases, normalise
 from zeitgeist.models import Reply, TrendInfo
 
 TREND = TrendInfo(
@@ -172,6 +174,28 @@ def test_urls_and_mentions_are_stripped_before_mining():
     assert "elbows up" in result
     assert "https example com" not in result
     assert "someone bsky social" not in result
+
+
+@pytest.mark.parametrize(
+    "text,want",
+    [
+        ("don't stop believing", ["don't", "stop", "believing"]),
+        ("don’t stop believing", ["don't", "stop", "believing"]),
+        ("just 'finally' now", ["just", "finally", "now"]),
+    ],
+)
+def test_normalise_treats_smart_and_straight_apostrophes_the_same(text, want):
+    """iOS/macOS auto-substitute the typographic apostrophe (U+2019);
+    Android and most web clients emit the straight one (U+0027). Without
+    unifying them, one catchphrase produces two disjoint token sets, so a
+    phrase a whole room converged on can silently fall under
+    phrase_min_authors on either half.
+
+    The quoted-word case matters separately: a leading/trailing apostrophe
+    must not survive as part of the token, or 'finally' can never match the
+    bare word finally elsewhere in the same conversation.
+    """
+    assert normalise(text) == want
 
 
 def test_no_replies_yields_no_phrases():

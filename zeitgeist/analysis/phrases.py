@@ -43,14 +43,25 @@ _MENTION = re.compile(r"@[\w.\-]+")
 _NON_WORD = re.compile(r"[^a-z0-9' ]+")
 _SPACE = re.compile(r"\s+")
 
+# iOS and macOS auto-substitute the straight apostrophe for this typographic
+# one; Android and most web clients emit the straight form. Left alone, one
+# catchphrase produces two disjoint token sets and either half can fall
+# under phrase_min_authors on its own.
+_SMART_APOSTROPHE = "’"
+
 
 def normalise(text: str) -> list[str]:
     """Lowercase, strip URLs, mentions and punctuation, split to tokens."""
     lowered = text.lower()
+    lowered = lowered.replace(_SMART_APOSTROPHE, "'")
     lowered = _URL.sub(" ", lowered)
     lowered = _MENTION.sub(" ", lowered)
     lowered = _NON_WORD.sub(" ", lowered)
-    return _SPACE.sub(" ", lowered).strip().split()
+    tokens = _SPACE.sub(" ", lowered).strip().split()
+    # Strip leading/trailing apostrophes so a quoted word ('finally') matches
+    # the bare word elsewhere, but keep internal ones: don't must stay one
+    # token, not split into don and t.
+    return [token.strip("'") for token in tokens if token.strip("'")]
 
 
 def mine_phrases(
