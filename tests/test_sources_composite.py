@@ -3,9 +3,9 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from zeitgeist.config import KNOWN_SOURCES, Settings
+from zeitgeist.config import ITEM_SOURCES, KNOWN_SOURCES, TREND_SOURCES, Settings
 from zeitgeist.models import Item, LemmyMetrics, Metrics, WikipediaMetrics
-from zeitgeist.sources import BUILDERS, build_source
+from zeitgeist.sources import BUILDERS, TREND_BUILDERS, build_source
 from zeitgeist.sources.base import SourceError
 from zeitgeist.sources.composite import CompositeSource
 from zeitgeist.sources.lemmy import LemmySource
@@ -178,12 +178,13 @@ def test_building_with_no_sources_is_rejected():
         CompositeSource([])
 
 
-def test_every_known_source_has_a_builder():
-    """Settings validates SOURCES against KNOWN_SOURCES while build_source
-    indexes BUILDERS. If they drift, a name accepted at startup raises a
-    KeyError once the run is already under way.
+def test_every_known_source_has_exactly_one_builder():
+    """The guard exists because a platform can be namable in config and
+    unbuildable, which fails at runtime rather than at import.
     """
-    assert set(BUILDERS) == set(KNOWN_SOURCES)
+    assert set(BUILDERS) == set(ITEM_SOURCES)
+    assert set(TREND_BUILDERS) == set(TREND_SOURCES)
+    assert set(BUILDERS) | set(TREND_BUILDERS) == set(KNOWN_SOURCES)
 
 
 def test_build_source_builds_only_the_enabled_sources():

@@ -13,7 +13,12 @@ PACKAGE_ROOT = Path(__file__).parent
 # Registry keys live here rather than in zeitgeist/sources/__init__.py:
 # that module imports Settings, so importing it back would be a cycle.
 # tests/test_sources_composite.py guards the two against drifting.
-KNOWN_SOURCES: tuple[str, ...] = ("lemmy", "wikipedia", "bluesky")
+# Platforms that yield a flat item list and need clustering downstream.
+# Dormant: no live pipeline stage consumes them (see the 2026-08-26 spec).
+ITEM_SOURCES: tuple[str, ...] = ("lemmy", "wikipedia")
+# Platforms that cluster posts into trends themselves and yield evidence.
+TREND_SOURCES: tuple[str, ...] = ("bluesky",)
+KNOWN_SOURCES: tuple[str, ...] = ITEM_SOURCES + TREND_SOURCES
 
 # Favours positive output without excluding anything. The spread is moderate
 # on purpose: a negative topic needs roughly double the combined trend and
@@ -49,6 +54,13 @@ class Settings(BaseSettings):
     # because anyone is expected to change it. `public.api.bsky.app` is NOT a
     # valid substitute: it returns 403 on parts of the API.
     bluesky_api_base: str = "https://api.bsky.app"
+    # 25 is the API's ceiling, not a tuning parameter: getTrends returns 400
+    # above it. The other two are the real fan-out budget, which is why
+    # fetch_evidence takes no single `limit` argument — one integer cannot
+    # express trends-by-posts.
+    bluesky_trend_limit: int = 25
+    bluesky_posts_per_trend: int = 10
+    bluesky_fetch_concurrency: int = 8
 
     anthropic_api_key: str = ""
     llm_provider: Literal["anthropic", "ollama"] = "anthropic"
