@@ -5,6 +5,7 @@ import logging
 import sys
 from pathlib import Path
 
+from zeitgeist.analysis.distil import DistilError
 from zeitgeist.config import PACKAGE_ROOT, Settings
 from zeitgeist.llm.factory import build_provider
 from zeitgeist.media.templates import TemplateError, validate_templates
@@ -90,7 +91,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
                 run_id=args.run_id or new_run_id(),
                 start_at=start_at,
             )
-        except (SourceError, TemplateError, StoreSchemaError) as exc:
+        except (SourceError, DistilError, TemplateError, StoreSchemaError) as exc:
             print(f"Run failed: {exc}")
             return 1
         summary = store.run_summary(args.run_id or run_dir.name)

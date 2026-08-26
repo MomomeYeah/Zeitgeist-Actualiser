@@ -20,8 +20,10 @@ from zeitgeist.analysis.slug import unique_slug
 from zeitgeist.config import Settings
 from zeitgeist.llm.base import LLMProvider
 from zeitgeist.models import (
+    BlueskyMetrics,
     Dossier,
     Phrase,
+    PostEvidence,
     Register,
     Reply,
     Sentiment,
@@ -31,6 +33,19 @@ from zeitgeist.models import (
 
 log = logging.getLogger(__name__)
 
+
+class DistilError(Exception):
+    """Raised when evidence was supplied but every trend failed to distil.
+
+    An empty run is a failure rather than a result (see the design spec's
+    "Failure handling"): the ingest side already raises SourceError when no
+    trend yields usable posts, and this is the analyse-side counterpart, so
+    the realistic failure mode of a local model that cannot hold the
+    response schema surfaces as `Run failed: ...` rather than a silent,
+    empty `topics.json`.
+    """
+
+
 DISTIL_SYSTEM = (
     "You analyse a trending conversation on social media and report what is "
     "actually going on in it.\n\n"
@@ -38,8 +53,9 @@ DISTIL_SYSTEM = (
     "posts. The posts are often links or headlines; the replies are what "
     "people think. Both matter, and they are not the same thing.\n\n"
     "Report two judgements separately and do not let one contaminate the "
-    "other. `event_sentiment` is how the event itself feels. `register` is "
-    "the posture people are taking toward it. These frequently disagree, and "
+    "other. `event_sentiment` is how the event itself feels. "
+    "`conversation_register` is the posture people are taking toward it. "
+    "These frequently disagree, and "
     "the disagreement is the most useful thing you can tell us: a death met "
     "with warm tribute is not the same conversation as a death met with "
     "grief, and neither is the same as one met with jokes.\n\n"
@@ -67,7 +83,7 @@ class DossierDraft(BaseModel):
     what_happened: str
     key_entities: list[str] = Field(default_factory=list)
     conversation_summary: str
-    register: Register
+    conversation_register: Register
     secondary_registers: list[Register] = Field(default_factory=list)
     event_sentiment: Sentiment
     valence: float = Field(ge=-1.0, le=1.0)
@@ -77,13 +93,22 @@ class DossierDraft(BaseModel):
 def distil_topics(
     evidence: list[TrendEvidence], provider: LLMProvider, settings: Settings
 ) -> list[Topic]:
-    """Distil every trend. A trend whose call fails is dropped, not fatal."""
+    """Distil every trend. A single trend whose call fails is dropped, not
+    fatal — but if every trend fails, that is a failed run, not an empty
+    result; see `DistilError`.
+    """
     if not evidence:
         return []
 
     with ThreadPoolExecutor(max_workers=settings.distil_concurrency) as pool:
         drafts = list(
             pool.map(lambda one: _distil_one(one, provider, settings), evidence)
+        )
+
+    if all(result is None for result in drafts):
+        raise DistilError(
+            f"All {len(evidence)} trend(s) failed distillation; see the "
+            "warnings above for each trend's error."
         )
 
     topics: list[Topic] = []
@@ -128,6 +153,24 @@ def _distil_one(
         return None
 
 
+def _render_post(post: PostEvidence) -> str:
+    """One post, with its engagement rather than its trend name — the trend
+    name is already the prompt's first line, so repeating it there carried
+    no information. `Item.metrics` is a union across platforms; every
+    TrendEvidence is Bluesky's today (it is the only TrendSource), so the
+    engagement counts are shown when the metrics are Bluesky's and omitted,
+    rather than guessed, otherwise.
+    """
+    metrics = post.item.metrics
+    if isinstance(metrics, BlueskyMetrics):
+        engagement = (
+            f"{metrics.like_count} likes, {metrics.repost_count} reposts, "
+            f"{metrics.reply_count} replies"
+        )
+        return f"- [{engagement}] {post.item.title}"
+    return f"- {post.item.title}"
+
+
 def _build_prompt(
     entry: TrendEvidence,
     replies: list[Reply],
@@ -135,9 +178,7 @@ def _build_prompt(
     budget: int,
 ) -> str:
     trend = entry.trend
-    posts = "\n".join(
-        f"- [{post.item.metrics.context}] {post.item.title}" for post in entry.posts
-    )
+    posts = "\n".join(_render_post(post) for post in entry.posts)
     sample = "\n".join(f"- {reply.text}" for reply in _sample(replies, budget))
     phrase_lines = "\n".join(
         f"- {phrase.text!r} — {phrase.distinct_authors} distinct accounts, "

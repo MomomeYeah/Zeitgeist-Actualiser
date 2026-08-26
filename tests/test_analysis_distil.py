@@ -3,7 +3,9 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from zeitgeist.analysis.distil import DossierDraft, distil_topics
+import pytest
+
+from zeitgeist.analysis.distil import DistilError, DossierDraft, distil_topics
 from zeitgeist.config import Settings
 from zeitgeist.llm.base import FakeLLMProvider, LLMError
 from zeitgeist.models import (
@@ -78,7 +80,7 @@ def _draft(**overrides: Any) -> DossierDraft:
         "what_happened": "Canada imposed tariffs on $30B of US goods.",
         "key_entities": ["Canada"],
         "conversation_summary": "People treat it as overdue.",
-        "register": Register.DUNKING,
+        "conversation_register": Register.DUNKING,
         "secondary_registers": [],
         "event_sentiment": Sentiment.SCHADENFREUDE,
         "valence": -0.2,
@@ -95,7 +97,7 @@ def test_a_trend_becomes_a_topic_carrying_its_dossier():
     assert topic.id == "canada-announces-retaliatory-tariffs"
     assert topic.item_ids == ["p0"]
     assert topic.dossier is not None
-    assert topic.dossier.register is Register.DUNKING
+    assert topic.dossier.conversation_register is Register.DUNKING
 
 
 def test_the_summary_is_what_happened_not_a_tag_confabulation():
@@ -123,6 +125,20 @@ def test_the_prompt_carries_the_trend_description_and_the_replies():
     prompt = provider.calls[0].prompt
     assert "Canada hits back after trade talks collapsed." in prompt
     assert "what a mess" in prompt
+
+
+def test_the_prompt_carries_each_posts_engagement():
+    """The spec asks for posts "with their engagement". The trend name was
+    being repeated in a bracket instead — a constant already stated on the
+    prompt's first line, carrying no information — so this must assert the
+    actual like/repost/reply counts reach the prompt, not merely that the
+    post appears at all.
+    """
+    provider = FakeLLMProvider(responses=[_draft()])
+    distil_topics([_evidence()], provider, _settings())
+
+    prompt = provider.calls[0].prompt
+    assert "10 likes, 1 reposts, 2 replies" in prompt
 
 
 def test_the_prompt_states_how_many_people_used_each_phrase():
@@ -202,9 +218,17 @@ def test_a_failing_trend_is_dropped_and_the_rest_survive():
     assert [topic.label for topic in topics] == ["Second"]
 
 
-def test_every_trend_failing_yields_no_topics():
-    provider = FakeLLMProvider(responses=[LLMError("boom")])
-    assert distil_topics([_evidence()], provider, _settings()) == []
+def test_every_trend_failing_raises_distil_error():
+    """The design spec: "A run in which every trend fails raises, as an
+    empty run is a failure rather than a result." Returning `[]` here would
+    write empty topics.json/ranked.json/briefs.json and let the CLI print a
+    green "Run complete" with 0 memes and no diagnostic — this is the
+    realistic failure mode for a local model that cannot hold the response
+    schema, since it fails every trend identically.
+    """
+    provider = FakeLLMProvider(responses=[LLMError("boom"), LLMError("boom")])
+    with pytest.raises(DistilError):
+        distil_topics([_evidence("First"), _evidence("Second")], provider, _settings())
 
 
 def test_topic_ids_are_unique_when_two_trends_share_a_label():
