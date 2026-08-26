@@ -4,7 +4,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from zeitgeist.analysis.consolidate import slugify
+from zeitgeist.analysis.slug import slugify
 from zeitgeist.models import NON_PLATFORM_COMPONENTS, Topic
 
 SCHEMA_VERSION = 2

@@ -1,6 +1,6 @@
 import pytest
 
-from zeitgeist.analysis.consolidate import slugify
+from zeitgeist.analysis.slug import slugify
 from zeitgeist.models import Topic
 from zeitgeist.store import SCHEMA_VERSION, Store, StoreSchemaError
 

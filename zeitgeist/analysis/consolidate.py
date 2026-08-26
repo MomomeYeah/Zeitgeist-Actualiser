@@ -5,11 +5,11 @@ what keeps this pass inside a small local model's context window.
 """
 
 import logging
-import re
 from collections import Counter
 
 from pydantic import BaseModel
 
+from zeitgeist.analysis.slug import unique_slug
 from zeitgeist.llm.base import LLMProvider
 from zeitgeist.models import Topic
 
@@ -82,7 +82,7 @@ def consolidate(
 
         topics.append(
             Topic(
-                id=_unique_slug(entry.label, used_ids),
+                id=unique_slug(entry.label, used_ids),
                 label=entry.label,
                 summary=entry.summary,
                 item_ids=item_ids,
@@ -101,19 +101,3 @@ def _build_prompt(vocabulary: Counter) -> str:
         "Return each canonical topic with a short label, a one or two "
         "sentence summary, and the exact input tags it absorbed."
     )
-
-
-def slugify(label: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", label.strip().lower()).strip("-")
-    return slug or "topic"
-
-
-def _unique_slug(label: str, used: set[str]) -> str:
-    base = slugify(label)
-    candidate = base
-    suffix = 2
-    while candidate in used:
-        candidate = f"{base}-{suffix}"
-        suffix += 1
-    used.add(candidate)
-    return candidate

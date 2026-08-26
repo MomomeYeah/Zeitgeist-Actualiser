@@ -8,9 +8,9 @@ it is reproducible and unit-testable, which an LLM's numeric judgment is not.
 
 from datetime import datetime
 
-from zeitgeist.analysis.consolidate import slugify
 from zeitgeist.analysis.scorers import build_scorer
 from zeitgeist.analysis.scorers.base import ScoreWeights
+from zeitgeist.analysis.slug import slugify
 from zeitgeist.models import Item, Topic
 
 __all__ = ["ScoreWeights", "score_topics"]
