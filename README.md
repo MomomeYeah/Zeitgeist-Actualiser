@@ -68,14 +68,16 @@ many trends" and "how many posts per trend" cannot be expressed by one
 preference) bounds how many trends are fetched, `BLUESKY_POSTS_PER_TREND`
 (default 10) bounds how many posts per trend, and
 `BLUESKY_FETCH_CONCURRENCY` (default 8) bounds how many of those requests
-run at once. `POST_LIMIT` does not apply here — it only bounds the dormant
-`lemmy`/`wikipedia` path, below.
+run at once.
 
 Each platform scores its own contribution to a topic, normalised within that
 platform, before results across platforms are combined. `SOURCES` currently
-allows only one platform at a time (above), so that combination step has
-only one input today; it is what lets a second live trend source join
-without changes elsewhere. See
+allows only one platform at a time (above) — `Settings` rejects anything
+else at startup — so that combination step has only one input today. The
+split still buys something with a single platform live: each scorer's
+sub-scores are normalised within that platform alone, rather than lumped
+into one cross-platform ranking, and `score_components` records what each
+platform contributed. See
 `docs/superpowers/specs/2026-08-26-trend-native-zeitgeist-capture-design.md`,
 section "Dormant platforms", for the contract `lemmy` and `wikipedia` must
 meet to rejoin — in short, producing a `Dossier` per cluster rather than a
