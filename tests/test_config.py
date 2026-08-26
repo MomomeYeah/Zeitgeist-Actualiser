@@ -1,15 +1,7 @@
-from typing import Any
-
 import pytest
+from pydantic import ValidationError
 
 from zeitgeist.config import Settings
-
-
-def _settings(**overrides: Any) -> Settings:
-    defaults: dict[str, Any] = dict(
-        anthropic_api_key="key",
-    )
-    return Settings(**{**defaults, **overrides})
 
 
 def _bare_settings(**overrides) -> Settings:
@@ -18,62 +10,47 @@ def _bare_settings(**overrides) -> Settings:
 
 
 @pytest.mark.parametrize(
-    "raw,expected",
+    "raw,message",
     [
-        ("lemmy", ["lemmy"]),
-        (" lemmy ", ["lemmy"]),
-        ("LEMMY", ["lemmy"]),
-        ("lemmy,,", ["lemmy"]),
-        (["lemmy"], ["lemmy"]),
+        ("", "exactly one"),
+        ("bluesky,wikipedia", "exactly one"),
+        ("lemmy", "dormant"),
+        ("mastodon", "Unknown source"),
     ],
 )
-def test_sources_parse_from_env_strings(raw, expected):
-    """SOURCES arrives from .env as one string, and the names are registry
-    keys, so case and stray separators must not decide whether a platform runs.
+def test_unusable_source_selections_are_rejected(raw, message):
+    """The empty case is the one that would otherwise reach `sources[0]` and
+    raise IndexError instead of a readable validation error — `SOURCES=` in a
+    .env produces exactly it. The old validator had a dedicated empty branch;
+    the new one folds it into the length check, so it needs its own case.
     """
-    assert _settings(sources=raw).sources == expected
+    with pytest.raises(ValidationError, match=message):
+        Settings(_env_file=None, sources=raw)
 
 
-def test_sources_parse_from_a_real_env_var(monkeypatch):
+def test_bluesky_is_accepted():
+    assert Settings(_env_file=None, sources="bluesky").sources == ["bluesky"]
+
+
+def test_a_source_name_from_a_real_env_var_is_parsed_without_json_decoding(
+    monkeypatch,
+):
     """pydantic-settings JSON-decodes list-typed fields before validators run
-    when the value comes from a real env var, so a plain CSV string here
-    raises SettingsError unless the field opts out via NoDecode. The
-    kwargs-based tests above go through InitSettingsSource, which never
-    JSON-decodes, so they cannot catch a regression here.
+    when the value comes from a real env var, so a plain string raises
+    SettingsError unless the field opts out via NoDecode. The kwargs-based
+    tests go through InitSettingsSource, which never JSON-decodes, so they
+    cannot catch a regression here. Case and stray whitespace are folded in:
+    the name is a registry key, so neither may decide whether a platform runs.
     """
-    monkeypatch.setenv("SOURCES", "lemmy")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
-    assert Settings(_env_file=None).sources == ["lemmy"]
+    monkeypatch.setenv("SOURCES", " BLUESKY ")
+    assert Settings(_env_file=None).sources == ["bluesky"]
 
 
-def test_a_multi_source_env_var_splits_on_the_comma(monkeypatch):
-    """Two names in one env var is the shape a real .env carries, and the
-    only shape where the CSV split can be told apart from a no-op.
-    """
-    monkeypatch.setenv("SOURCES", "lemmy,wikipedia")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
-
-    assert Settings(_env_file=None).sources == ["lemmy", "wikipedia"]
-
-
-def test_sources_defaults_to_lemmy_only():
+def test_sources_defaults_to_bluesky_only():
     """A fresh checkout must produce a working run without any credentials
     at all.
     """
-    assert _bare_settings().sources == ["lemmy"]
-
-
-def test_unknown_source_is_rejected_with_the_valid_names():
-    with pytest.raises(ValueError, match="mastodon"):
-        _bare_settings(sources="mastodon")
-
-
-def test_empty_sources_is_rejected():
-    """An empty list would otherwise reach CompositeSource, which cannot
-    build anything, and fail further from the cause.
-    """
-    with pytest.raises(ValueError, match="at least one"):
-        _bare_settings(sources="")
+    assert _bare_settings().sources == ["bluesky"]
 
 
 def test_lemmy_settings_have_usable_defaults():
@@ -82,12 +59,16 @@ def test_lemmy_settings_have_usable_defaults():
     assert settings.lemmy_include_nsfw is False
 
 
-def test_wikipedia_needs_no_credentials():
-    """Enabling it must not raise at startup — this is the property that
-    keeps the project runnable with no credentials at all, which is why
-    Wikimedia was chosen. Fails if _check_sources ever grows a credential
-    branch for wikipedia, as it once had for reddit.
+def test_wikipedia_settings_have_usable_defaults():
+    """Enabling it must never require credentials — this is the property
+    that keeps the project runnable with no credentials at all, which is why
+    Wikimedia was chosen. Checked against the field defaults directly:
+    Settings no longer accepts wikipedia as a live source selection at all
+    (it is dormant; see test_unusable_source_selections_are_rejected), so
+    there is no longer a `sources=` spelling of this guard.
     """
-    settings = Settings(_env_file=None, sources=["lemmy", "wikipedia"])
-
-    assert settings.sources == ["lemmy", "wikipedia"]
+    settings = _bare_settings()
+    assert settings.wikipedia_project == "en.wikipedia"
+    assert settings.wikipedia_contact == (
+        "https://github.com/MomomeYeah/Zeitgeist-Actualiser"
+    )

@@ -9,7 +9,7 @@ from zeitgeist.config import PACKAGE_ROOT, Settings
 from zeitgeist.llm.factory import build_provider
 from zeitgeist.media.templates import TemplateError, validate_templates
 from zeitgeist.pipeline import Stage, new_run_id, run_pipeline
-from zeitgeist.sources import build_source
+from zeitgeist.sources import build_trend_source
 from zeitgeist.sources.base import SourceError
 from zeitgeist.store import Store, StoreSchemaError
 
@@ -84,7 +84,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             store.init_schema()
             run_dir = run_pipeline(
                 settings=settings,
-                source=build_source(settings),
+                source=build_trend_source(settings),
                 provider=build_provider(settings),
                 store=store,
                 run_id=args.run_id or new_run_id(),

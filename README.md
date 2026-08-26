@@ -23,11 +23,17 @@ switch to Ollama, below). `SOURCES` picks the platforms to scrape.
 
 ### Sources
 
-`SOURCES=lemmy` is the default and needs no credentials — Lemmy's API is
-public and unauthenticated. `LEMMY_INSTANCE` chooses the instance to query;
-because instances federate, one already returns posts from across the
-network. `LEMMY_INCLUDE_NSFW` maps to the API's own `show_nsfw` flag and is
-off by default.
+`SOURCES=bluesky` is the default and needs no credentials — the AT Protocol
+AppView answers these endpoints unauthenticated. `SOURCES` must currently
+name exactly one platform: `lemmy` and `wikipedia` are dormant (kept in the
+codebase, but rejected at startup) until a consolidation phase exists that
+can build dossiers from a flat item list rather than from Bluesky's own
+trend clusters.
+
+`LEMMY_INSTANCE` chooses the Lemmy instance to query; because instances
+federate, one already returns posts from across the network.
+`LEMMY_INCLUDE_NSFW` maps to the API's own `show_nsfw` flag and is off by
+default.
 
 `wikipedia` adds Wikimedia pageviews — the top 1000 most-viewed articles for
 the most recent day with data. It needs no credentials. Unlike Lemmy it

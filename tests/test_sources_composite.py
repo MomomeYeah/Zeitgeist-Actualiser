@@ -12,6 +12,20 @@ from zeitgeist.sources.lemmy import LemmySource
 from zeitgeist.sources.wikipedia import WikipediaSource
 
 
+def _settings_selecting(*names: str) -> Settings:
+    """build_source itself is dormant infrastructure kept for the item
+    sources, but Settings' constructor now enforces the live-path
+    constraint (exactly one trend source) and would reject `lemmy` and
+    `wikipedia` outright. Build a valid Settings, then set `.sources`
+    directly: Settings has no `validate_assignment`, so this exercises
+    build_source against the dormant platforms without going through the
+    validator meant for the live path.
+    """
+    settings = Settings(_env_file=None, anthropic_api_key="key", sources="bluesky")
+    settings.sources = list(names)
+    return settings
+
+
 def _item(platform: str, source_id: str, channel: str = "cats@lemmy.world") -> Item:
     """Dispatches on platform so each item carries its own metrics class.
     Every test in this file builds items through here, so the union is
@@ -192,7 +206,7 @@ def test_build_source_builds_only_the_enabled_sources():
     indexes BUILDERS by the configured names, and building the rest anyway
     would spend a client and a request budget on a platform nobody enabled.
     """
-    settings = Settings(_env_file=None, anthropic_api_key="key", sources="lemmy")
+    settings = _settings_selecting("lemmy")
 
     composite = build_source(settings)
 
@@ -205,9 +219,7 @@ def test_each_registry_key_builds_its_own_source_class():
     class fails silently. The registry drift tests compare key sets only and
     would not notice.
     """
-    settings = Settings(
-        _env_file=None, anthropic_api_key="key", sources="lemmy,wikipedia"
-    )
+    settings = _settings_selecting("lemmy", "wikipedia")
 
     composite = build_source(settings)
 
@@ -222,9 +234,7 @@ def test_build_source_preserves_the_configured_order():
     """The budget is split per source in order, so a registry that reordered
     them would silently change which platform gets the remainder.
     """
-    settings = Settings(
-        _env_file=None, anthropic_api_key="key", sources="wikipedia,lemmy"
-    )
+    settings = _settings_selecting("wikipedia", "lemmy")
 
     composite = build_source(settings)
 

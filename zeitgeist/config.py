@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     # NoDecode: pydantic-settings otherwise JSON-decodes any list-typed env
     # value before validators run, so a plain CSV string like
     # "lemmy,wikipedia" raises SettingsError before `_split_csv` ever sees it.
-    sources: Annotated[list[str], NoDecode] = ["lemmy"]
+    sources: Annotated[list[str], NoDecode] = ["bluesky"]
     post_limit: int = 500
     topic_count: int = 5
 
@@ -84,14 +84,26 @@ class Settings(BaseSettings):
     def _check_sources(self) -> Settings:
         """Reject an unusable source selection at startup rather than after
         the pipeline has already created a run directory.
+
+        Only trend sources feed the live pipeline. Lemmy and Wikipedia are
+        dormant: their code and tests remain, but nothing consumes a flat
+        item list until a consolidation phase exists to build dossiers from
+        one. See docs/superpowers/specs/2026-08-26-trend-native-zeitgeist-
+        capture-design.md, "Dormant platforms".
         """
         self.sources = [name.lower() for name in self.sources]
-        valid = ", ".join(KNOWN_SOURCES)
-        if not self.sources:
-            raise ValueError(f"SOURCES is empty; enable at least one of: {valid}")
+        valid = ", ".join(TREND_SOURCES)
 
-        unknown = [name for name in self.sources if name not in KNOWN_SOURCES]
-        if unknown:
-            raise ValueError(f"Unknown source(s): {', '.join(unknown)}. Valid: {valid}")
+        if len(self.sources) != 1:
+            raise ValueError(f"SOURCES must name exactly one of: {valid}")
+
+        name = self.sources[0]
+        if name in ITEM_SOURCES:
+            raise ValueError(
+                f"Source {name!r} is dormant: it has no trend clustering, so "
+                f"it cannot produce dossiers. Use one of: {valid}"
+            )
+        if name not in TREND_SOURCES:
+            raise ValueError(f"Unknown source: {name!r}. Valid: {valid}")
 
         return self
