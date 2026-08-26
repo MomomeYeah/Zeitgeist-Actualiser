@@ -2608,12 +2608,32 @@ def _context(topic: ScoredTopic) -> str:
 
 Add `Phrase` to the imports in the test file as needed. `BRIEF_SYSTEM` is unchanged; improving it is separate work.
 
-- [ ] **Step 7: Run the full suite**
+- [ ] **Step 7: Keep the pipeline importable**
+
+`pipeline.py` imports `judge_topics` and calls `select` with three arguments, one of which is `settings.sentiment_weights` — all three deleted in this task. Without this step the whole suite fails at import and this task's Definition of Done cannot pass. The full rewire is Task 8; this is the minimum that keeps the tree green.
+
+In `zeitgeist/pipeline.py`, change the import:
+
+```python
+from zeitgeist.analysis.sentiment import select
+```
+
+and the EVALUATE stage body:
+
+```python
+    if resuming <= ORDER.index(Stage.EVALUATE):
+        topics = _read(run_dir / "topics.json", Topic)
+        ranked = select(topics, settings.topic_count)
+```
+
+The ANALYSE stage still runs `extract_tags` and `consolidate` at this point; Task 8 replaces them. Topics therefore reach `select` with `dossier` unset, which is exactly the dormant-path shape `select` is required to handle.
+
+- [ ] **Step 8: Run the full suite**
 
 Run: `uv run pytest -q`
-Expected: PASS. `tests/test_pipeline.py` will still fail if it constructs `ScoredTopic` with sentiment fields — update those constructions to drop them; the pipeline itself is rewired in Task 8.
+Expected: PASS. `tests/test_pipeline.py` will still fail if it constructs `ScoredTopic` with sentiment fields — update those constructions to drop them.
 
-- [ ] **Step 8: Definition of Done, then commit**
+- [ ] **Step 9: Definition of Done, then commit**
 
 ```bash
 uv run ruff check . && uv run ruff format --check . && uv run ty check && uv run pytest
