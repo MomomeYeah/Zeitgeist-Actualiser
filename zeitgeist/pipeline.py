@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from zeitgeist.analysis.consolidate import consolidate
 from zeitgeist.analysis.extract import extract_tags
 from zeitgeist.analysis.score import score_topics
-from zeitgeist.analysis.sentiment import judge_topics, select
+from zeitgeist.analysis.sentiment import select
 from zeitgeist.config import Settings
 from zeitgeist.llm.base import LLMProvider
 from zeitgeist.media.brief import generate_briefs
@@ -79,11 +79,7 @@ def run_pipeline(
 
     if resuming <= ORDER.index(Stage.EVALUATE):
         topics = _read(run_dir / "topics.json", Topic)
-        ranked = select(
-            judge_topics(topics, provider),
-            settings.sentiment_weights,
-            settings.topic_count,
-        )
+        ranked = select(topics, settings.topic_count)
         log.info("Selected %d topics", len(ranked))
         _write(run_dir / "ranked.json", ranked)
 

@@ -46,9 +46,6 @@ def _scored(**overrides: Any) -> ScoredTopic:
         label="Cats",
         summary="Cat things.",
         item_ids=["abc123"],
-        primary_sentiment=Sentiment.CUTE,
-        valence=0.5,
-        meme_potential=0.5,
     )
     return ScoredTopic(**{**defaults, **overrides})
 
@@ -179,28 +176,6 @@ def test_topic_rejects_the_old_post_ids_field():
         )
 
 
-@pytest.mark.parametrize("valence", [-1.01, 1.01, 5.0, -5.0])
-def test_valence_outside_minus_one_to_one_is_rejected(valence):
-    with pytest.raises(ValidationError):
-        _scored(valence=valence)
-
-
-@pytest.mark.parametrize("valence", [-1.0, 0.0, 1.0])
-def test_valence_accepts_its_boundaries(valence):
-    assert _scored(valence=valence).valence == valence
-
-
-@pytest.mark.parametrize("meme_potential", [-0.01, 1.01])
-def test_meme_potential_outside_zero_to_one_is_rejected(meme_potential):
-    with pytest.raises(ValidationError):
-        _scored(meme_potential=meme_potential)
-
-
-@pytest.mark.parametrize("meme_potential", [0.0, 1.0])
-def test_meme_potential_accepts_its_boundaries(meme_potential):
-    assert _scored(meme_potential=meme_potential).meme_potential == meme_potential
-
-
 def test_topic_defaults_leave_room_for_the_scoring_stage():
     """score_topics fills these in later; the defaults are what let a topic
     exist between consolidation and scoring.
@@ -212,13 +187,13 @@ def test_topic_defaults_leave_room_for_the_scoring_stage():
 
 def test_scored_topic_defaults_leave_room_for_the_selection_stage():
     scored = _scored()
-    assert scored.secondary_sentiments == []
     assert scored.final_rank == 0
 
 
-def test_scored_topic_accepts_every_field_of_a_scored_topic():
-    """judge_topics constructs ScoredTopic(**topic.model_dump(), ...). If the
-    two models drift apart, that call breaks — here rather than mid-run.
+def test_scored_topic_accepts_every_field_of_a_topic():
+    """`select` constructs ScoredTopic(**topic.model_dump(), final_rank=...).
+    If the two models drift apart, that call breaks — here rather than
+    mid-run.
     """
     topic = Topic(
         id="cats",
@@ -228,12 +203,7 @@ def test_scored_topic_accepts_every_field_of_a_scored_topic():
         trend_score=0.7,
         score_components={"base": 0.7},
     )
-    scored = ScoredTopic(
-        **topic.model_dump(),
-        primary_sentiment=Sentiment.CUTE,
-        valence=0.5,
-        meme_potential=0.5,
-    )
+    scored = ScoredTopic(**topic.model_dump(), final_rank=1)
     assert scored.trend_score == 0.7
     assert scored.score_components == {"base": 0.7}
 

@@ -4,11 +4,10 @@ import pytest
 
 from zeitgeist.analysis.consolidate import ConsolidatedTopic, Consolidation
 from zeitgeist.analysis.extract import ItemTags, TagExtraction
-from zeitgeist.analysis.sentiment import SentimentJudgement
 from zeitgeist.config import Settings
 from zeitgeist.llm.base import FakeLLMProvider, LLMError
 from zeitgeist.media.brief import BriefChoice
-from zeitgeist.models import Item, LemmyMetrics, Sentiment
+from zeitgeist.models import Item, LemmyMetrics
 from zeitgeist.pipeline import Stage, run_pipeline
 from zeitgeist.store import Store
 
@@ -49,12 +48,6 @@ def _provider(posts):
                         label="Cats", summary="Cat things.", tags=["cats"]
                     )
                 ]
-            ),
-            SentimentJudgement(
-                primary_sentiment=Sentiment.CUTE,
-                secondary_sentiments=[],
-                valence=0.8,
-                meme_potential=0.9,
             ),
             BriefChoice(
                 template_id="drake",
@@ -175,8 +168,9 @@ def test_resume_without_checkpoint_raises(settings, sample_items):
 
 def test_a_failing_stage_degrades_rather_than_killing_the_run(settings, sample_items):
     """The spec's central error rule: fewer memes is a success, no output is
-    a failure. One topic's sentiment call fails; the other must still reach
-    a rendered PNG.
+    a failure. Selection no longer drops topics on an LLM failure — brief
+    generation still can, so that is where this exercises the degrade path.
+    One topic's brief call fails; the other must still reach a rendered PNG.
     """
     posts = sample_items[:3]
     provider = FakeLLMProvider(
@@ -196,13 +190,7 @@ def test_a_failing_stage_degrades_rather_than_killing_the_run(settings, sample_i
                     ),
                 ]
             ),
-            LLMError("sentiment call failed"),
-            SentimentJudgement(
-                primary_sentiment=Sentiment.CUTE,
-                secondary_sentiments=[],
-                valence=0.8,
-                meme_potential=0.9,
-            ),
+            LLMError("brief call failed"),
             BriefChoice(
                 template_id="drake",
                 caption_slots={"rejected": "Dogs", "preferred": "Cats"},
@@ -219,7 +207,9 @@ def test_a_failing_stage_degrades_rather_than_killing_the_run(settings, sample_i
     )
 
     ranked = json.loads((run_dir / "ranked.json").read_text(encoding="utf-8"))
-    assert [entry["label"] for entry in ranked] == ["Dogs"]
+    assert [entry["label"] for entry in ranked] == ["Cats", "Dogs"]
+    briefs = json.loads((run_dir / "briefs.json").read_text(encoding="utf-8"))
+    assert [entry["topic_id"] for entry in briefs] == ["dogs"]
     assert len(list(run_dir.glob("*.png"))) == 1
 
 
@@ -229,5 +219,4 @@ def test_checkpoints_are_valid_json(settings, sample_items):
         settings, StubSource(posts), _provider(posts), _store(settings), "run1"
     )
     ranked = json.loads((run_dir / "ranked.json").read_text(encoding="utf-8"))
-    assert ranked[0]["primary_sentiment"] == "cute"
     assert ranked[0]["final_rank"] == 1

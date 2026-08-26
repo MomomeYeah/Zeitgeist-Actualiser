@@ -2,8 +2,7 @@ from typing import Any
 
 import pytest
 
-from zeitgeist.config import DEFAULT_SENTIMENT_WEIGHTS, Settings
-from zeitgeist.models import Sentiment
+from zeitgeist.config import Settings
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -11,22 +10,6 @@ def _settings(**overrides: Any) -> Settings:
         anthropic_api_key="key",
     )
     return Settings(**{**defaults, **overrides})
-
-
-def test_every_sentiment_has_a_default_weight():
-    """A sentiment added to the enum without a weight would silently score
-    as neutral, quietly defeating the preference for positive topics.
-    """
-    assert set(DEFAULT_SENTIMENT_WEIGHTS) == set(Sentiment)
-
-
-def test_weight_for_falls_back_to_neutral_when_unconfigured():
-    """A user who overrides SENTIMENT_WEIGHTS with a partial map must not
-    crash the run on the sentiments they left out.
-    """
-    settings = _settings(sentiment_weights={Sentiment.CUTE: 2.0})
-    assert settings.weight_for(Sentiment.CUTE) == 2.0
-    assert settings.weight_for(Sentiment.SAD) == 1.0
 
 
 def _bare_settings(**overrides) -> Settings:

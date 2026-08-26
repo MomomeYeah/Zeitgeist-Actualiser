@@ -310,12 +310,13 @@ class Topic(BaseModel):
 
 
 class ScoredTopic(Topic):
-    """A topic with its sentiment judgement and final ranking attached."""
+    """A topic with its final ranking attached.
 
-    primary_sentiment: Sentiment
-    secondary_sentiments: list[Sentiment] = Field(default_factory=list)
-    valence: float = Field(ge=-1.0, le=1.0)
-    meme_potential: float = Field(ge=0.0, le=1.0)
+    Sentiment used to live here. It now lives on `Topic.dossier`, judged
+    with the replies in front of it rather than from a label, so there is
+    one source of truth and no projection to drift.
+    """
+
     final_rank: int = 0
 
 
