@@ -13,13 +13,20 @@ from zeitgeist.sources.wikipedia import WikipediaSource
 
 
 def _settings_selecting(*names: str) -> Settings:
-    """build_source itself is dormant infrastructure kept for the item
-    sources, but Settings' constructor now enforces the live-path
-    constraint (exactly one trend source) and would reject `lemmy` and
-    `wikipedia` outright. Build a valid Settings, then set `.sources`
-    directly: Settings has no `validate_assignment`, so this exercises
-    build_source against the dormant platforms without going through the
-    validator meant for the live path.
+    """build_source is kept as dormant-but-buildable infrastructure (see
+    config.py's `_check_sources`), but its own constructor can no longer
+    produce the dormant or multi-source configurations these tests need to
+    exercise it with: `Settings(sources=...)` now enforces the live-path
+    constraint of exactly one trend source, and would reject `lemmy` and
+    `wikipedia` before build_source is ever called.
+
+    build_source itself doesn't care -- it just indexes BUILDERS by
+    whatever `settings.sources` holds, with no revalidation of its own. So
+    build a valid Settings and set `.sources` directly afterwards, which
+    reaches that real code path unchanged. This relies on Settings not
+    declaring `validate_assignment` -- an implementation detail, not a
+    contract pydantic-settings promises -- so if that ever gets added,
+    these tests will fail in a way that looks unrelated to this cause.
     """
     settings = Settings(_env_file=None, anthropic_api_key="key", sources="bluesky")
     settings.sources = list(names)

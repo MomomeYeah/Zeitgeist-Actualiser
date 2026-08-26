@@ -153,6 +153,26 @@ def test_topics_json_carries_the_dossier(tmp_path):
     assert topic["summary"] == "Canada imposed tariffs on $30B of US goods."
 
 
+def test_ranked_json_carries_the_selected_topic_and_its_dossier(tmp_path):
+    """ranked.json is what --resume-from generate reads back, so a break in
+    its serialisation (the wrong field written, final_rank mis-numbered)
+    would only surface as a confusing failure two stages later. Parsed as
+    raw JSON rather than through ScoredTopic.model_validate, so a
+    serialisation-level break is visible here rather than papered over by
+    the schema filling in a default.
+    """
+    run_dir = run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence()]),
+        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+        store=_store(tmp_path),
+        run_id="r1",
+    )
+    [topic] = json.loads((run_dir / "ranked.json").read_text(encoding="utf-8"))
+    assert topic["final_rank"] == 1
+    assert topic["dossier"]["register"] == "dunking"
+
+
 def test_resuming_from_analyse_does_not_refetch(tmp_path):
     settings = _settings(tmp_path)
     source = _FakeTrendSource([_evidence()])
