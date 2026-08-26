@@ -233,11 +233,6 @@ def test_trend_evidence_round_trips_through_json(sample_items):
     assert restored == evidence
 
 
-def test_post_evidence_defaults_to_no_replies(sample_items):
-    """A post whose thread fetch failed is kept, without replies."""
-    assert PostEvidence(item=sample_items[0]).replies == []
-
-
 @pytest.mark.parametrize("field", ["author", "handle", "did", "display_name"])
 def test_reply_rejects_identifying_fields(field):
     """author_key is a one-way hash and the only identity-adjacent field
@@ -251,7 +246,37 @@ def test_reply_rejects_identifying_fields(field):
             author_key="ab12cd34",
             **{field: "someone.bsky.social"},
         )
+
+
+@pytest.mark.parametrize(
+    "model,want",
+    [
+        (
+            TrendInfo,
+            {
+                "topic_id",
+                "display_name",
+                "description",
+                "category",
+                "post_count",
+                "started_at",
+                "status",
+            },
+        ),
+        (Reply, {"text", "like_count", "created_at", "author_key"}),
+        (PostEvidence, {"item", "replies"}),
+        (TrendEvidence, {"trend", "posts"}),
+    ],
+)
+def test_evidence_models_carry_exactly_the_specified_fields(model, want):
+    """getTrends returns an `actors` list of handles, display names and
+    avatars, and postView an `author` block. Neither may reach a model, so
+    the field sets are written out by hand: adding one fails here.
+    """
+    assert set(model.model_fields) == want
 ```
+
+> This joins the existing `test_models_carry_exactly_the_specified_fields` table. `STRICT` rejects *unknown* keys on input; it cannot stop someone deliberately adding `actors: list[dict]` to `TrendInfo` and mapping it through. Only a hand-written field set catches that.
 
 Add `TrendInfo`, `Reply`, `PostEvidence`, `TrendEvidence` to the existing `from zeitgeist.models import ...` line in that file. Confirm `datetime`, `UTC`, `pytest` and `ValidationError` are already imported there; add whichever are missing.
 
@@ -382,11 +407,6 @@ def _dossier(**overrides) -> Dossier:
     return Dossier(**(base | overrides))
 
 
-def test_register_is_a_string_enum_that_round_trips():
-    assert Register.DELIGHT.value == "delight"
-    assert Register("delight") is Register.DELIGHT
-
-
 def test_topic_dossier_defaults_to_none():
     """The dormant path produces topics with no dossier."""
     topic = Topic(id="t", label="A trend", summary="s", item_ids=["i1"])
@@ -419,7 +439,23 @@ def test_dossier_rejects_valence_outside_the_scale():
 def test_dossier_rejects_meme_potential_outside_the_scale():
     with pytest.raises(ValidationError):
         _dossier(meme_potential=1.5)
+
+
+@pytest.mark.parametrize("valence", [-1.0, 0.0, 1.0])
+def test_dossier_accepts_the_valence_boundaries(valence):
+    """-1.0 is what a thoroughly negative event scores, and the prompt asks
+    for it. `gt` instead of `ge` would drop exactly those trends, and a
+    rejection-only test passes either way.
+    """
+    assert _dossier(valence=valence).valence == valence
+
+
+@pytest.mark.parametrize("meme_potential", [0.0, 1.0])
+def test_dossier_accepts_the_meme_potential_boundaries(meme_potential):
+    assert _dossier(meme_potential=meme_potential).meme_potential == meme_potential
 ```
+
+> Task 7 deletes `ScoredTopic`'s own boundary tests along with its sentiment fields. Without these, the boundary coverage leaves the suite entirely.
 
 Add `Dossier`, `Phrase`, `Register` to the `from zeitgeist.models import ...` line.
 
@@ -612,14 +648,20 @@ def test_a_phrase_many_people_use_is_mined():
 
 
 def test_counts_report_occurrences_and_distinct_authors_separately():
+    """The two numbers must differ here, or reporting one in place of the
+    other passes. One account uses the phrase in two separate replies, so
+    four uses come from three people.
+    """
     replies = _replies(
         ("a", "elbows up"),
+        ("a", "elbows up again"),
         ("b", "elbows up"),
         ("c", "elbows up"),
     )
-    [phrase] = [p for p in mine_phrases(replies, TREND, min_authors=3)
-                if p.text == "elbows up"]
-    assert phrase.occurrences == 3
+    [phrase] = [
+        p for p in mine_phrases(replies, TREND, min_authors=3) if p.text == "elbows up"
+    ]
+    assert phrase.occurrences == 4
     assert phrase.distinct_authors == 3
 
 
@@ -713,14 +755,20 @@ def test_all_stopword_phrases_are_excluded():
 
 
 def test_urls_and_mentions_are_stripped_before_mining():
+    """All three authors carry both, so the noise grams clear min_authors if
+    they survive. Punctuation removal alone does not catch them: it turns a
+    URL into ordinary words rather than dropping it — which is why asserting
+    on the absence of "@" or "http" proves nothing.
+    """
     replies = _replies(
-        ("a", "@someone.bsky.social elbows up https://example.com/a"),
-        ("b", "@other.bsky.social elbows up https://example.com/b"),
-        ("c", "elbows up"),
+        ("a", "@someone.bsky.social elbows up https://example.com/one"),
+        ("b", "@someone.bsky.social elbows up https://example.com/two"),
+        ("c", "@someone.bsky.social elbows up https://example.com/three"),
     )
     result = _texts(mine_phrases(replies, TREND, min_authors=3))
     assert "elbows up" in result
-    assert not any("http" in text or "@" in text for text in result)
+    assert "https example com" not in result
+    assert "someone bsky social" not in result
 
 
 def test_no_replies_yields_no_phrases():
@@ -728,6 +776,10 @@ def test_no_replies_yields_no_phrases():
 
 
 def test_results_are_ranked_by_distinct_authors():
+    """Literal, not `sorted(result)`: comparing the output against itself is
+    also true of a one-element or empty list, so a collapse regression that
+    swallowed the second phrase would pass.
+    """
     replies = _replies(
         ("a", "elbows up"),
         ("b", "elbows up"),
@@ -738,7 +790,8 @@ def test_results_are_ranked_by_distinct_authors():
         ("c", "maple syrup diplomacy"),
     )
     result = mine_phrases(replies, TREND, min_authors=3)
-    assert result == sorted(result, key=lambda p: -p.distinct_authors)
+    assert _texts(result) == ["elbows up", "maple syrup diplomacy"]
+    assert [p.distinct_authors for p in result] == [4, 3]
 
 
 def test_top_limits_the_result_size():
@@ -1117,15 +1170,18 @@ def _source(
     return BlueskySource(client_factory=lambda: client), client
 ```
 
-Now the tests. Existing tests in this file that call `source.fetch(limit=...)` and assert on `list[Item]` must be rewritten to call `fetch_evidence` and read `evidence[0].posts[0].item` — the mapping assertions themselves (permalink construction, `indexedAt` over `createdAt`, language filter, label filter, malformed URI) are still valid and must be kept, not deleted.
+Now the tests. Existing tests in this file that call `source.fetch(limit=...)` and assert on `list[Item]` must be rewritten to call `fetch_evidence` and read `evidence[0].posts[0].item`. Their assertions are still valid and must be **kept, not deleted** — carry forward every one of: permalink construction, `indexedAt` over `createdAt`, the language filter, the label filter, the malformed-URI skip, and all four `_normalise_status` cases (`hot`, an unrecognised value, a missing value, and the warning it logs). `_normalise_status` now has a second call site in `_to_trend_info`, so dropping its tests would leave the mapping that reaches `TrendInfo.status` uncovered.
 
 ```python
 def test_a_trend_keeps_every_field_the_api_returns():
     """The whole point of this change: `description` states the specific
-    event and the old source discarded it.
+    event and the old source discarded it. `status` and `startedAt` are
+    asserted too — `_normalise_status` maps the former ("hot" is not a
+    TrendStatus), and nothing else in this file would notice either being
+    hard-coded or defaulted to now().
     """
     source, _ = _source(
-        {"trends": [_trend("t1", "Canada announces retaliatory tariffs")]},
+        {"trends": [_trend("t1", "Canada announces retaliatory tariffs", "hot")]},
         {"t1": {"feed": [_post("p1")]}},
     )
     [evidence] = source.fetch_evidence(_settings())
@@ -1134,6 +1190,36 @@ def test_a_trend_keeps_every_field_the_api_returns():
     assert evidence.trend.category == "politics"
     assert evidence.trend.post_count == 100
     assert evidence.trend.topic_id == "t1"
+    assert evidence.trend.status == "trending"
+    assert evidence.trend.started_at == datetime(2026, 8, 23, 4, 0, tzinfo=UTC)
+
+
+def test_the_trend_listing_is_requested_at_the_configured_limit():
+    """The two fan-out settings are adjacent in the same call chain, so the
+    posts-per-trend budget reaching getTrends is a live copy-paste risk.
+    Distinct values here are what tell the two apart.
+    """
+    source, client = _source(
+        {"trends": [_trend("t1", "A trend")]},
+        {"t1": {"feed": [_post("p1")]}},
+    )
+    source.fetch_evidence(_settings(bluesky_trend_limit=7, bluesky_posts_per_trend=4))
+    trend_calls = [params for url, params in client.calls if "getTrends" in url]
+    assert trend_calls[0]["limit"] == 7
+
+
+def test_feed_requests_never_exceed_the_api_page_cap():
+    """getFeed rejects a limit above 100. Without the cap every feed call
+    400s and the whole run looks like an outage — a bug this test was
+    originally written for, now reachable by setting the value directly.
+    """
+    source, client = _source(
+        {"trends": [_trend("t1", "A trend")]},
+        {"t1": {"feed": [_post("p1")]}},
+    )
+    source.fetch_evidence(_settings(bluesky_posts_per_trend=500))
+    feed_calls = [params for url, params in client.calls if "getFeed" in url]
+    assert feed_calls[0]["limit"] == 100
 
 
 def test_replies_are_attached_to_their_post():
@@ -1277,14 +1363,39 @@ def test_a_rate_limited_request_is_retried(monkeypatch):
     assert sum(1 for url, _ in client.calls if "getFeed" in url) == 2
 
 
-def test_concurrency_never_exceeds_the_configured_bound():
+def test_concurrency_matches_the_configured_bound():
+    """Equality, not an upper bound: `<= 3` also passes when the fan-out
+    silently serialises, which is the failure this whole rewrite exists to
+    avoid. The fake yields inside `get`, so three permits deterministically
+    produce three overlapping requests.
+    """
     trends = [_trend(f"t{i}", f"Trend {i}") for i in range(10)]
     feeds = {
         f"t{i}": {"feed": [_post(f"p{i}-{j}") for j in range(5)]} for i in range(10)
     }
     source, client = _source({"trends": trends}, feeds)
     source.fetch_evidence(_settings(bluesky_fetch_concurrency=3))
-    assert client.max_in_flight <= 3
+    assert client.max_in_flight == 3
+
+
+def test_a_persistently_rate_limited_feed_skips_only_that_trend(monkeypatch):
+    """The last 429 falls through to raise_for_status and the per-trend guard
+    treats it as any other transport failure. Without that fall-through `_get`
+    runs off the end of its loop into AssertionError, killing the run rather
+    than costing one trend. Also pins the retry count: an unbounded loop or a
+    fourth attempt fails the call count.
+    """
+    monkeypatch.setattr("zeitgeist.sources.bluesky.RETRY_BASE_DELAY", 0)
+    source, client = _source(
+        {"trends": [_trend("t1", "Throttled"), _trend("t2", "Fine")]},
+        {
+            "t1": [_Response({}, status_code=429) for _ in range(3)],
+            "t2": {"feed": [_post("p2")]},
+        },
+    )
+    evidence = source.fetch_evidence(_settings())
+    assert [e.trend.display_name for e in evidence] == ["Fine"]
+    assert sum(1 for url, _ in client.calls if "getFeed" in url) == 4
 
 
 def test_posts_per_trend_bounds_the_feed_request():
@@ -1857,17 +1968,17 @@ def test_the_prompt_carries_the_trend_description_and_the_replies():
 
 
 def test_the_prompt_states_how_many_people_used_each_phrase():
-    """The counts are what license quoting, so they must reach the model.
-
-    Asserted on the full phrase, not the bare number: "4" also appears in
-    the post count, so a substring check would pass without the counts ever
-    being rendered.
+    """The counts are what license quoting, so they must reach the model with
+    their meanings intact. The two numbers differ here — five uses from four
+    accounts — so rendering one in place of the other fails. Equal counts
+    would make the swap invisible, and a bare "4" also matches the post count.
     """
     replies = [_reply("elbows up", author=a) for a in ("a", "b", "c", "d")]
+    replies.append(_reply("elbows up again", author="a"))
     provider = FakeLLMProvider(responses=[_draft()])
     distil_topics([_evidence(replies=replies)], provider, _settings())
 
-    assert "4 distinct accounts" in provider.calls[0].prompt
+    assert "4 distinct accounts, 5 uses" in provider.calls[0].prompt
 
 
 def test_replies_are_truncated_to_the_character_budget():
@@ -2183,16 +2294,17 @@ def _topic(topic_id: str, score: float) -> Topic:
     )
 
 
-def _dossier() -> Dossier:
-    return Dossier(
-        what_happened="Canada imposed tariffs on $30B of US goods.",
-        key_entities=["Canada"],
-        conversation_summary="People treat it as overdue.",
-        register=Register.DUNKING,
-        event_sentiment=Sentiment.SCHADENFREUDE,
-        valence=-0.2,
-        meme_potential=0.8,
-    )
+def _dossier(**overrides) -> Dossier:
+    base = {
+        "what_happened": "Canada imposed tariffs on $30B of US goods.",
+        "key_entities": ["Canada"],
+        "conversation_summary": "People treat it as overdue.",
+        "register": Register.DUNKING,
+        "event_sentiment": Sentiment.SCHADENFREUDE,
+        "valence": -0.2,
+        "meme_potential": 0.8,
+    }
+    return Dossier(**(base | overrides))
 
 
 def test_topics_are_ranked_by_trend_score():
@@ -2210,13 +2322,34 @@ def test_only_the_top_n_survive():
     assert [topic.id for topic in ranked] == ["a", "b"]
 
 
-def test_nothing_is_suppressed_by_sentiment():
-    """Weights are deliberately gone. A grim topic with a strong trend score
-    outranks a cheerful one, which is the point: the tool measures the
-    zeitgeist rather than a preferred half of it.
+def test_a_grim_topic_outranks_a_cheerful_one_on_trend_score_alone():
+    """Weights are deliberately gone, and so is the meme_potential multiplier.
+    Both topics carry a dossier here: without one this test is
+    indistinguishable from test_topics_are_ranked_by_trend_score and could not
+    notice either factor being reintroduced — there would be nothing for the
+    reintroduced factor to read. Under the old formula cheerful wins twice
+    over, on the sentiment weight and on meme potential alike.
     """
-    grim = _topic("grim", 0.9)
-    cheerful = _topic("cheerful", 0.3)
+    grim = _topic("grim", 0.9).model_copy(
+        update={
+            "dossier": _dossier(
+                register=Register.MOURNING,
+                event_sentiment=Sentiment.SAD,
+                valence=-0.9,
+                meme_potential=0.2,
+            )
+        }
+    )
+    cheerful = _topic("cheerful", 0.8).model_copy(
+        update={
+            "dossier": _dossier(
+                register=Register.DELIGHT,
+                event_sentiment=Sentiment.CUTE,
+                valence=0.9,
+                meme_potential=0.9,
+            )
+        }
+    )
     assert [t.id for t in select([cheerful, grim], top_n=2)] == ["grim", "cheerful"]
 
 
@@ -2267,13 +2400,22 @@ def test_the_prompt_offers_recurring_phrases_with_their_counts():
     assert "33" in prompt
 
 
-def test_a_topic_without_a_dossier_still_produces_a_prompt():
+def test_a_topic_without_a_dossier_falls_back_to_its_summary():
     """The dormant path leaves `dossier` None. Briefing must degrade rather
-    than raise, so a stale checkpoint is diagnosable.
+    than raise — and the summary has to actually reach the prompt, or the
+    caption is written from a bare label. Asserting only that a brief comes
+    back passes even when the context block degrades to an empty string.
     """
-    topic = ScoredTopic(id="t", label="A trend", summary="s", item_ids=["i"])
-    brief = generate_brief(topic, _templates(), FakeLLMProvider(responses=[_choice()]))
+    topic = ScoredTopic(
+        id="t",
+        label="A trend",
+        summary="Cats knocked something over.",
+        item_ids=["i"],
+    )
+    provider = FakeLLMProvider(responses=[_choice()])
+    brief = generate_brief(topic, _templates(), provider)
     assert brief.topic_id == "t"
+    assert "Cats knocked something over." in provider.calls[-1].prompt
 ```
 
 Write `_scored_topic`, `_templates`, `_choice` and `_last_prompt` as local helpers in that file, following its existing style; `_scored_topic(phrases=...)` builds a `ScoredTopic` whose `dossier` is a `Dossier` with `what_happened="Canada imposed tariffs on $30B of US goods."`, `register=Register.DUNKING`, `event_sentiment=Sentiment.SCHADENFREUDE` and the given phrases.
@@ -2512,22 +2654,44 @@ Two existing helpers in this file need updating:
 - `_settings(tmp_path)` must now pass `sources=["bluesky"]` and `distil_concurrency=1`; the old default of `["lemmy"]` is rejected at construction after Step 4.
 - `_choice()` is the existing `BriefChoice` the fake provider returns for the caption call. Each pipeline run queues two responses in order: the `DossierDraft` for distillation, then the `BriefChoice` for the brief.
 
-In `tests/test_config.py`, add:
+In `tests/test_config.py`, these replace the existing `lemmy`-based source tests — which now construct an invalid `Settings` and would otherwise be deleted wholesale, taking a real regression guard with them. Import `ValidationError` from `pydantic`.
 
 ```python
-def test_selecting_a_dormant_source_fails_at_startup():
-    """Better than producing garbage three stages later."""
-    with pytest.raises(ValidationError, match="dormant"):
-        Settings(sources=["lemmy"])
-
-
-def test_selecting_more_than_one_source_fails():
-    with pytest.raises(ValidationError, match="exactly one"):
-        Settings(sources=["bluesky", "lemmy"])
+@pytest.mark.parametrize(
+    "raw,message",
+    [
+        ("", "exactly one"),
+        ("bluesky,wikipedia", "exactly one"),
+        ("lemmy", "dormant"),
+        ("mastodon", "Unknown source"),
+    ],
+)
+def test_unusable_source_selections_are_rejected(raw, message):
+    """The empty case is the one that would otherwise reach `sources[0]` and
+    raise IndexError instead of a readable validation error — `SOURCES=` in a
+    .env produces exactly it. The old validator had a dedicated empty branch;
+    the new one folds it into the length check, so it needs its own case.
+    """
+    with pytest.raises(ValidationError, match=message):
+        Settings(_env_file=None, sources=raw)
 
 
 def test_bluesky_is_accepted():
-    assert Settings(sources=["bluesky"]).sources == ["bluesky"]
+    assert Settings(_env_file=None, sources="bluesky").sources == ["bluesky"]
+
+
+def test_a_source_name_from_a_real_env_var_is_parsed_without_json_decoding(
+    monkeypatch,
+):
+    """pydantic-settings JSON-decodes list-typed fields before validators run
+    when the value comes from a real env var, so a plain string raises
+    SettingsError unless the field opts out via NoDecode. The kwargs-based
+    tests go through InitSettingsSource, which never JSON-decodes, so they
+    cannot catch a regression here. Case and stray whitespace are folded in:
+    the name is a registry key, so neither may decide whether a platform runs.
+    """
+    monkeypatch.setenv("SOURCES", " BLUESKY ")
+    assert Settings(_env_file=None).sources == ["bluesky"]
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
