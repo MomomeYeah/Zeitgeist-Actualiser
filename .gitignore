@@ -9,3 +9,6 @@ data/
 *.egg-info/
 .superpowers/
 .claude/worktrees/
+
+# Captured live payloads (real posts) from scripts/capture_bluesky_fixtures.py.
+tests/fixtures/bluesky/
