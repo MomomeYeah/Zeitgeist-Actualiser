@@ -53,7 +53,7 @@ def _scored_topic(
             what_happened="Canada imposed tariffs on $30B of US goods.",
             conversation_summary=conversation_summary,
             key_entities=key_entities or [],
-            register=Register.DUNKING,
+            conversation_register=Register.DUNKING,
             event_sentiment=Sentiment.SCHADENFREUDE,
             valence=-0.2,
             meme_potential=0.8,

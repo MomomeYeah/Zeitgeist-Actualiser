@@ -19,7 +19,7 @@ def _dossier(**overrides: Any) -> Dossier:
         "what_happened": "Canada imposed tariffs on $30B of US goods.",
         "key_entities": ["Canada"],
         "conversation_summary": "People treat it as overdue.",
-        "register": Register.DUNKING,
+        "conversation_register": Register.DUNKING,
         "event_sentiment": Sentiment.SCHADENFREUDE,
         "valence": -0.2,
         "meme_potential": 0.8,
@@ -53,7 +53,7 @@ def test_a_grim_topic_outranks_a_cheerful_one_on_trend_score_alone():
     grim = _topic("grim", 0.9).model_copy(
         update={
             "dossier": _dossier(
-                register=Register.MOURNING,
+                conversation_register=Register.MOURNING,
                 event_sentiment=Sentiment.SAD,
                 valence=-0.9,
                 meme_potential=0.2,
@@ -63,7 +63,7 @@ def test_a_grim_topic_outranks_a_cheerful_one_on_trend_score_alone():
     cheerful = _topic("cheerful", 0.8).model_copy(
         update={
             "dossier": _dossier(
-                register=Register.DELIGHT,
+                conversation_register=Register.DELIGHT,
                 event_sentiment=Sentiment.CUTE,
                 valence=0.9,
                 meme_potential=0.9,

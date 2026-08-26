@@ -59,6 +59,16 @@ def test_lemmy_settings_have_usable_defaults():
     assert settings.lemmy_include_nsfw is False
 
 
+@pytest.mark.parametrize("field", ["bluesky_fetch_concurrency", "distil_concurrency"])
+def test_zero_concurrency_is_rejected(field):
+    """A semaphore or thread pool of 0 workers blocks the run forever with
+    no diagnostic. Rejecting it at startup turns a silent hang into an
+    immediate, readable configuration error.
+    """
+    with pytest.raises(ValidationError):
+        _bare_settings(**{field: 0})
+
+
 def test_wikipedia_settings_have_usable_defaults():
     """Enabling it must never require credentials — this is the property
     that keeps the project runnable with no credentials at all, which is why

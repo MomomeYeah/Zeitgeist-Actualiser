@@ -283,7 +283,7 @@ class Dossier(BaseModel):
     what_happened: str
     key_entities: list[str] = Field(default_factory=list)
     conversation_summary: str
-    register: Register
+    conversation_register: Register
     secondary_registers: list[Register] = Field(default_factory=list)
     event_sentiment: Sentiment
     valence: float = Field(ge=-1.0, le=1.0)

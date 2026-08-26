@@ -105,7 +105,7 @@ def _draft(**overrides: Any) -> DossierDraft:
         "what_happened": "Canada imposed tariffs on $30B of US goods.",
         "key_entities": ["Canada"],
         "conversation_summary": "People treat it as overdue.",
-        "register": Register.DUNKING,
+        "conversation_register": Register.DUNKING,
         "secondary_registers": [],
         "event_sentiment": Sentiment.SCHADENFREUDE,
         "valence": -0.2,
@@ -149,7 +149,7 @@ def test_topics_json_carries_the_dossier(tmp_path):
         run_id="r1",
     )
     [topic] = json.loads((run_dir / "topics.json").read_text(encoding="utf-8"))
-    assert topic["dossier"]["register"] == "dunking"
+    assert topic["dossier"]["conversation_register"] == "dunking"
     assert topic["summary"] == "Canada imposed tariffs on $30B of US goods."
 
 
@@ -170,7 +170,7 @@ def test_ranked_json_carries_the_selected_topic_and_its_dossier(tmp_path):
     )
     [topic] = json.loads((run_dir / "ranked.json").read_text(encoding="utf-8"))
     assert topic["final_rank"] == 1
-    assert topic["dossier"]["register"] == "dunking"
+    assert topic["dossier"]["conversation_register"] == "dunking"
 
 
 def test_resuming_from_analyse_does_not_refetch(tmp_path):

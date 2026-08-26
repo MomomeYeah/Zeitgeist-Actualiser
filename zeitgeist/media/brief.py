@@ -143,7 +143,7 @@ def _context(topic: ScoredTopic) -> str:
         f"What happened: {dossier.what_happened}",
         f"What people are saying: {dossier.conversation_summary}",
         f"How the event feels: {dossier.event_sentiment.value}",
-        f"How people are responding: {dossier.register.value}",
+        f"How people are responding: {dossier.conversation_register.value}",
     ]
     if dossier.key_entities:
         lines.append(f"People and organisations: {', '.join(dossier.key_entities)}")

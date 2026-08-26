@@ -294,6 +294,21 @@ def test_reply_rejects_identifying_fields(field):
         (Reply, {"text", "like_count", "created_at", "author_key"}),
         (PostEvidence, {"item", "replies"}),
         (TrendEvidence, {"trend", "posts"}),
+        (Phrase, {"text", "occurrences", "distinct_authors"}),
+        (
+            Dossier,
+            {
+                "what_happened",
+                "key_entities",
+                "conversation_summary",
+                "conversation_register",
+                "secondary_registers",
+                "event_sentiment",
+                "valence",
+                "meme_potential",
+                "recurring_phrases",
+            },
+        ),
     ],
 )
 def test_evidence_models_carry_exactly_the_specified_fields(model, want):
@@ -309,7 +324,7 @@ def _dossier(**overrides: Any) -> Dossier:
         "what_happened": "Canada imposed retaliatory tariffs on $30B of US goods.",
         "key_entities": ["Canada", "Mark Carney"],
         "conversation_summary": "People are treating it as overdue.",
-        "register": Register.DUNKING,
+        "conversation_register": Register.DUNKING,
         "secondary_registers": [Register.RESIGNATION],
         "event_sentiment": Sentiment.SCHADENFREUDE,
         "valence": -0.2,
@@ -340,7 +355,7 @@ def test_topic_carries_a_dossier_through_json():
     restored = Topic.model_validate_json(topic.model_dump_json())
     assert restored.dossier is not None
     assert restored.dossier.recurring_phrases[0].text == "elbows up"
-    assert restored.dossier.register is Register.DUNKING
+    assert restored.dossier.conversation_register is Register.DUNKING
 
 
 def test_dossier_rejects_valence_outside_the_scale():

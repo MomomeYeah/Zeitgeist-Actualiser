@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 PACKAGE_ROOT = Path(__file__).parent
@@ -40,7 +40,8 @@ class Settings(BaseSettings):
     # express trends-by-posts.
     bluesky_trend_limit: int = 25
     bluesky_posts_per_trend: int = 10
-    bluesky_fetch_concurrency: int = 8
+    # ge=1: a semaphore of 0 blocks every fetch forever with no diagnostic.
+    bluesky_fetch_concurrency: int = Field(default=8, ge=1)
 
     anthropic_api_key: str = ""
     llm_provider: Literal["anthropic", "ollama"] = "anthropic"
@@ -51,7 +52,6 @@ class Settings(BaseSettings):
     # value before validators run, so a plain CSV string like
     # "lemmy,wikipedia" raises SettingsError before `_split_csv` ever sees it.
     sources: Annotated[list[str], NoDecode] = ["bluesky"]
-    post_limit: int = 500
     topic_count: int = 5
 
     # Distinct accounts a phrase needs before it counts as recurring. Below
@@ -63,8 +63,9 @@ class Settings(BaseSettings):
     # before that, so the budget is explicit rather than discovered.
     distil_char_budget: int = 24000
     # Parallel distillation calls. Local Ollama serialises on one GPU, so 1-2
-    # is right there; a hosted provider benefits from the default.
-    distil_concurrency: int = 4
+    # is right there; a hosted provider benefits from the default. ge=1: a
+    # ThreadPoolExecutor of 0 workers blocks every distillation forever.
+    distil_concurrency: int = Field(default=4, ge=1)
 
     # None means "use the scalable font Pillow ships"; set it to a real .ttf
     # (e.g. C:/Windows/Fonts/impact.ttf) for the authentic meme look.
