@@ -72,11 +72,15 @@ def _post(
         "post": {
             "uri": f"at://{did}/app.bsky.feed.post/{rkey}",
             "cid": "bafyreiexample",
-            # Present because the real postView always carries it, and
-            # deliberately never read: no model in this project holds an
-            # author, and tests/test_models.py guards that. Trimming a fixture
-            # to what the code reads today lets a later change reference a
-            # field that was never in the test data.
+            # `author`, `quoteCount` and `bookmarkCount` are present because
+            # the real postView always carries them, and deliberately never
+            # read: no model in this project holds an author, and
+            # tests/test_models.py guards that. Trimming a fixture to what
+            # the code reads today lets a later change reference a field
+            # that was never in the test data. `viewer` is deliberately
+            # absent rather than trimmed: this source sends no credentials
+            # (see the module docstring), and the live unauthenticated API
+            # never returns a `viewer` block at all.
             "author": {
                 "did": did,
                 "handle": "someone.bsky.social",
@@ -84,7 +88,6 @@ def _post(
                 "avatar": "https://cdn.bsky.app/img/avatar/plain/abc@jpeg",
                 "createdAt": "2024-01-01T00:00:00.000Z",
                 "labels": [],
-                "viewer": {"muted": False, "blockedBy": False},
             },
             "record": record,
             "likeCount": likes,
@@ -93,7 +96,6 @@ def _post(
             "quoteCount": 0,
             "bookmarkCount": 0,
             "indexedAt": indexed,
-            "viewer": {"threadMuted": False, "embeddingDisabled": False},
             "labels": labels or [],
         }
     }
@@ -110,13 +112,17 @@ def _reply_node(
     node_type: str = THREAD_VIEW,
 ) -> dict:
     """Mirrors a real threadViewPost completely, including the fields the
-    source never reads — same standard as `_post` above, and for the same
-    reason. `record.langs` is the live example: `_is_usable` already filters
-    posts by language, and extending that to replies is an obvious next step
+    source never reads — same standard as `_post` above: `author` and
+    `record.reply` are kept even though nothing here reads them, so a later
+    change cannot reference a field that was never in the test data.
+    `record.langs` is the live example: `_is_usable` already filters posts by
+    language, and extending that to replies is an obvious next step
     (non-English replies pollute phrase mining). Written against a fixture
     with no `langs`, that change would pass its tests and drop real replies
     in production. `record.reply` is what distinguishes a reply from a root
-    post, and is equally absent from a trimmed fixture.
+    post, and is equally absent from a trimmed fixture. Unlike `_post`, this
+    carries `author.associated` and omits `viewer`: both are genuinely what
+    the live, unauthenticated `getPostThread` response looks like.
     """
     rkey = f"r-{abs(hash(text)) % 10**6}"
     parent_ref = {
@@ -466,6 +472,18 @@ def test_a_trend_with_no_usable_posts_is_skipped():
 def test_unreachable_trends_endpoint_is_fatal():
     source, _ = _source(httpx.ConnectError("boom"), {})
     with pytest.raises(SourceError, match="trends unavailable"):
+        source.fetch_evidence(_settings())
+
+
+def test_an_empty_trends_list_is_fatal():
+    """Distinct from `test_no_usable_trends_at_all_is_fatal` below: this
+    exercises the early `if not trends:` guard, straight off the getTrends
+    payload, rather than the later `if not evidence:` guard after every
+    trend has been fetched and filtered. The two raise different messages,
+    and this is the only test that pins the first one's.
+    """
+    source, _ = _source({"trends": []}, {})
+    with pytest.raises(SourceError, match="no trends"):
         source.fetch_evidence(_settings())
 
 
