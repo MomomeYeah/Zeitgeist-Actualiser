@@ -78,6 +78,14 @@ class Settings(BaseSettings):
     # this, a repeated phrase is one person or a small ring, not a zeitgeist.
     phrase_min_authors: int = 3
 
+    # Reply characters sent per distillation call. A single trend can yield
+    # six hundred replies; a 32k-context local model truncates silently well
+    # before that, so the budget is explicit rather than discovered.
+    distil_char_budget: int = 24000
+    # Parallel distillation calls. Local Ollama serialises on one GPU, so 1-2
+    # is right there; a hosted provider benefits from the default.
+    distil_concurrency: int = 4
+
     sentiment_weights: dict[Sentiment, float] = DEFAULT_SENTIMENT_WEIGHTS
 
     # None means "use the scalable font Pillow ships"; set it to a real .ttf
