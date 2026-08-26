@@ -165,6 +165,35 @@ def test_the_most_liked_replies_are_the_ones_kept():
     assert "unpopular take" not in prompt
 
 
+def test_break_not_continue_stops_sampling_at_the_first_overflow():
+    """`_sample` stops at the first reply that would overflow the budget
+    (`break`), rather than skipping it and packing smaller replies from
+    further down the list (`continue`). Both are defensible policies, but
+    only `break` matches "take the top contiguous slice by likes" -- the
+    intended one.
+
+    Budget is 100. The most-liked reply is 40 chars and fits (spent -> 40).
+    The second-most-liked is 80 chars, which would bring spent to 120 and
+    overflow; under `break` sampling stops there. The third-most-liked is
+    20 chars -- small enough that 40 + 20 = 60 <= 100, so it WOULD fit if
+    scanning continued past the oversized second reply. Its absence from
+    the prompt is what distinguishes the two policies; the first reply's
+    presence rules out sampling returning nothing at all.
+    """
+    replies = [
+        _reply("a" * 40, author="a", likes=100),
+        _reply("b" * 80, author="b", likes=50),
+        _reply("c" * 20, author="c", likes=10),
+    ]
+    provider = FakeLLMProvider(responses=[_draft()])
+    distil_topics(
+        [_evidence(replies=replies)], provider, _settings(distil_char_budget=100)
+    )
+    prompt = provider.calls[0].prompt
+    assert "a" * 40 in prompt
+    assert "c" * 20 not in prompt
+
+
 def test_a_failing_trend_is_dropped_and_the_rest_survive():
     provider = FakeLLMProvider(responses=[LLMError("boom"), _draft()])
     topics = distil_topics(
