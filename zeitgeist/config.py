@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     post_limit: int = 500
     topic_count: int = 5
 
+    # Distinct accounts a phrase needs before it counts as recurring. Below
+    # this, a repeated phrase is one person or a small ring, not a zeitgeist.
+    phrase_min_authors: int = 3
+
     sentiment_weights: dict[Sentiment, float] = DEFAULT_SENTIMENT_WEIGHTS
 
     # None means "use the scalable font Pillow ships"; set it to a real .ttf
