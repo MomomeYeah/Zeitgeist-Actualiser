@@ -37,7 +37,11 @@ def _templates() -> dict[str, TemplateManifest]:
 
 
 def _scored_topic(
-    *, phrases: list[Phrase] | None = None, **overrides: Any
+    *,
+    phrases: list[Phrase] | None = None,
+    conversation_summary: str = "People treat it as overdue.",
+    key_entities: list[str] | None = None,
+    **overrides: Any,
 ) -> ScoredTopic:
     base: dict[str, Any] = dict(
         id="cats",
@@ -47,7 +51,8 @@ def _scored_topic(
         trend_score=0.8,
         dossier=Dossier(
             what_happened="Canada imposed tariffs on $30B of US goods.",
-            conversation_summary="People treat it as overdue.",
+            conversation_summary=conversation_summary,
+            key_entities=key_entities or [],
             register=Register.DUNKING,
             event_sentiment=Sentiment.SCHADENFREUDE,
             valence=-0.2,
@@ -202,6 +207,47 @@ def test_the_prompt_offers_recurring_phrases_with_their_counts():
     prompt = _last_prompt(provider)
     assert "elbows up" in prompt
     assert "33" in prompt
+
+
+def test_the_prompt_carries_what_people_are_saying():
+    """The other half of the fix this whole change exists for: a caption
+    written from the event alone, with no view of the conversation, is the
+    old failure mode by half. Asserting the summary text itself, not the
+    "What people are saying" label, catches a regression that drops the
+    line while some other line still happens to carry the word "saying".
+    """
+    topic = _scored_topic(
+        conversation_summary="Half the replies are just the word 'finally'."
+    )
+    provider = FakeLLMProvider(responses=[_choice()])
+    generate_brief(topic, _templates(), provider)
+    prompt = _last_prompt(provider)
+    assert "Half the replies are just the word 'finally'." in prompt
+
+
+def test_the_prompt_carries_every_key_entity():
+    """Two entities, not one, so a regression that only interpolates the
+    first item of the list (rather than joining all of them) still fails
+    this.
+    """
+    topic = _scored_topic(key_entities=["Mark Carney", "Doug Ford"])
+    provider = FakeLLMProvider(responses=[_choice()])
+    generate_brief(topic, _templates(), provider)
+    prompt = _last_prompt(provider)
+    assert "Mark Carney" in prompt
+    assert "Doug Ford" in prompt
+
+
+def test_the_prompt_omits_entities_when_there_are_none():
+    """key_entities is only rendered when non-empty. A topic with no named
+    entities must still produce a prompt, not a stray "People and
+    organisations: " line with nothing after the colon.
+    """
+    topic = _scored_topic(key_entities=[])
+    provider = FakeLLMProvider(responses=[_choice()])
+    generate_brief(topic, _templates(), provider)
+    prompt = _last_prompt(provider)
+    assert "People and organisations" not in prompt
 
 
 def test_a_topic_without_a_dossier_falls_back_to_its_summary():
