@@ -1054,25 +1054,67 @@ def _reply_node(
     children: list[dict] | None = None,
     node_type: str = THREAD_VIEW,
 ) -> dict:
+    """Mirrors a real threadViewPost completely, including the fields the
+    source never reads — same standard as `_post` above, and for the same
+    reason. `record.langs` is the live example: `_is_usable` already filters
+    posts by language, and extending that to replies is an obvious next step
+    (non-English replies pollute phrase mining). Written against a fixture
+    with no `langs`, that change would pass its tests and drop real replies
+    in production. `record.reply` is what distinguishes a reply from a root
+    post, and is equally absent from a trimmed fixture.
+    """
+    rkey = f"r-{abs(hash(text)) % 10**6}"
+    parent_ref = {
+        "cid": "bafyreiparentexample",
+        "uri": "at://did:plc:someauthor/app.bsky.feed.post/p1",
+    }
     return {
         "$type": node_type,
         "post": {
-            "uri": f"at://{did}/app.bsky.feed.post/r-{abs(hash(text)) % 10**6}",
+            "uri": f"at://{did}/app.bsky.feed.post/{rkey}",
             "cid": "bafyreiexample",
-            "author": {"did": did, "handle": "replier.bsky.social"},
-            "record": {"$type": "app.bsky.feed.post", "text": text},
+            "author": {
+                "did": did,
+                "handle": "replier.bsky.social",
+                "displayName": "A Replier",
+                "avatar": "https://cdn.bsky.app/img/avatar/plain/abc@jpeg",
+                "associated": {"chat": {"allowIncoming": "all"}},
+                "labels": [],
+                "createdAt": "2024-01-01T00:00:00.000Z",
+            },
+            "record": {
+                "$type": "app.bsky.feed.post",
+                "text": text,
+                "createdAt": "2026-08-23T10:59:58.000Z",
+                "langs": ["en"],
+                "reply": {"parent": parent_ref, "root": parent_ref},
+            },
             "likeCount": likes,
             "replyCount": len(children or []),
             "repostCount": 0,
+            "quoteCount": 0,
+            "bookmarkCount": 0,
             "indexedAt": indexed,
             "labels": labels or [],
         },
         "replies": children or [],
+        "threadContext": {},
     }
 
 
 def _thread(*nodes: dict) -> dict:
-    return {"thread": {"$type": THREAD_VIEW, "post": {}, "replies": list(nodes)}}
+    """`threadgate` is genuinely optional — observed present on one live
+    thread and absent on another — so its absence here is accurate rather
+    than trimmed.
+    """
+    return {
+        "thread": {
+            "$type": THREAD_VIEW,
+            "post": _post("p1")["post"],
+            "replies": list(nodes),
+            "threadContext": {},
+        }
+    }
 
 
 class _Response:
@@ -1220,6 +1262,38 @@ def test_feed_requests_never_exceed_the_api_page_cap():
     source.fetch_evidence(_settings(bluesky_posts_per_trend=500))
     feed_calls = [params for url, params in client.calls if "getFeed" in url]
     assert feed_calls[0]["limit"] == 100
+
+
+@pytest.mark.parametrize("absent", ["description", "category"])
+def test_a_trend_missing_an_optional_field_degrades_rather_than_crashing(absent):
+    """getTrends is unspecced, so absence is legal. Every one of the 25 live
+    trends currently carries both fields, so reading them as `trend[key]`
+    would pass every manual check and raise KeyError the first time Bluesky
+    omits one. The model default alone does not cover this: it never fires
+    if the source subscripts the payload directly.
+    """
+    trend = _trend("t1", "A trend")
+    del trend[absent]
+    source, _ = _source({"trends": [trend]}, {"t1": {"feed": [_post("p1")]}})
+
+    [evidence] = source.fetch_evidence(_settings())
+    assert getattr(evidence.trend, absent) == ""
+
+
+def test_reply_threads_are_requested_two_levels_deep():
+    """A reply-to-a-reply is still people talking about the trend, and depth
+    costs nothing — it is a parameter of the same single request. depth=0
+    would silently halve the corpus that phrase mining runs on, and the fake
+    ignores the parameter, so nothing else here would notice.
+    """
+    source, client = _source(
+        {"trends": [_trend("t1", "A trend")]},
+        {"t1": {"feed": [_post("p1")]}},
+        {"p1": _thread(_reply_node("what a mess"))},
+    )
+    source.fetch_evidence(_settings())
+    thread_calls = [params for url, params in client.calls if "getPostThread" in url]
+    assert thread_calls[0]["depth"] == 2
 
 
 def test_replies_are_attached_to_their_post():
