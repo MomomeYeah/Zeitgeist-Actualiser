@@ -9,9 +9,13 @@ from zeitgeist.models import (
     Item,
     LemmyMetrics,
     MediaBrief,
+    PostEvidence,
+    Reply,
     ScoredTopic,
     Sentiment,
     Topic,
+    TrendEvidence,
+    TrendInfo,
     WikipediaMetrics,
 )
 
@@ -240,3 +244,88 @@ def test_media_brief_rejects_undeclared_fields():
             rationale="",
             image_url="http://example.com/not-a-real-field",
         )
+
+
+def test_trend_info_defaults_description_and_category_to_empty():
+    """getTrends is an unspecced endpoint: absent fields degrade, not crash."""
+    trend = TrendInfo(
+        topic_id="14d072d9",
+        display_name="Canada announces retaliatory tariffs",
+        post_count=4298,
+        started_at=datetime(2026, 8, 26, tzinfo=UTC),
+        status="stale",
+    )
+    assert trend.description == ""
+    assert trend.category == ""
+
+
+def test_trend_evidence_round_trips_through_json(sample_items):
+    evidence = TrendEvidence(
+        trend=TrendInfo(
+            topic_id="t1",
+            display_name="A trend",
+            description="what happened",
+            category="politics",
+            post_count=10,
+            started_at=datetime(2026, 8, 26, tzinfo=UTC),
+            status="trending",
+        ),
+        posts=[
+            PostEvidence(
+                item=sample_items[0],
+                replies=[
+                    Reply(
+                        text="what a mess",
+                        like_count=4,
+                        created_at=datetime(2026, 8, 26, tzinfo=UTC),
+                        author_key="ab12cd34",
+                    )
+                ],
+            )
+        ],
+    )
+    restored = TrendEvidence.model_validate_json(evidence.model_dump_json())
+    assert restored == evidence
+
+
+@pytest.mark.parametrize("field", ["author", "handle", "did", "display_name"])
+def test_reply_rejects_identifying_fields(field):
+    """author_key is a one-way hash and the only identity-adjacent field
+    allowed. A raw handle or DID creeping in must fail loudly.
+    """
+    with pytest.raises(ValidationError):
+        Reply(
+            text="hi",
+            like_count=0,
+            created_at=datetime(2026, 8, 26, tzinfo=UTC),
+            author_key="ab12cd34",
+            **{field: "someone.bsky.social"},
+        )
+
+
+@pytest.mark.parametrize(
+    "model,want",
+    [
+        (
+            TrendInfo,
+            {
+                "topic_id",
+                "display_name",
+                "description",
+                "category",
+                "post_count",
+                "started_at",
+                "status",
+            },
+        ),
+        (Reply, {"text", "like_count", "created_at", "author_key"}),
+        (PostEvidence, {"item", "replies"}),
+        (TrendEvidence, {"trend", "posts"}),
+    ],
+)
+def test_evidence_models_carry_exactly_the_specified_fields(model, want):
+    """getTrends returns an `actors` list of handles, display names and
+    avatars, and postView an `author` block. Neither may reach a model, so
+    the field sets are written out by hand: adding one fails here.
+    """
+    assert set(model.model_fields) == want

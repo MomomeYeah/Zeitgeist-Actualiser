@@ -152,6 +152,73 @@ class Item(BaseModel):
         return self.metrics.content_bearing
 
 
+class TrendInfo(BaseModel):
+    """Bluesky's own cluster, kept whole.
+
+    The current source keeps `displayName` and `status` and discards the
+    rest — including `description`, which states the specific event in one
+    sentence and is the single most useful field the API returns.
+
+    `description` and `category` default to empty rather than raising:
+    getTrends lives under `app.bsky.unspecced`, so nothing it returns is a
+    contract. Same reasoning as `_normalise_status` in sources/bluesky.py —
+    degrade with a warning, do not kill the run.
+    """
+
+    model_config = STRICT
+
+    # Bluesky's own `topic` uuid, stable while the trend lives. Kept for
+    # cross-run identification; NOT used as Topic.id, which needs to be
+    # readable because render output filenames are built from it.
+    topic_id: str
+    display_name: str
+    description: str = ""
+    category: str = ""
+    post_count: int = 0
+    started_at: datetime
+    status: TrendStatus
+
+
+class Reply(BaseModel):
+    """One reply beneath a post. The conversation, as opposed to the news.
+
+    `author_key` is a truncated one-way hash of the poster's DID and exists
+    for exactly one purpose: counting how many distinct accounts are behind
+    a repeated phrase. Forty uses from three accounts is a dogpile, not a
+    zeitgeist. The handle itself has no downstream use and is never stored.
+    """
+
+    model_config = STRICT
+
+    text: str
+    like_count: int
+    created_at: datetime
+    author_key: str
+
+
+class PostEvidence(BaseModel):
+    """A post together with what people said underneath it."""
+
+    model_config = STRICT
+
+    item: Item
+    # Empty when the thread fetch failed. A post without replies is still
+    # evidence of what was posted, so it is kept rather than dropped.
+    replies: list[Reply] = Field(default_factory=list)
+
+
+class TrendEvidence(BaseModel):
+    """Everything one trend contributed to a run.
+
+    This is the ingest checkpoint's unit, replacing the flat `Item` list.
+    """
+
+    model_config = STRICT
+
+    trend: TrendInfo
+    posts: list[PostEvidence] = Field(default_factory=list)
+
+
 # score_components carries this alongside the real platform sub-scores. It is
 # a multiplier, not a platform's opinion, so it must never reach topic_scores
 # or be counted as a platform contributing to a topic.
