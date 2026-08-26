@@ -28,6 +28,35 @@ class Sentiment(StrEnum):
     MUNDANE = "mundane"
 
 
+class Register(StrEnum):
+    """The posture people are taking, distinct from how the event feels.
+
+    `Sentiment` answers "how does this event feel"; `Register` answers "what
+    is the room doing about it". The two can point in opposite directions,
+    and the gap is the signal: a grim event discussed in GALLOWS yields a
+    very particular meme, while the same event in MOURNING means do not make
+    a joke at all.
+
+    The three warm registers are easily confused, so they are defined
+    against each other. DELIGHT is a cat knocking something off a table, or
+    an overlooked person finally getting their due: broad, warm, no side to
+    take. AWE is impressive rather than endearing. TRIBUTE is appreciation
+    prompted by loss or a milestone.
+    """
+
+    TRIBUTE = "tribute"
+    MOURNING = "mourning"
+    DELIGHT = "delight"
+    OUTRAGE = "outrage"
+    DUNKING = "dunking"
+    GALLOWS = "gallows"
+    RIFFING = "riffing"
+    AWE = "awe"
+    ALARM = "alarm"
+    DEBATE = "debate"
+    RESIGNATION = "resignation"
+
+
 class LemmyMetrics(BaseModel):
     """Engagement as Lemmy reports it."""
 
@@ -225,6 +254,46 @@ class TrendEvidence(BaseModel):
 NON_PLATFORM_COMPONENTS = frozenset({"corroboration"})
 
 
+class Phrase(BaseModel):
+    """Text that several people independently converged on.
+
+    Mined deterministically, never model-generated. Asked for catchphrases a
+    model returns plausible ones; the point of this field is that its counts
+    are true, because that is what licenses quoting it in a caption.
+    """
+
+    model_config = STRICT
+
+    text: str
+    occurrences: int
+    distinct_authors: int
+
+
+class Dossier(BaseModel):
+    """What a trend is actually about, and what the room is doing about it.
+
+    Replaces the label-and-summary pair that every caption used to be
+    written from. `summary` on the old path was written by a model that had
+    seen a tag vocabulary and no sentences; `what_happened` here is written
+    from the trend description, the posts and the replies.
+    """
+
+    model_config = STRICT
+
+    what_happened: str
+    key_entities: list[str] = Field(default_factory=list)
+    conversation_summary: str
+    register: Register
+    secondary_registers: list[Register] = Field(default_factory=list)
+    event_sentiment: Sentiment
+    valence: float = Field(ge=-1.0, le=1.0)
+    # Recorded for inspection, deliberately NOT applied to ranking. It was
+    # suppressing topics before there was evidence that suppression helps.
+    meme_potential: float = Field(ge=0.0, le=1.0)
+    # Attached after the model call, not returned by it.
+    recurring_phrases: list[Phrase] = Field(default_factory=list)
+
+
 class Topic(BaseModel):
     """A cluster of items about the same thing."""
 
@@ -236,6 +305,8 @@ class Topic(BaseModel):
     item_ids: list[str]
     trend_score: float = 0.0
     score_components: dict[str, float] = Field(default_factory=dict)
+    # None on the dormant path, which has no evidence to distil.
+    dossier: Dossier | None = None
 
 
 class ScoredTopic(Topic):

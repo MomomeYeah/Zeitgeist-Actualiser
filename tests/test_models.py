@@ -6,10 +6,13 @@ from pydantic import ValidationError
 
 from zeitgeist.models import (
     BlueskyMetrics,
+    Dossier,
     Item,
     LemmyMetrics,
     MediaBrief,
+    Phrase,
     PostEvidence,
+    Register,
     Reply,
     ScoredTopic,
     Sentiment,
@@ -329,3 +332,66 @@ def test_evidence_models_carry_exactly_the_specified_fields(model, want):
     the field sets are written out by hand: adding one fails here.
     """
     assert set(model.model_fields) == want
+
+
+def _dossier(**overrides: Any) -> Dossier:
+    base: dict[str, Any] = {
+        "what_happened": "Canada imposed retaliatory tariffs on $30B of US goods.",
+        "key_entities": ["Canada", "Mark Carney"],
+        "conversation_summary": "People are treating it as overdue.",
+        "register": Register.DUNKING,
+        "secondary_registers": [Register.RESIGNATION],
+        "event_sentiment": Sentiment.SCHADENFREUDE,
+        "valence": -0.2,
+        "meme_potential": 0.8,
+        "recurring_phrases": [],
+    }
+    return Dossier(**{**base, **overrides})
+
+
+def test_topic_dossier_defaults_to_none():
+    """The dormant path produces topics with no dossier."""
+    topic = Topic(id="t", label="A trend", summary="s", item_ids=["i1"])
+    assert topic.dossier is None
+
+
+def test_topic_carries_a_dossier_through_json():
+    topic = Topic(
+        id="t",
+        label="A trend",
+        summary="s",
+        item_ids=["i1"],
+        dossier=_dossier(
+            recurring_phrases=[
+                Phrase(text="elbows up", occurrences=41, distinct_authors=33)
+            ]
+        ),
+    )
+    restored = Topic.model_validate_json(topic.model_dump_json())
+    assert restored.dossier is not None
+    assert restored.dossier.recurring_phrases[0].text == "elbows up"
+    assert restored.dossier.register is Register.DUNKING
+
+
+def test_dossier_rejects_valence_outside_the_scale():
+    with pytest.raises(ValidationError):
+        _dossier(valence=-1.5)
+
+
+def test_dossier_rejects_meme_potential_outside_the_scale():
+    with pytest.raises(ValidationError):
+        _dossier(meme_potential=1.5)
+
+
+@pytest.mark.parametrize("valence", [-1.0, 0.0, 1.0])
+def test_dossier_accepts_the_valence_boundaries(valence):
+    """-1.0 is what a thoroughly negative event scores, and the prompt asks
+    for it. `gt` instead of `ge` would drop exactly those trends, and a
+    rejection-only test passes either way.
+    """
+    assert _dossier(valence=valence).valence == valence
+
+
+@pytest.mark.parametrize("meme_potential", [0.0, 1.0])
+def test_dossier_accepts_the_meme_potential_boundaries(meme_potential):
+    assert _dossier(meme_potential=meme_potential).meme_potential == meme_potential
