@@ -224,7 +224,6 @@ def test_from_settings_wires_the_project_and_contact_through():
     """
     settings = Settings(
         _env_file=None,
-        sources=["wikipedia"],
         wikipedia_project="fr.wikipedia",
         wikipedia_contact="https://example.org/bot",
     )

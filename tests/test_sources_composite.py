@@ -3,13 +3,34 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from zeitgeist.config import KNOWN_SOURCES, Settings
+from zeitgeist.config import ITEM_SOURCES, KNOWN_SOURCES, TREND_SOURCES, Settings
 from zeitgeist.models import Item, LemmyMetrics, Metrics, WikipediaMetrics
-from zeitgeist.sources import BUILDERS, build_source
+from zeitgeist.sources import BUILDERS, TREND_BUILDERS, build_source
 from zeitgeist.sources.base import SourceError
 from zeitgeist.sources.composite import CompositeSource
 from zeitgeist.sources.lemmy import LemmySource
 from zeitgeist.sources.wikipedia import WikipediaSource
+
+
+def _settings_selecting(*names: str) -> Settings:
+    """build_source is kept as dormant-but-buildable infrastructure (see
+    config.py's `_check_sources`), but its own constructor can no longer
+    produce the dormant or multi-source configurations these tests need to
+    exercise it with: `Settings(sources=...)` now enforces the live-path
+    constraint of exactly one trend source, and would reject `lemmy` and
+    `wikipedia` before build_source is ever called.
+
+    build_source itself doesn't care -- it just indexes BUILDERS by
+    whatever `settings.sources` holds, with no revalidation of its own. So
+    build a valid Settings and set `.sources` directly afterwards, which
+    reaches that real code path unchanged. This relies on Settings not
+    declaring `validate_assignment` -- an implementation detail, not a
+    contract pydantic-settings promises -- so if that ever gets added,
+    these tests will fail in a way that looks unrelated to this cause.
+    """
+    settings = Settings(_env_file=None, anthropic_api_key="key", sources="bluesky")
+    settings.sources = list(names)
+    return settings
 
 
 def _item(platform: str, source_id: str, channel: str = "cats@lemmy.world") -> Item:
@@ -178,12 +199,13 @@ def test_building_with_no_sources_is_rejected():
         CompositeSource([])
 
 
-def test_every_known_source_has_a_builder():
-    """Settings validates SOURCES against KNOWN_SOURCES while build_source
-    indexes BUILDERS. If they drift, a name accepted at startup raises a
-    KeyError once the run is already under way.
+def test_every_known_source_has_exactly_one_builder():
+    """The guard exists because a platform can be namable in config and
+    unbuildable, which fails at runtime rather than at import.
     """
-    assert set(BUILDERS) == set(KNOWN_SOURCES)
+    assert set(BUILDERS) == set(ITEM_SOURCES)
+    assert set(TREND_BUILDERS) == set(TREND_SOURCES)
+    assert set(BUILDERS) | set(TREND_BUILDERS) == set(KNOWN_SOURCES)
 
 
 def test_build_source_builds_only_the_enabled_sources():
@@ -191,7 +213,7 @@ def test_build_source_builds_only_the_enabled_sources():
     indexes BUILDERS by the configured names, and building the rest anyway
     would spend a client and a request budget on a platform nobody enabled.
     """
-    settings = Settings(_env_file=None, anthropic_api_key="key", sources="lemmy")
+    settings = _settings_selecting("lemmy")
 
     composite = build_source(settings)
 
@@ -204,9 +226,7 @@ def test_each_registry_key_builds_its_own_source_class():
     class fails silently. The registry drift tests compare key sets only and
     would not notice.
     """
-    settings = Settings(
-        _env_file=None, anthropic_api_key="key", sources="lemmy,wikipedia"
-    )
+    settings = _settings_selecting("lemmy", "wikipedia")
 
     composite = build_source(settings)
 
@@ -221,9 +241,7 @@ def test_build_source_preserves_the_configured_order():
     """The budget is split per source in order, so a registry that reordered
     them would silently change which platform gets the remainder.
     """
-    settings = Settings(
-        _env_file=None, anthropic_api_key="key", sources="wikipedia,lemmy"
-    )
+    settings = _settings_selecting("wikipedia", "lemmy")
 
     composite = build_source(settings)
 

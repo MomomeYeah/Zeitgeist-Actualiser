@@ -14,17 +14,16 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from zeitgeist.analysis.consolidate import consolidate
-from zeitgeist.analysis.extract import extract_tags
+from zeitgeist.analysis.distil import distil_topics
 from zeitgeist.analysis.score import score_topics
-from zeitgeist.analysis.sentiment import judge_topics, select
+from zeitgeist.analysis.sentiment import select
 from zeitgeist.config import Settings
 from zeitgeist.llm.base import LLMProvider
 from zeitgeist.media.brief import generate_briefs
 from zeitgeist.media.render import RenderError, render_meme
 from zeitgeist.media.templates import TemplateManifest, load_templates
-from zeitgeist.models import Item, MediaBrief, ScoredTopic, Topic
-from zeitgeist.sources.base import Source
+from zeitgeist.models import Item, MediaBrief, ScoredTopic, Topic, TrendEvidence
+from zeitgeist.sources.base import TrendSource
 from zeitgeist.store import Store
 
 log = logging.getLogger(__name__)
@@ -46,7 +45,7 @@ def new_run_id() -> str:
 
 def run_pipeline(
     settings: Settings,
-    source: Source,
+    source: TrendSource,
     provider: LLMProvider,
     store: Store,
     run_id: str,
@@ -57,33 +56,31 @@ def run_pipeline(
     resuming = ORDER.index(start_at)
 
     store.start_run(run_id)
-    items: list[Item] = []
 
-    # Stage A — fatal on failure: with no items there is nothing to analyse.
+    # Stage A — fatal on failure: with no evidence there is nothing to
+    # analyse. Everything expensive happens here and in ANALYSE, so a brief
+    # or template change re-runs from GENERATE against frozen dossiers.
     if resuming <= ORDER.index(Stage.INGEST):
-        items = source.fetch(limit=settings.post_limit)
-        log.info("Fetched %d items", len(items))
-        _write(run_dir / "items.json", items)
+        evidence = source.fetch_evidence(settings)
+        log.info("Fetched %d trends", len(evidence))
+        _write(run_dir / "evidence.json", evidence)
     else:
-        items = _read(run_dir / "items.json", Item)
+        evidence = _read(run_dir / "evidence.json", TrendEvidence)
+
+    items: list[Item] = [post.item for entry in evidence for post in entry.posts]
 
     if resuming <= ORDER.index(Stage.ANALYSE):
-        tags = extract_tags(items, provider)
-        topics = consolidate(tags, provider)
+        topics = distil_topics(evidence, provider, settings)
         topics = score_topics(
             topics, items, datetime.now(UTC), store.previous_sub_scores(run_id)
         )
-        log.info("Identified %d topics", len(topics))
+        log.info("Distilled %d topics", len(topics))
         store.record_topics(run_id, topics)
         _write(run_dir / "topics.json", topics)
 
     if resuming <= ORDER.index(Stage.EVALUATE):
         topics = _read(run_dir / "topics.json", Topic)
-        ranked = select(
-            judge_topics(topics, provider),
-            settings.sentiment_weights,
-            settings.topic_count,
-        )
+        ranked = select(topics, settings.topic_count, settings.meme_potential_weight)
         log.info("Selected %d topics", len(ranked))
         _write(run_dir / "ranked.json", ranked)
 

@@ -121,10 +121,42 @@ def _build_prompt(topic: ScoredTopic, templates: dict[str, TemplateManifest]) ->
         for manifest in templates.values()
     )
     return (
-        f"Topic: {topic.label}\n"
-        f"Summary: {topic.summary}\n"
-        f"Sentiment: {topic.primary_sentiment.value}\n"
-        f"Meme potential: {topic.meme_potential:.2f}\n\n"
+        f"Topic: {topic.label}\n\n"
+        f"{_context(topic)}\n\n"
         f"Template library:\n{library}\n\n"
         "Pick the best-fitting template and write its captions."
     )
+
+
+def _context(topic: ScoredTopic) -> str:
+    """What the caption is actually about.
+
+    A topic with no dossier comes from the dormant path or a stale
+    checkpoint. Degrading to the summary keeps that diagnosable rather than
+    raising three stages from the cause.
+    """
+    dossier = topic.dossier
+    if dossier is None:
+        return f"Summary: {topic.summary}"
+
+    lines = [
+        f"What happened: {dossier.what_happened}",
+        f"What people are saying: {dossier.conversation_summary}",
+        f"How the event feels: {dossier.event_sentiment.value}",
+        f"How people are responding: {dossier.conversation_register.value}",
+    ]
+    if dossier.key_entities:
+        lines.append(f"People and organisations: {', '.join(dossier.key_entities)}")
+    if dossier.recurring_phrases:
+        phrases = "\n".join(
+            f"  - {phrase.text!r} ({phrase.distinct_authors} distinct accounts)"
+            for phrase in dossier.recurring_phrases
+        )
+        lines.append(
+            "Phrases this conversation has converged on:\n"
+            f"{phrases}\n"
+            "  A phrase many distinct people independently used IS the "
+            "zeitgeist, so quoting one is fair. A caption that only quotes "
+            "is not — the joke still has to be yours."
+        )
+    return "\n".join(lines)

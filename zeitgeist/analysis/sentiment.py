@@ -1,96 +1,58 @@
-"""Sentiment judgement and final selection.
+"""Final selection.
 
-Weights favour positive output without excluding anything: a sufficiently
-strong trend carries a negatively-flavoured topic into the selection, which
-is intended. The zeitgeist is not always cheerful, and a tool that only ever
-sees the cheerful half is not measuring it.
+Ranking blends two things on the same scale. `trend_score` is how much
+attention a topic is getting, computed by the platform scorers — pure
+arithmetic over engagement, deliberately free of any model judgement.
+`meme_potential` is the dossier's read on whether the topic yields a joke
+that would land on someone who has not read the posts.
+
+The blend lives here rather than in a scorer on purpose. A scorer sees
+`Metrics`, not dossiers; `score.py` states that keeping its arithmetic free
+of LLM output is deliberate, because that is what makes it reproducible; and
+`score_components` is persisted and compared across runs, so it should stay
+a record of platform attention rather than a mixture of attention and taste.
+
+A weighted average, not a product. The original code multiplied, which
+annihilates: a large trend the model scored 0.05 for meme potential came out
+near zero however many people were talking about it. An average reorders
+without excluding, which is the intended behaviour — nothing here should
+decide a topic is unworthy before there is evidence that suppression helps.
+
+Sentiment weighting used to live here too, favouring cheerful topics. It is
+gone: it suppressed topics on a judgement made from a label rather than from
+what people actually said.
 """
 
-import logging
-
-from pydantic import BaseModel, Field
-
-from zeitgeist.llm.base import LLMProvider
-from zeitgeist.models import NON_PLATFORM_COMPONENTS, ScoredTopic, Sentiment, Topic
-
-log = logging.getLogger(__name__)
-
-SENTIMENT_SYSTEM = (
-    "You judge the emotional flavour of a trending topic. Choose the single "
-    "primary sentiment that best describes how people feel about it, plus any "
-    "secondary sentiments that also apply. Valence runs from -1 (thoroughly "
-    "negative) to 1 (thoroughly positive). Meme potential runs from 0 to 1 and "
-    "measures how readily the topic yields a joke that would land with people "
-    "who have not read the source posts."
-)
+from zeitgeist.models import ScoredTopic, Topic
 
 
-class SentimentJudgement(BaseModel):
-    """The model's read on how a topic feels."""
+def rank_score(topic: Topic, meme_potential_weight: float) -> float:
+    """Blend attention with meme potential.
 
-    primary_sentiment: Sentiment
-    secondary_sentiments: list[Sentiment] = Field(default_factory=list)
-    valence: float = Field(ge=-1.0, le=1.0)
-    meme_potential: float = Field(ge=0.0, le=1.0)
-
-
-def judge_topics(topics: list[Topic], provider: LLMProvider) -> list[ScoredTopic]:
-    """Judge each topic. A topic whose call fails is dropped, not fatal."""
-    scored: list[ScoredTopic] = []
-
-    for topic in topics:
-        try:
-            judgement = provider.complete(
-                _build_prompt(topic), SentimentJudgement, system=SENTIMENT_SYSTEM
-            )
-        except Exception as exc:
-            log.warning(
-                "Sentiment judgement failed for %r; dropping: %s", topic.label, exc
-            )
-            continue
-
-        scored.append(
-            ScoredTopic(
-                **topic.model_dump(),
-                primary_sentiment=judgement.primary_sentiment,
-                secondary_sentiments=judgement.secondary_sentiments,
-                valence=judgement.valence,
-                meme_potential=judgement.meme_potential,
-            )
-        )
-
-    return scored
+    A topic with no usable `meme_potential` ranks on `trend_score` alone. A
+    missing judgement is not evidence of a bad topic — the model may simply
+    have returned an unusable number — so it must not be read as a zero,
+    which would bury the topic.
+    """
+    dossier = topic.dossier
+    potential = None if dossier is None else dossier.meme_potential
+    if potential is None:
+        return topic.trend_score
+    return (
+        1.0 - meme_potential_weight
+    ) * topic.trend_score + meme_potential_weight * potential
 
 
 def select(
-    scored: list[ScoredTopic],
-    weights: dict[Sentiment, float],
-    top_n: int,
+    scored: list[Topic], top_n: int, meme_potential_weight: float
 ) -> list[ScoredTopic]:
-    """Rank by trend x sentiment weight x meme potential, keep the top N."""
+    """Rank by the blended score and keep the top N."""
     ranked = sorted(
         scored,
-        key=lambda topic: (
-            topic.trend_score
-            * weights.get(topic.primary_sentiment, 1.0)
-            * topic.meme_potential
-        ),
+        key=lambda topic: rank_score(topic, meme_potential_weight),
         reverse=True,
     )
     return [
-        topic.model_copy(update={"final_rank": position})
+        ScoredTopic(**topic.model_dump(), final_rank=position)
         for position, topic in enumerate(ranked[:top_n], start=1)
     ]
-
-
-def _build_prompt(topic: Topic) -> str:
-    platforms = [
-        key for key in topic.score_components if key not in NON_PLATFORM_COMPONENTS
-    ]
-    return (
-        f"Topic: {topic.label}\n"
-        f"Summary: {topic.summary}\n"
-        f"Appears in {len(topic.item_ids)} items across "
-        f"{max(len(platforms), 1)} platform(s).\n\n"
-        "Judge this topic's sentiment and meme potential."
-    )

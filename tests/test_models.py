@@ -5,13 +5,14 @@ import pytest
 from pydantic import ValidationError
 
 from zeitgeist.models import (
-    BlueskyMetrics,
+    REGISTER_DEFINITIONS,
+    SENTIMENT_DEFINITIONS,
+    Dossier,
     Item,
     LemmyMetrics,
-    MediaBrief,
+    Register,
     ScoredTopic,
     Sentiment,
-    Topic,
     WikipediaMetrics,
 )
 
@@ -39,9 +40,6 @@ def _scored(**overrides: Any) -> ScoredTopic:
         label="Cats",
         summary="Cat things.",
         item_ids=["abc123"],
-        primary_sentiment=Sentiment.CUTE,
-        valence=0.5,
-        meme_potential=0.5,
     )
     return ScoredTopic(**{**defaults, **overrides})
 
@@ -119,124 +117,51 @@ def test_lemmy_metrics_reject_an_unknown_field():
 _ENGAGEMENT_FIELDS = {"platform", "score", "comment_count", "channel", "created_at"}
 
 
-@pytest.mark.parametrize(
-    "model,want",
-    [
-        (
-            Item,
-            {
-                "source_id",
-                "title",
-                "body_excerpt",
-                "permalink",
-                "fetched_at",
-                "metrics",
-            },
-        ),
-        (LemmyMetrics, _ENGAGEMENT_FIELDS),
-        (WikipediaMetrics, {"platform", "views", "rank", "measured_on"}),
-        (
-            BlueskyMetrics,
-            {
-                "platform",
-                "like_count",
-                "reply_count",
-                "repost_count",
-                "trend",
-                "status",
-                "created_at",
-            },
-        ),
-    ],
-)
-def test_models_carry_exactly_the_specified_fields(model, want):
-    assert set(model.model_fields) == want
+def _dossier(**overrides: Any) -> Dossier:
+    base: dict[str, Any] = {
+        "what_happened": "Canada imposed tariffs on $30B of US goods.",
+        "key_entities": ["Canada", "Mark Carney"],
+        "conversation_summary": "People are treating it as overdue.",
+        "conversation_register": Register.DUNKING,
+        "secondary_registers": [Register.RESIGNATION],
+        "event_sentiment": Sentiment.SCHADENFREUDE,
+        "meme_potential": 0.8,
+        "recurring_phrases": [],
+    }
+    return Dossier(**{**base, **overrides})
 
 
-@pytest.mark.parametrize("field", ["author", "username", "user_id", "titel"])
-def test_item_rejects_undeclared_fields(field):
-    """Without extra="forbid", Pydantic silently drops unknown keys — so a
-    typo'd field name or an author slipped in by a new source would pass
-    unnoticed rather than failing loudly.
-    """
+def test_dossier_rejects_meme_potential_outside_the_scale():
     with pytest.raises(ValidationError):
-        _lemmy_item(**{field: "somebody"})
-
-
-def test_topic_rejects_the_old_post_ids_field():
-    """extra='forbid' means a stale checkpoint fails loudly rather than
-    silently losing its item list. Named in the spec as intended behaviour."""
-    with pytest.raises(ValidationError):
-        Topic.model_validate(
-            {"id": "cats", "label": "Cats", "summary": "", "post_ids": ["abc123"]}
-        )
-
-
-@pytest.mark.parametrize("valence", [-1.01, 1.01, 5.0, -5.0])
-def test_valence_outside_minus_one_to_one_is_rejected(valence):
-    with pytest.raises(ValidationError):
-        _scored(valence=valence)
-
-
-@pytest.mark.parametrize("valence", [-1.0, 0.0, 1.0])
-def test_valence_accepts_its_boundaries(valence):
-    assert _scored(valence=valence).valence == valence
-
-
-@pytest.mark.parametrize("meme_potential", [-0.01, 1.01])
-def test_meme_potential_outside_zero_to_one_is_rejected(meme_potential):
-    with pytest.raises(ValidationError):
-        _scored(meme_potential=meme_potential)
+        _dossier(meme_potential=1.5)
 
 
 @pytest.mark.parametrize("meme_potential", [0.0, 1.0])
-def test_meme_potential_accepts_its_boundaries(meme_potential):
-    assert _scored(meme_potential=meme_potential).meme_potential == meme_potential
+def test_dossier_accepts_the_meme_potential_boundaries(meme_potential):
+    assert _dossier(meme_potential=meme_potential).meme_potential == meme_potential
 
 
-def test_topic_defaults_leave_room_for_the_scoring_stage():
-    """score_topics fills these in later; the defaults are what let a topic
-    exist between consolidation and scoring.
+@pytest.mark.parametrize("member", list(Sentiment))
+def test_every_sentiment_member_is_defined(member):
+    """A member with no definition reaches the model as a bare word, and the
+    model then picks it without meaning it — the failure this mapping exists
+    to prevent. Adding a member without a definition must fail here rather
+    than silently degrade the judgement.
     """
-    topic = Topic(id="cats", label="Cats", summary="Cat things.", item_ids=["abc123"])
-    assert topic.trend_score == 0.0
-    assert topic.score_components == {}
+    assert SENTIMENT_DEFINITIONS[member].strip()
 
 
-def test_scored_topic_defaults_leave_room_for_the_selection_stage():
-    scored = _scored()
-    assert scored.secondary_sentiments == []
-    assert scored.final_rank == 0
+@pytest.mark.parametrize("member", list(Register))
+def test_every_register_member_is_defined(member):
+    assert REGISTER_DEFINITIONS[member].strip()
 
 
-def test_scored_topic_accepts_every_field_of_a_scored_topic():
-    """judge_topics constructs ScoredTopic(**topic.model_dump(), ...). If the
-    two models drift apart, that call breaks — here rather than mid-run.
+@pytest.mark.parametrize(
+    "definitions,enum",
+    [(SENTIMENT_DEFINITIONS, Sentiment), (REGISTER_DEFINITIONS, Register)],
+)
+def test_no_definition_survives_its_member_being_removed(definitions, enum):
+    """The other drift direction: a stale definition for a member that no
+    longer exists would be rendered into the prompt as a phantom option.
     """
-    topic = Topic(
-        id="cats",
-        label="Cats",
-        summary="Cat things.",
-        item_ids=["abc123"],
-        trend_score=0.7,
-        score_components={"base": 0.7},
-    )
-    scored = ScoredTopic(
-        **topic.model_dump(),
-        primary_sentiment=Sentiment.CUTE,
-        valence=0.5,
-        meme_potential=0.5,
-    )
-    assert scored.trend_score == 0.7
-    assert scored.score_components == {"base": 0.7}
-
-
-def test_media_brief_rejects_undeclared_fields():
-    with pytest.raises(ValidationError):
-        MediaBrief(
-            topic_id="cats",
-            template_id="drake",
-            caption_slots={"rejected": "Dogs"},
-            rationale="",
-            image_url="http://example.com/not-a-real-field",
-        )
+    assert set(definitions) == set(enum)

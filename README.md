@@ -23,11 +23,17 @@ switch to Ollama, below). `SOURCES` picks the platforms to scrape.
 
 ### Sources
 
-`SOURCES=lemmy` is the default and needs no credentials — Lemmy's API is
-public and unauthenticated. `LEMMY_INSTANCE` chooses the instance to query;
-because instances federate, one already returns posts from across the
-network. `LEMMY_INCLUDE_NSFW` maps to the API's own `show_nsfw` flag and is
-off by default.
+`SOURCES=bluesky` is the default and needs no credentials — the AT Protocol
+AppView answers these endpoints unauthenticated. `SOURCES` must currently
+name exactly one platform: `lemmy` and `wikipedia` are dormant (kept in the
+codebase, but rejected at startup) until a consolidation phase exists that
+can build dossiers from a flat item list rather than from Bluesky's own
+trend clusters.
+
+`LEMMY_INSTANCE` chooses the Lemmy instance to query; because instances
+federate, one already returns posts from across the network.
+`LEMMY_INCLUDE_NSFW` maps to the API's own `show_nsfw` flag and is off by
+default.
 
 `wikipedia` adds Wikimedia pageviews — the top 1000 most-viewed articles for
 the most recent day with data. It needs no credentials. Unlike Lemmy it
@@ -41,26 +47,41 @@ policy asks for contact information and may rate-limit or block generic
 agents, so set it to your own repository or contact URL if you fork this.
 
 `bluesky` adds Bluesky posts and needs no credentials — the AT Protocol
-AppView answers these endpoints unauthenticated. It fetches in two steps: the
-25 current trends, then the posts behind each one. Bluesky maintains a live
-feed for every trend, so the ranking within a topic is the platform's own
-rather than ours.
+AppView answers these endpoints unauthenticated. Ingest fetches Bluesky's own
+trends, then each trend's posts, then the reply threads under those posts,
+concurrently. Bluesky maintains a live feed for every trend, so the ranking
+within a topic is the platform's own rather than ours.
 
-Like Lemmy it is content-bearing, so it can originate topics rather than only
-corroborate them. Unlike Lemmy its audience is general rather than technical,
-which is the reason it is here. Two caveats worth knowing: trending skews
-heavily toward US politics, which the sentiment weights push back against
-rather than the source filtering out; and trend discovery uses an endpoint in
-Bluesky's `unspecced` namespace, which is explicitly not a stable API. Reading
-the posts themselves uses stable endpoints.
+Unlike Lemmy its audience is general rather than technical, which is the
+reason it is here. Two caveats worth knowing: trending skews heavily toward
+US politics; and trend discovery uses an endpoint in Bluesky's `unspecced`
+namespace, which is explicitly not a stable API. Reading the posts and
+threads themselves uses stable endpoints.
 
 `BLUESKY_API_BASE` exists to point at a mirror and should not normally be
 changed. Note that `public.api.bsky.app` is not a valid substitute — it
 returns 403 on parts of the API.
 
+The fan-out budget is explicit rather than a single number, because "how
+many trends" and "how many posts per trend" cannot be expressed by one
+`limit`: `BLUESKY_TREND_LIMIT` (default 25, the `getTrends` ceiling, not a
+preference) bounds how many trends are fetched, `BLUESKY_POSTS_PER_TREND`
+(default 10) bounds how many posts per trend, and
+`BLUESKY_FETCH_CONCURRENCY` (default 8) bounds how many of those requests
+run at once.
+
 Each platform scores its own contribution to a topic, normalised within that
-platform, before the results are combined. So a busy platform no longer
-swamps a quiet one, and mixing sources is expected rather than experimental.
+platform, before results across platforms are combined. `SOURCES` currently
+allows only one platform at a time (above) — `Settings` rejects anything
+else at startup — so that combination step has only one input today. The
+split still buys something with a single platform live: each scorer's
+sub-scores are normalised within that platform alone, rather than lumped
+into one cross-platform ranking, and `score_components` records what each
+platform contributed. See
+`docs/superpowers/specs/2026-08-26-trend-native-zeitgeist-capture-design.md`,
+section "Dormant platforms", for the contract `lemmy` and `wikipedia` must
+meet to rejoin — in short, producing a `Dossier` per cluster rather than a
+label and a summary.
 
 ## Running
 
@@ -68,11 +89,30 @@ swamps a quiet one, and mixing sources is expected rather than experimental.
 uv run zeitgeist run
 ```
 
+The pipeline runs four stages, each checkpointed to JSON before the next
+begins:
+
+1. **Ingest** — fetches Bluesky's own trends, then each trend's posts, then
+   the reply threads under those posts, concurrently. Writes `evidence.json`.
+2. **Analyse** — mines recurring phrases deterministically (a phrase counts
+   once `PHRASE_MIN_AUTHORS` distinct accounts have used it), then makes one
+   LLM call per trend producing a dossier: what happened, what people are
+   saying, how the event feels, and what posture the conversation is taking.
+   Writes `topics.json`.
+3. **Evaluate** — ranks topics on trend score alone and keeps the top
+   `TOPIC_COUNT`. Writes `ranked.json`.
+4. **Generate** — writes captions and renders one PNG per selected topic.
+
 Output lands in `output/<run-id>/`: the four stage checkpoints as JSON, plus
 one PNG per selected topic.
 
-Re-run only the meme generation against an existing run, which is how you tune
-caption prompts without re-scraping or paying for analysis again:
+Re-run only the meme generation against an existing run — this re-runs stage
+4 against the frozen `ranked.json` from that run. Ingest and analysis are
+skipped entirely, so there is no re-scraping and no re-paying for
+distillation; caption writing itself still calls the model once per
+selected topic, so this is not free with a hosted provider, just far
+cheaper than a full run. It is the loop for tuning meme templates and the
+caption prompt:
 
 ```bash
 uv run zeitgeist run --run-id 20260816T120000Z --resume-from generate
@@ -133,6 +173,17 @@ LLM_MODEL=qwen2.5:14b
 
 Nothing else changes. Comparing the two backends on identical input is the
 point of the provider abstraction.
+
+The analyse stage's per-trend distillation call is tunable independently of
+the provider:
+
+- `DISTIL_CHAR_BUDGET` (default 24000) is the reply characters sent per
+  call. A single trend can yield hundreds of replies; a small-context local
+  model truncates silently well before that, so lower this for one and raise
+  it for a hosted provider with a larger window.
+- `DISTIL_CONCURRENCY` (default 4) is how many distillation calls run in
+  parallel. Local Ollama serialises on one GPU, so 1-2 is right there; a
+  hosted provider benefits from the default.
 
 ## Tests
 

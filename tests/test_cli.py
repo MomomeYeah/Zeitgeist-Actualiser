@@ -3,6 +3,7 @@ import sqlite3
 import pytest
 
 import zeitgeist.cli as cli_module
+from zeitgeist.analysis.distil import DistilError
 from zeitgeist.cli import build_parser, main
 from zeitgeist.media.templates import TemplateError
 from zeitgeist.sources.base import SourceError
@@ -47,7 +48,7 @@ def test_validate_templates_reports_problems(tmp_path, capsys):
 
 
 def _set_minimal_settings_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("SOURCES", "lemmy")
+    monkeypatch.setenv("SOURCES", "bluesky")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
     monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
     monkeypatch.setenv("DB_PATH", str(tmp_path / "data" / "z.db"))
@@ -57,18 +58,40 @@ def test_source_error_from_the_pipeline_prints_a_message_and_exits_nonzero(
     monkeypatch, tmp_path, capsys
 ):
     """A raw traceback on the most likely first-run failure (an unreachable
-    Lemmy instance taking down Stage A entirely) is exactly what this guards
-    against — the CLI must report it cleanly instead.
+    Bluesky endpoint taking down Stage A entirely) is exactly what this
+    guards against — the CLI must report it cleanly instead.
     """
     _set_minimal_settings_env(monkeypatch, tmp_path)
     monkeypatch.setattr(
         cli_module,
         "run_pipeline",
-        lambda **kwargs: (_ for _ in ()).throw(SourceError("Lemmy returned no items")),
+        lambda **kwargs: (_ for _ in ()).throw(
+            SourceError("Bluesky returned no items")
+        ),
     )
 
     assert main(["run"]) != 0
-    assert "Lemmy returned no items" in capsys.readouterr().out
+    assert "Bluesky returned no items" in capsys.readouterr().out
+
+
+def test_distil_error_from_the_pipeline_prints_a_message_and_exits_nonzero(
+    monkeypatch, tmp_path, capsys
+):
+    """A run where every trend fails distillation must exit 1 with a
+    readable message, not a raw traceback and not a silent, green
+    "Run complete" over an empty output directory.
+    """
+    _set_minimal_settings_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli_module,
+        "run_pipeline",
+        lambda **kwargs: (_ for _ in ()).throw(
+            DistilError("All 3 trend(s) failed distillation")
+        ),
+    )
+
+    assert main(["run"]) != 0
+    assert "All 3 trend(s) failed distillation" in capsys.readouterr().out
 
 
 def test_template_error_from_the_pipeline_prints_a_message_and_exits_nonzero(

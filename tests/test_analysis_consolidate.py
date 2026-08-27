@@ -7,8 +7,8 @@ from zeitgeist.analysis.consolidate import (
     ConsolidatedTopic,
     Consolidation,
     consolidate,
-    slugify,
 )
+from zeitgeist.analysis.slug import slugify
 from zeitgeist.llm.base import FakeLLMProvider, LLMError
 
 

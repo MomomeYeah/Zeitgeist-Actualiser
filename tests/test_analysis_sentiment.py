@@ -1,214 +1,133 @@
-import logging
+"""Selection. Sentiment judgement happens during distillation, where it has
+the replies in front of it instead of a label.
+"""
 
-from zeitgeist.analysis.sentiment import (
-    SentimentJudgement,
-    _build_prompt,
-    judge_topics,
-    select,
-)
-from zeitgeist.config import DEFAULT_SENTIMENT_WEIGHTS
-from zeitgeist.llm.base import FakeLLMProvider, LLMError
-from zeitgeist.models import ScoredTopic, Sentiment, Topic
+from typing import Any
+
+import pytest
+
+from zeitgeist.analysis.sentiment import select
+from zeitgeist.models import Dossier, Register, Sentiment, Topic
 
 
-def _topic(tid: str, score: float = 0.5) -> Topic:
+def _dossier(**overrides: Any) -> Dossier:
+    base: dict[str, Any] = {
+        "what_happened": "Canada imposed tariffs on $30B of US goods.",
+        "key_entities": ["Canada"],
+        "conversation_summary": "People treat it as overdue.",
+        "conversation_register": Register.DUNKING,
+        "event_sentiment": Sentiment.SCHADENFREUDE,
+        "meme_potential": 0.5,
+    }
+    return Dossier(**{**base, **overrides})
+
+
+def _topic(topic_id: str, score: float, meme: float | None = None) -> Topic:
     return Topic(
-        id=tid,
-        label=tid.title(),
-        summary=f"About {tid}.",
-        item_ids=["p1"],
+        id=topic_id,
+        label=topic_id,
+        summary="s",
+        item_ids=["i"],
         trend_score=score,
+        dossier=None if meme is None else _dossier(meme_potential=meme),
     )
 
 
-def _judgement(sentiment: Sentiment, meme: float = 0.8) -> SentimentJudgement:
-    return SentimentJudgement(
-        primary_sentiment=sentiment,
-        secondary_sentiments=[],
-        valence=0.5,
-        meme_potential=meme,
-    )
-
-
-def _scored(tid: str, sentiment: Sentiment, trend: float, meme: float = 1.0):
-    return ScoredTopic(
-        id=tid,
-        label=tid.title(),
-        summary="",
-        item_ids=["p1"],
-        trend_score=trend,
-        primary_sentiment=sentiment,
-        valence=0.0,
-        meme_potential=meme,
-    )
-
-
-def test_carries_every_judgement_field_onto_the_scored_topic():
-    """valence and meme_potential are distinct values here on purpose: if
-    the mapping crosses them, selection silently ranks by the wrong number
-    and nothing else in the suite notices.
-    """
-    judgement = SentimentJudgement(
-        primary_sentiment=Sentiment.CUTE,
-        secondary_sentiments=[Sentiment.FUNNY],
-        valence=0.25,
-        meme_potential=0.75,
-    )
-    scored = judge_topics([_topic("cats", 0.5)], FakeLLMProvider([judgement]))[0]
-
-    assert scored.primary_sentiment == Sentiment.CUTE
-    assert scored.secondary_sentiments == [Sentiment.FUNNY]
-    assert scored.valence == 0.25
-    assert scored.meme_potential == 0.75
-
-
-def test_preserves_the_topic_it_was_given():
-    """The trend score computed in the previous stage must survive into
-    selection; recomputing or defaulting it would discard the scoring work.
-    """
-    provider = FakeLLMProvider([_judgement(Sentiment.CUTE)])
-    scored = judge_topics([_topic("cats", 0.75)], provider)[0]
-    assert scored.id == "cats"
-    assert scored.trend_score == 0.75
-    assert scored.summary == "About cats."
-
-
-def test_calls_provider_once_per_topic():
-    provider = FakeLLMProvider([_judgement(Sentiment.FUNNY)] * 3)
-    judge_topics([_topic("a"), _topic("b"), _topic("c")], provider)
-    assert len(provider.calls) == 3
-
-
-def test_prompt_contains_label_and_summary():
-    provider = FakeLLMProvider([_judgement(Sentiment.AWE)])
-    judge_topics([_topic("cats")], provider)
-    assert "Cats" in provider.calls[0].prompt
-    assert "About cats." in provider.calls[0].prompt
-
-
-def test_prompt_reports_the_item_and_platform_counts():
-    """The platform count comes from score_components minus the
-    corroboration multiplier, which is not a platform: counting it would
-    report three platforms for a two-platform topic.
-    """
-    topic = Topic(
-        id="t",
-        label="T",
-        summary="S",
-        item_ids=["a", "b", "c"],
-        score_components={"lemmy": 0.5, "wikipedia": 0.4, "corroboration": 1.25},
-    )
-
-    prompt = _build_prompt(topic)
-
-    # The counts, not the sentence: rewording the prompt is a decision
-    # someone is entitled to make, while counting the corroboration
-    # multiplier as a third platform is a bug.
-    assert "3 items" in prompt
-    assert "2 platform" in prompt
-
-
-def test_an_unscored_topic_reports_one_platform_rather_than_zero():
-    """judge_topics is reachable with empty score_components — a topic no
-    scorer ranked — and "0 platform(s)" would be nonsense to the model.
-    Guards the max(len(platforms), 1) floor.
-    """
-    topic = Topic(id="t", label="T", summary="S", item_ids=["a"])
-
-    prompt = _build_prompt(topic)
-
-    assert "1 platform" in prompt
-    assert "0 platform" not in prompt
-
-
-def test_failed_topic_is_dropped_and_run_continues():
-    provider = FakeLLMProvider([LLMError("nope"), _judgement(Sentiment.CUTE)])
-    scored = judge_topics([_topic("dropped"), _topic("kept")], provider)
-    assert [t.id for t in scored] == ["kept"]
-
-
-def test_score_components_survive_onto_the_scored_topic():
-    """score_components crosses Topic -> ScoredTopic via
-    **topic.model_dump(); a refactor to manual field listing would drop the
-    entire scoring stage's output silently, since nothing else checks it.
-    """
-    topic = _topic("cats").model_copy(
-        update={"score_components": {"base": 0.5, "rank_delta": 0.1}}
-    )
-    provider = FakeLLMProvider([_judgement(Sentiment.CUTE)])
-    scored = judge_topics([topic], provider)[0]
-    assert scored.score_components == {"base": 0.5, "rank_delta": 0.1}
-
-
-def test_select_handles_a_weights_dict_missing_some_sentiments():
-    """weights.get(sentiment, 1.0) is the live partial-weights safety net.
-    The only existing coverage of that fallback is Settings.weight_for,
-    which production code never calls — select is what actually runs.
-    """
-    topics = [
-        _scored("has_weight", Sentiment.FUNNY, trend=0.5),
-        _scored("no_weight", Sentiment.SAD, trend=0.5),
+def _order(topics: list[Topic], weight: float = 0.3) -> list[str]:
+    return [
+        t.id for t in select(topics, top_n=len(topics), meme_potential_weight=weight)
     ]
-    partial_weights = {Sentiment.FUNNY: 2.0}  # SAD deliberately absent
-    picked = select(topics, partial_weights, top_n=2)
-    assert len(picked) == 2
-    # SAD falls back to neutral (1.0); FUNNY's weight of 2.0 ranks it first.
-    assert picked[0].id == "has_weight"
 
 
-def test_failed_topic_logs_the_exception_detail(caplog):
-    """A static 'dropping' message with no exception text gives no clue
-    whether the judgement call failed on auth, schema, or timeout.
+def test_topics_are_ranked_by_the_blended_score():
+    assert _order([_topic("low", 0.2, 0.2), _topic("high", 0.9, 0.9)]) == [
+        "high",
+        "low",
+    ]
+
+
+def test_final_rank_is_one_based_and_in_order():
+    ranked = select(
+        [_topic("a", 0.9), _topic("b", 0.5), _topic("c", 0.1)],
+        top_n=3,
+        meme_potential_weight=0.3,
+    )
+    assert [topic.final_rank for topic in ranked] == [1, 2, 3]
+
+
+def test_only_the_top_n_survive():
+    ranked = select(
+        [_topic("a", 0.9), _topic("b", 0.5), _topic("c", 0.1)],
+        top_n=2,
+        meme_potential_weight=0.3,
+    )
+    assert [topic.id for topic in ranked] == ["a", "b"]
+
+
+def test_meme_potential_can_overturn_a_stronger_trend():
+    """The point of blending at all. At weight 0.3: the loud dull topic
+    scores 0.7*0.9 + 0.3*0.05 = 0.645, the quieter funny one
+    0.7*0.7 + 0.3*0.95 = 0.775. Ranking on trend alone would invert this.
     """
-    provider = FakeLLMProvider([LLMError("sentiment call failed")])
-    with caplog.at_level(logging.WARNING):
-        judge_topics([_topic("dropped")], provider)
-    assert "sentiment call failed" in caplog.text
-
-
-def test_select_prefers_positive_sentiment_at_equal_trend():
-    topics = [
-        _scored("grim", Sentiment.OUTRAGE, trend=0.8),
-        _scored("sweet", Sentiment.HEARTWARMING, trend=0.8),
+    assert _order([_topic("loud_dull", 0.9, 0.05), _topic("funny", 0.7, 0.95)]) == [
+        "funny",
+        "loud_dull",
     ]
-    picked = select(topics, DEFAULT_SENTIMENT_WEIGHTS, top_n=2)
-    assert [t.id for t in picked] == ["sweet", "grim"]
 
 
-def test_strongly_trending_negative_topic_still_wins():
-    topics = [
-        _scored("grim", Sentiment.OUTRAGE, trend=1.0),
-        _scored("sweet", Sentiment.HEARTWARMING, trend=0.4),
+def test_a_big_trend_is_not_annihilated_by_low_meme_potential():
+    """A weighted average, never a product. Multiplying — what the original
+    code did — would score the big topic 0.9*0.05 = 0.045 and bury it under
+    a topic a fifth its size. Averaging reorders without excluding.
+    """
+    assert _order([_topic("big", 0.9, 0.05), _topic("tiny", 0.2, 0.6)]) == [
+        "big",
+        "tiny",
     ]
-    picked = select(topics, DEFAULT_SENTIMENT_WEIGHTS, top_n=2)
-    assert picked[0].id == "grim"
 
 
-def test_no_sentiment_is_excluded_outright():
-    topics = [_scored(s.value, s, trend=0.5) for s in Sentiment]
-    picked = select(topics, DEFAULT_SENTIMENT_WEIGHTS, top_n=len(topics))
-    assert len(picked) == len(topics)
+def test_weight_zero_ranks_on_trend_score_alone():
+    assert _order(
+        [_topic("loud_dull", 0.9, 0.05), _topic("funny", 0.7, 0.95)], weight=0.0
+    ) == ["loud_dull", "funny"]
 
 
-def test_select_truncates_to_top_n_and_ranks_from_one():
-    topics = [
-        _scored("a", Sentiment.FUNNY, trend=0.9),
-        _scored("b", Sentiment.FUNNY, trend=0.5),
-        _scored("c", Sentiment.FUNNY, trend=0.1),
+def test_weight_one_ranks_on_meme_potential_alone():
+    assert _order(
+        [_topic("loud_dull", 0.9, 0.05), _topic("funny", 0.7, 0.95)], weight=1.0
+    ) == ["funny", "loud_dull"]
+
+
+def test_a_missing_judgement_ranks_on_trend_score_rather_than_as_zero():
+    """The model can return an unusable number, and the dormant path has no
+    dossier at all. Reading either as 0.0 would bury a topic for a fault
+    that says nothing about it: at weight 0.3 a 0.9 trend would drop to
+    0.63 and lose to a 0.7 trend scoring 0.775.
+    """
+    assert _order([_topic("nojudgement", 0.9, None), _topic("judged", 0.7, 0.95)]) == [
+        "nojudgement",
+        "judged",
     ]
-    picked = select(topics, DEFAULT_SENTIMENT_WEIGHTS, top_n=2)
-    assert [t.id for t in picked] == ["a", "b"]
-    assert [t.final_rank for t in picked] == [1, 2]
 
 
-def test_meme_potential_affects_ordering():
-    topics = [
-        _scored("dull", Sentiment.FUNNY, trend=0.9, meme=0.1),
-        _scored("punchy", Sentiment.FUNNY, trend=0.6, meme=1.0),
-    ]
-    picked = select(topics, DEFAULT_SENTIMENT_WEIGHTS, top_n=2)
-    assert picked[0].id == "punchy"
+def test_a_dossier_whose_meme_potential_is_none_is_treated_the_same():
+    topic = _topic("t", 0.9)
+    topic = topic.model_copy(update={"dossier": _dossier(meme_potential=None)})
+    assert _order([topic, _topic("judged", 0.7, 0.95)]) == ["t", "judged"]
 
 
-def test_select_on_empty_input_returns_empty():
-    assert select([], DEFAULT_SENTIMENT_WEIGHTS, top_n=5) == []
+def test_the_dossier_survives_selection():
+    topic = _topic("a", 0.9, 0.5)
+    [ranked] = select([topic], top_n=1, meme_potential_weight=0.3)
+    assert ranked.dossier == topic.dossier
+    assert ranked.dossier is not None
+
+
+def test_no_topics_yields_no_selection():
+    assert select([], top_n=5, meme_potential_weight=0.3) == []
+
+
+@pytest.mark.parametrize("weight", [0.0, 0.3, 1.0])
+def test_selection_is_stable_for_a_single_topic(weight):
+    [ranked] = select([_topic("only", 0.4, 0.4)], top_n=5, meme_potential_weight=weight)
+    assert ranked.final_rank == 1
