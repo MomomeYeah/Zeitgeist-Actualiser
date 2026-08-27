@@ -13,13 +13,15 @@ first thing in the pipeline that knows what actually happened.
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from zeitgeist.analysis.phrases import mine_phrases
 from zeitgeist.analysis.slug import unique_slug
 from zeitgeist.config import Settings
 from zeitgeist.llm.base import LLMProvider
 from zeitgeist.models import (
+    REGISTER_DEFINITIONS,
+    SENTIMENT_DEFINITIONS,
     BlueskyMetrics,
     Dossier,
     Phrase,
@@ -75,6 +77,36 @@ _PHRASE_GUIDANCE = (
 )
 
 
+def _usable(value: object, low: float, high: float, name: str) -> float | None:
+    """A model-supplied scalar, or None when it cannot be used.
+
+    `minimum`/`maximum` do reach the model as JSON schema, but Ollama turns
+    that schema into a grammar, and a grammar can only say which strings are
+    legal — not which numbers are in range. So the bounds are advisory, and
+    values like 4.2 for a 0-1 field arrive in normal operation. Retrying with
+    the validation error fed back does not help either: the constraint was
+    never enforceable, so the second attempt is as free as the first.
+
+    Rejecting the draft would discard what_happened, the conversation
+    summary, the register and the mined phrases over a scalar that no
+    consumer reads. None is recorded rather than a clamped bound because
+    None is true — the model gave no usable number — whereas a clamped 1.0
+    would silently corrupt the very diagnostic the field exists to be.
+    """
+    # bool before int: `True` is an int in Python and would otherwise be
+    # accepted as 1.0, recording a number the model never meant.
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    if not (low <= number <= high):
+        log.warning("Discarding out-of-range %s=%r from the model", name, value)
+        return None
+    return number
+
+
 class DossierDraft(BaseModel):
     """What the model returns. `recurring_phrases` is not here on purpose:
     it is measured, and a model asked for catchphrases invents them.
@@ -86,8 +118,21 @@ class DossierDraft(BaseModel):
     conversation_register: Register
     secondary_registers: list[Register] = Field(default_factory=list)
     event_sentiment: Sentiment
-    valence: float = Field(ge=-1.0, le=1.0)
-    meme_potential: float = Field(ge=0.0, le=1.0)
+    valence: float | None = None
+    meme_potential: float | None = None
+
+    # One validator per field rather than one shared across both: the bounds
+    # differ, and reading them from `info.field_name` types as `str | None`,
+    # which cannot index a lookup table without a suppression.
+    @field_validator("valence", mode="before")
+    @classmethod
+    def _check_valence(cls, value: object) -> float | None:
+        return _usable(value, -1.0, 1.0, "valence")
+
+    @field_validator("meme_potential", mode="before")
+    @classmethod
+    def _check_meme_potential(cls, value: object) -> float | None:
+        return _usable(value, 0.0, 1.0, "meme_potential")
 
 
 def distil_topics(
@@ -171,6 +216,32 @@ def _render_post(post: PostEvidence) -> str:
     return f"- {post.item.title}"
 
 
+def _taxonomy() -> str:
+    """Both taxonomies as readable text.
+
+    Built from the enums themselves so the prompt cannot drift from the
+    schema the reply is validated against. This is the fix for the model
+    picking members it does not mean: see SENTIMENT_DEFINITIONS in
+    models.py for why the schema alone is not enough.
+    """
+    sentiments = "\n".join(
+        f"  {member.value} - {SENTIMENT_DEFINITIONS[member]}" for member in Sentiment
+    )
+    registers = "\n".join(
+        f"  {member.value} - {REGISTER_DEFINITIONS[member]}" for member in Register
+    )
+    return (
+        "How the event feels (event_sentiment) - pick exactly one:\n"
+        f"{sentiments}\n\n"
+        "What the room is doing (conversation_register) - pick exactly one:\n"
+        f"{registers}\n\n"
+        "A death is sad even when the room's response is a warm tribute.\n\n"
+        "valence must be a decimal between -1.0 and 1.0, negative for a "
+        "negative event.\n"
+        "meme_potential must be a decimal between 0.0 and 1.0."
+    )
+
+
 def _build_prompt(
     entry: TrendEvidence,
     replies: list[Reply],
@@ -201,6 +272,8 @@ def _build_prompt(
     if phrase_lines:
         sections += ["", f"Recurring phrases:\n{phrase_lines}", "", _PHRASE_GUIDANCE]
     sections += [
+        "",
+        _taxonomy(),
         "",
         "Report what happened, what people are saying, the event's sentiment "
         "and the conversation's register.",

@@ -5,6 +5,8 @@ import pytest
 from pydantic import ValidationError
 
 from zeitgeist.models import (
+    REGISTER_DEFINITIONS,
+    SENTIMENT_DEFINITIONS,
     BlueskyMetrics,
     Dossier,
     Item,
@@ -380,3 +382,29 @@ def test_dossier_accepts_the_valence_boundaries(valence):
 @pytest.mark.parametrize("meme_potential", [0.0, 1.0])
 def test_dossier_accepts_the_meme_potential_boundaries(meme_potential):
     assert _dossier(meme_potential=meme_potential).meme_potential == meme_potential
+
+
+@pytest.mark.parametrize("member", list(Sentiment))
+def test_every_sentiment_member_is_defined(member):
+    """A member with no definition reaches the model as a bare word, and the
+    model then picks it without meaning it — the failure this mapping exists
+    to prevent. Adding a member without a definition must fail here rather
+    than silently degrade the judgement.
+    """
+    assert SENTIMENT_DEFINITIONS[member].strip()
+
+
+@pytest.mark.parametrize("member", list(Register))
+def test_every_register_member_is_defined(member):
+    assert REGISTER_DEFINITIONS[member].strip()
+
+
+@pytest.mark.parametrize(
+    "definitions,enum",
+    [(SENTIMENT_DEFINITIONS, Sentiment), (REGISTER_DEFINITIONS, Register)],
+)
+def test_no_definition_survives_its_member_being_removed(definitions, enum):
+    """The other drift direction: a stale definition for a member that no
+    longer exists would be rendered into the prompt as a phantom option.
+    """
+    assert set(definitions) == set(enum)

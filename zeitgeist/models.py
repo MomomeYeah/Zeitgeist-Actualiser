@@ -254,6 +254,49 @@ class TrendEvidence(BaseModel):
 NON_PLATFORM_COMPONENTS = frozenset({"corroboration"})
 
 
+# Rendered into the distillation prompt. They live here, beside the members
+# they define, because a definition that drifts from its enum is worse than
+# none — and `test_every_taxonomy_member_is_defined` fails the moment a
+# member is added without one.
+#
+# These are not decoration. Ollama compiles a JSON schema into a grammar:
+# the enum values constrain which strings are emittable, but neither the
+# member list nor any schema `description` is shown to the model to reason
+# about. A taxonomy that lives only in the schema is invisible, and the
+# model picks whatever satisfies the grammar. Measured against qwen3.5, a
+# death came back `gross` until these reached the prompt.
+SENTIMENT_DEFINITIONS: dict[Sentiment, str] = {
+    Sentiment.CUTE: "small, endearing, harmless",
+    Sentiment.HEARTWARMING: "someone was helped, recognised, or came good",
+    Sentiment.FUNNY: "inherently absurd or comic",
+    Sentiment.AWE: "impressive in scale, skill, beauty or achievement",
+    Sentiment.SCHADENFREUDE: "someone powerful or deserving came unstuck",
+    Sentiment.OUTRAGE: "injustice, abuse of power, betrayal of trust",
+    Sentiment.SAD: "loss, death, grief, decline, suffering",
+    Sentiment.SCARY: "danger, threat, disaster, violence",
+    Sentiment.GROSS: (
+        "physically disgusting - bodily, filthy, nauseating. NOT morally "
+        "objectionable, which is outrage"
+    ),
+    Sentiment.CRINGE: "embarrassing, socially painful, secondhand shame",
+    Sentiment.MUNDANE: "ordinary, procedural, low-stakes",
+}
+
+REGISTER_DEFINITIONS: dict[Register, str] = {
+    Register.TRIBUTE: "earnest appreciation, mourning as celebration",
+    Register.MOURNING: "undiluted grief",
+    Register.DELIGHT: "uncomplicated shared enjoyment, nothing to argue about",
+    Register.OUTRAGE: "sincere anger, calls to act",
+    Register.DUNKING: "piling onto a target",
+    Register.GALLOWS: "joking precisely because it is grim",
+    Register.RIFFING: "in-jokes, wordplay, escalating bits",
+    Register.AWE: "sincere wonder",
+    Register.ALARM: "fear, warning, this-is-not-normal",
+    Register.DEBATE: "genuine disagreement",
+    Register.RESIGNATION: 'weary "of course this happened"',
+}
+
+
 class Phrase(BaseModel):
     """Text that several people independently converged on.
 
@@ -286,10 +329,14 @@ class Dossier(BaseModel):
     conversation_register: Register
     secondary_registers: list[Register] = Field(default_factory=list)
     event_sentiment: Sentiment
-    valence: float = Field(ge=-1.0, le=1.0)
+    # None when the model returned no usable number. A grammar cannot
+    # enforce a numeric range, so an out-of-range value is always
+    # possible; nothing downstream reads either field, so losing the
+    # whole dossier over one would trade real content for nothing.
+    valence: Annotated[float, Field(ge=-1.0, le=1.0)] | None = None
     # Recorded for inspection, deliberately NOT applied to ranking. It was
     # suppressing topics before there was evidence that suppression helps.
-    meme_potential: float = Field(ge=0.0, le=1.0)
+    meme_potential: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
     # Attached after the model call, not returned by it.
     recurring_phrases: list[Phrase] = Field(default_factory=list)
 

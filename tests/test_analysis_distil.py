@@ -9,6 +9,8 @@ from zeitgeist.analysis.distil import DistilError, DossierDraft, distil_topics
 from zeitgeist.config import Settings
 from zeitgeist.llm.base import FakeLLMProvider, LLMError
 from zeitgeist.models import (
+    REGISTER_DEFINITIONS,
+    SENTIMENT_DEFINITIONS,
     BlueskyMetrics,
     Item,
     PostEvidence,
@@ -256,3 +258,85 @@ def test_no_evidence_means_no_calls():
     provider = FakeLLMProvider(responses=[])
     assert distil_topics([], provider, _settings()) == []
     assert provider.calls == []
+
+
+def test_the_prompt_lists_every_taxonomy_member_with_its_definition():
+    """The model never sees a JSON-schema enum as readable text.
+
+    Ollama compiles `format` into a grammar: the enum values constrain which
+    strings are emittable, but the member list and any `description` are not
+    shown to the model to reason about. A taxonomy that lives only in the
+    schema is therefore invisible, and the model picks a member that
+    satisfies the grammar without meaning it.
+
+    Measured against qwen3.5 with the production schema: with the members in
+    the schema alone, "Death of artist Yayoi Kusama" came back `gross` and
+    "Flash floods hit Nepal-Tibet border" came back `gross`/`gallows`. With
+    the same members rendered into the prompt, `sad`/`tribute` and
+    `sad`/`mourning`.
+    """
+    provider = FakeLLMProvider(responses=[_draft()])
+    distil_topics([_evidence()], provider, _settings())
+    prompt = provider.calls[0].prompt
+
+    for member in Sentiment:
+        assert member.value in prompt, f"sentiment {member.value} missing"
+        assert SENTIMENT_DEFINITIONS[member] in prompt
+    for member in Register:
+        assert member.value in prompt, f"register {member.value} missing"
+        assert REGISTER_DEFINITIONS[member] in prompt
+
+
+def test_the_prompt_states_the_numeric_ranges():
+    """`minimum`/`maximum` in the schema are advisory: a grammar can enforce
+    which strings are legal but not arithmetic, so the model is free to emit
+    4.2 for a 0-1 field. Saying the range in the prompt is the only place it
+    is actually read.
+    """
+    provider = FakeLLMProvider(responses=[_draft()])
+    distil_topics([_evidence()], provider, _settings())
+    prompt = provider.calls[0].prompt
+    assert "-1.0 and 1.0" in prompt
+    assert "0.0 and 1.0" in prompt
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("valence", 4.2),
+        ("valence", 1203584961110517),
+        ("valence", -3.0),
+        ("meme_potential", 4.2),
+        ("meme_potential", -0.5),
+        ("valence", "not a number"),
+    ],
+)
+def test_an_unusable_scalar_becomes_none_rather_than_losing_the_dossier(field, value):
+    """Both observed live. A grammar cannot enforce a numeric range, so the
+    model can always emit one of these — and nothing downstream reads either
+    field. Rejecting the whole draft would discard what_happened, the
+    conversation summary, the register and the mined phrases over a scalar
+    no consumer touches. None records "the model gave no usable number",
+    which is true, rather than clamping to a bound, which would not be.
+    """
+    draft = DossierDraft.model_validate(_draft().model_dump() | {field: value})
+    assert getattr(draft, field) is None
+
+
+def test_a_trend_with_an_unusable_scalar_still_produces_a_topic():
+    provider = FakeLLMProvider(
+        responses=[
+            DossierDraft.model_validate(_draft().model_dump() | {"valence": 4.2})
+        ]
+    )
+    [topic] = distil_topics([_evidence()], provider, _settings())
+    assert topic.dossier is not None
+    assert topic.dossier.valence is None
+    assert topic.dossier.what_happened == "Canada imposed tariffs on $30B of US goods."
+
+
+@pytest.mark.parametrize("value", [-1.0, 0.0, 1.0, 0.5])
+def test_an_in_range_scalar_is_preserved_exactly(value):
+    """The coercion must not swallow good values along with bad ones."""
+    draft = DossierDraft.model_validate(_draft().model_dump() | {"valence": value})
+    assert draft.valence == value
