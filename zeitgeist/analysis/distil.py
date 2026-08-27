@@ -118,21 +118,12 @@ class DossierDraft(BaseModel):
     conversation_register: Register
     secondary_registers: list[Register] = Field(default_factory=list)
     event_sentiment: Sentiment
-    # Nullable but NOT defaulted, so both stay in the schema's `required`
-    # list. Given a default they leave it, and the model simply omits them:
-    # measured against qwen3.5, meme_potential went missing on 1 run in 3
-    # once it became optional. Nullable still absorbs the value the grammar
+    # Nullable but NOT defaulted, so it stays in the schema's `required`
+    # list. Given a default it leaves that list and the model simply omits
+    # the field: measured against qwen3.5, it went missing on 1 run in 3 once
+    # optional. Nullable still absorbs the out-of-range value the grammar
     # cannot prevent — see `_usable`.
-    valence: float | None
     meme_potential: float | None
-
-    # One validator per field rather than one shared across both: the bounds
-    # differ, and reading them from `info.field_name` types as `str | None`,
-    # which cannot index a lookup table without a suppression.
-    @field_validator("valence", mode="before")
-    @classmethod
-    def _check_valence(cls, value: object) -> float | None:
-        return _usable(value, -1.0, 1.0, "valence")
 
     @field_validator("meme_potential", mode="before")
     @classmethod
@@ -241,8 +232,6 @@ def _taxonomy() -> str:
         "What the room is doing (conversation_register) - pick exactly one:\n"
         f"{registers}\n\n"
         "A death is sad even when the room's response is a warm tribute.\n\n"
-        "valence must be a decimal between -1.0 and 1.0, negative for a "
-        "negative event.\n"
         "meme_potential must be a decimal between 0.0 and 1.0."
     )
 

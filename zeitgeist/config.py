@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     # this, a repeated phrase is one person or a small ring, not a zeitgeist.
     phrase_min_authors: int = 3
 
+    # Share of the ranking given to the dossier's meme_potential, the
+    # rest going to trend score. Both are on [0, 1], so this is a plain
+    # weighted average. At the default a strongly trending but unfunny
+    # topic still outranks a mildly trending very funny one; raise it to
+    # favour what will actually make a meme over what is merely loud.
+    meme_potential_weight: float = Field(default=0.3, ge=0.0, le=1.0)
+
     # Reply characters sent per distillation call. A single trend can yield
     # six hundred replies; a 32k-context local model truncates silently well
     # before that, so the budget is explicit rather than discovered.

@@ -55,7 +55,6 @@ def _scored_topic(
             key_entities=key_entities or [],
             conversation_register=Register.DUNKING,
             event_sentiment=Sentiment.SCHADENFREUDE,
-            valence=-0.2,
             meme_potential=0.8,
             recurring_phrases=phrases or [],
         ),

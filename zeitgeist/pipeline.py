@@ -80,7 +80,7 @@ def run_pipeline(
 
     if resuming <= ORDER.index(Stage.EVALUATE):
         topics = _read(run_dir / "topics.json", Topic)
-        ranked = select(topics, settings.topic_count)
+        ranked = select(topics, settings.topic_count, settings.meme_potential_weight)
         log.info("Selected %d topics", len(ranked))
         _write(run_dir / "ranked.json", ranked)
 

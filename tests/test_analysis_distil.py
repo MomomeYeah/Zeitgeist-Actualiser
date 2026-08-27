@@ -85,7 +85,6 @@ def _draft(**overrides: Any) -> DossierDraft:
         "conversation_register": Register.DUNKING,
         "secondary_registers": [],
         "event_sentiment": Sentiment.SCHADENFREUDE,
-        "valence": -0.2,
         "meme_potential": 0.8,
     }
     return DossierDraft(**(base | overrides))
@@ -296,19 +295,14 @@ def test_the_prompt_states_the_numeric_ranges():
     provider = FakeLLMProvider(responses=[_draft()])
     distil_topics([_evidence()], provider, _settings())
     prompt = provider.calls[0].prompt
-    assert "-1.0 and 1.0" in prompt
     assert "0.0 and 1.0" in prompt
 
 
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("valence", 4.2),
-        ("valence", 1203584961110517),
-        ("valence", -3.0),
         ("meme_potential", 4.2),
         ("meme_potential", -0.5),
-        ("valence", "not a number"),
     ],
 )
 def test_an_unusable_scalar_becomes_none_rather_than_losing_the_dossier(field, value):
@@ -326,23 +320,25 @@ def test_an_unusable_scalar_becomes_none_rather_than_losing_the_dossier(field, v
 def test_a_trend_with_an_unusable_scalar_still_produces_a_topic():
     provider = FakeLLMProvider(
         responses=[
-            DossierDraft.model_validate(_draft().model_dump() | {"valence": 4.2})
+            DossierDraft.model_validate(_draft().model_dump() | {"meme_potential": 4.2})
         ]
     )
     [topic] = distil_topics([_evidence()], provider, _settings())
     assert topic.dossier is not None
-    assert topic.dossier.valence is None
+    assert topic.dossier.meme_potential is None
     assert topic.dossier.what_happened == "Canada imposed tariffs on $30B of US goods."
 
 
-@pytest.mark.parametrize("value", [-1.0, 0.0, 1.0, 0.5])
+@pytest.mark.parametrize("value", [0.0, 1.0, 0.5])
 def test_an_in_range_scalar_is_preserved_exactly(value):
     """The coercion must not swallow good values along with bad ones."""
-    draft = DossierDraft.model_validate(_draft().model_dump() | {"valence": value})
-    assert draft.valence == value
+    draft = DossierDraft.model_validate(
+        _draft().model_dump() | {"meme_potential": value}
+    )
+    assert draft.meme_potential == value
 
 
-@pytest.mark.parametrize("field", ["valence", "meme_potential"])
+@pytest.mark.parametrize("field", ["meme_potential"])
 def test_the_scalars_stay_required_in_the_schema(field):
     """Nullable, but not optional. A default takes the field out of the
     schema's `required` list and the model then omits it outright — measured
@@ -353,7 +349,7 @@ def test_the_scalars_stay_required_in_the_schema(field):
     assert field in DossierDraft.model_json_schema()["required"]
 
 
-@pytest.mark.parametrize("field", ["valence", "meme_potential"])
+@pytest.mark.parametrize("field", ["meme_potential"])
 def test_an_explicit_null_is_accepted(field):
     """The model may answer null now that the schema permits it, and that is
     a better outcome than an invented number.

@@ -108,7 +108,6 @@ def _draft(**overrides: Any) -> DossierDraft:
         "conversation_register": Register.DUNKING,
         "secondary_registers": [],
         "event_sentiment": Sentiment.SCHADENFREUDE,
-        "valence": -0.2,
         "meme_potential": 0.8,
     }
     return DossierDraft(**(base | overrides))

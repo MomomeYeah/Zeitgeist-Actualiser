@@ -331,11 +331,13 @@ class Dossier(BaseModel):
     event_sentiment: Sentiment
     # None when the model returned no usable number. A grammar cannot
     # enforce a numeric range, so an out-of-range value is always
-    # possible; nothing downstream reads either field, so losing the
-    # whole dossier over one would trade real content for nothing.
-    valence: Annotated[float, Field(ge=-1.0, le=1.0)] | None = None
-    # Recorded for inspection, deliberately NOT applied to ranking. It was
-    # suppressing topics before there was evidence that suppression helps.
+    # possible, and losing a whole dossier over one scalar would trade
+    # real content for nothing.
+    #
+    # There is no `valence`. Its only distinct contribution over
+    # event_sentiment was magnitude, and `register` answers the question
+    # magnitude was for - whether the room will take a joke - from what
+    # people are actually doing rather than a model's guess at severity.
     meme_potential: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
     # Attached after the model call, not returned by it.
     recurring_phrases: list[Phrase] = Field(default_factory=list)
