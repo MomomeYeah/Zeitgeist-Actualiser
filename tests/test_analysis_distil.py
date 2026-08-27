@@ -340,3 +340,23 @@ def test_an_in_range_scalar_is_preserved_exactly(value):
     """The coercion must not swallow good values along with bad ones."""
     draft = DossierDraft.model_validate(_draft().model_dump() | {"valence": value})
     assert draft.valence == value
+
+
+@pytest.mark.parametrize("field", ["valence", "meme_potential"])
+def test_the_scalars_stay_required_in_the_schema(field):
+    """Nullable, but not optional. A default takes the field out of the
+    schema's `required` list and the model then omits it outright — measured
+    against qwen3.5, meme_potential went missing on 1 run in 3 once it had a
+    default. Nullable absorbs the out-of-range value a grammar cannot
+    prevent; required keeps the model from skipping the question.
+    """
+    assert field in DossierDraft.model_json_schema()["required"]
+
+
+@pytest.mark.parametrize("field", ["valence", "meme_potential"])
+def test_an_explicit_null_is_accepted(field):
+    """The model may answer null now that the schema permits it, and that is
+    a better outcome than an invented number.
+    """
+    draft = DossierDraft.model_validate(_draft().model_dump() | {field: None})
+    assert getattr(draft, field) is None

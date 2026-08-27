@@ -118,8 +118,13 @@ class DossierDraft(BaseModel):
     conversation_register: Register
     secondary_registers: list[Register] = Field(default_factory=list)
     event_sentiment: Sentiment
-    valence: float | None = None
-    meme_potential: float | None = None
+    # Nullable but NOT defaulted, so both stay in the schema's `required`
+    # list. Given a default they leave it, and the model simply omits them:
+    # measured against qwen3.5, meme_potential went missing on 1 run in 3
+    # once it became optional. Nullable still absorbs the value the grammar
+    # cannot prevent — see `_usable`.
+    valence: float | None
+    meme_potential: float | None
 
     # One validator per field rather than one shared across both: the bounds
     # differ, and reading them from `info.field_name` types as `str | None`,
