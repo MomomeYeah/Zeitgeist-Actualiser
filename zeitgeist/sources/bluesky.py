@@ -249,9 +249,10 @@ class BlueskySource:
 
 def _to_trend_info(trend: dict[str, Any]) -> TrendInfo:
     return TrendInfo(
+        # Stable while the trend lives, kept for cross-run identification
         topic_id=trend["topic"],
         display_name=trend["displayName"],
-        # Optional in practice: unspecced endpoints promise nothing.
+        # Optional in practice: bsky.unspecced endpoints promise nothing.
         description=trend.get("description") or "",
         category=trend.get("category") or "",
         post_count=trend.get("postCount", 0),

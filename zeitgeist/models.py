@@ -13,7 +13,10 @@ STRICT = ConfigDict(extra="forbid")
 
 
 class Sentiment(StrEnum):
-    """Fixed taxonomy so results are comparable across runs."""
+    """How a given topic of event feels, separate from specific reactions to it.
+
+    Fixed taxonomy so results are comparable across runs.
+    """
 
     CUTE = "cute"
     HEARTWARMING = "heartwarming"
@@ -28,20 +31,36 @@ class Sentiment(StrEnum):
     MUNDANE = "mundane"
 
 
+# Concise definitions for each sentiment, to be rendered into the distillation prompt.
+# This allows the model to reason about the meaning of each sentiment and choose the
+# most appropriate one for a given topic.
+#
+# Ollama compiles a JSON schema into a grammar: the enum values constrain which strings
+# are emittable, but neither the member list nor any schema `description` is shown to
+# the model to reason about.
+SENTIMENT_DEFINITIONS: dict[Sentiment, str] = {
+    Sentiment.CUTE: "small, endearing, harmless",
+    Sentiment.HEARTWARMING: "someone was helped, recognised, or came good",
+    Sentiment.FUNNY: "inherently absurd or comic",
+    Sentiment.AWE: "impressive in scale, skill, beauty or achievement",
+    Sentiment.SCHADENFREUDE: "someone powerful or deserving came unstuck",
+    Sentiment.OUTRAGE: "injustice, abuse of power, betrayal of trust",
+    Sentiment.SAD: "loss, death, grief, decline, suffering",
+    Sentiment.SCARY: "danger, threat, disaster, violence",
+    Sentiment.GROSS: (
+        "physically disgusting - bodily, filthy, nauseating. NOT morally "
+        "objectionable, which is outrage"
+    ),
+    Sentiment.CRINGE: "embarrassing, socially painful, secondhand shame",
+    Sentiment.MUNDANE: "ordinary, procedural, low-stakes",
+}
+
+
 class Register(StrEnum):
-    """The posture people are taking, distinct from how the event feels.
+    """The posture people are taking towards an event.
 
-    `Sentiment` answers "how does this event feel"; `Register` answers "what
-    is the room doing about it". The two can point in opposite directions,
-    and the gap is the signal: a grim event discussed in GALLOWS yields a
-    very particular meme, while the same event in MOURNING means do not make
-    a joke at all.
-
-    The three warm registers are easily confused, so they are defined
-    against each other. DELIGHT is a cat knocking something off a table, or
-    an overlooked person finally getting their due: broad, warm, no side to
-    take. AWE is impressive rather than endearing. TRIBUTE is appreciation
-    prompted by loss or a milestone.
+    This is distinct from how the event itself feels. A grim event can be treated with
+    gallows humor or with sincere mourning, and the register captures that difference.
     """
 
     TRIBUTE = "tribute"
@@ -55,6 +74,24 @@ class Register(StrEnum):
     ALARM = "alarm"
     DEBATE = "debate"
     RESIGNATION = "resignation"
+
+
+# Concise definitions for each register, to be rendered into the distillation prompt.
+# This allows the model to reason about the meaning of each register and choose the
+# most appropriate one for a given topic.
+REGISTER_DEFINITIONS: dict[Register, str] = {
+    Register.TRIBUTE: "earnest appreciation, mourning as celebration",
+    Register.MOURNING: "undiluted grief",
+    Register.DELIGHT: "uncomplicated shared enjoyment, nothing to argue about",
+    Register.OUTRAGE: "sincere anger, calls to act",
+    Register.DUNKING: "piling onto a target",
+    Register.GALLOWS: "joking precisely because it is grim",
+    Register.RIFFING: "in-jokes, wordplay, escalating bits",
+    Register.AWE: "sincere wonder",
+    Register.ALARM: "fear, warning, this-is-not-normal",
+    Register.DEBATE: "genuine disagreement",
+    Register.RESIGNATION: 'weary "of course this happened"',
+}
 
 
 class LemmyMetrics(BaseModel):
@@ -80,10 +117,6 @@ class LemmyMetrics(BaseModel):
 
 class WikipediaMetrics(BaseModel):
     """Attention as Wikimedia pageviews report it.
-
-    Declared here, alongside Lemmy, even though no source produces it until
-    Task 9: `Metrics` needs two members for the discriminator to be a union
-    at all, and this is the second content shape the envelope exists for.
 
     No comments, no communities, and no per-item creation date — an article
     is years old while its spike is one day. `measured_on` is the day the
@@ -182,23 +215,10 @@ class Item(BaseModel):
 
 
 class TrendInfo(BaseModel):
-    """Bluesky's own cluster, kept whole.
-
-    The current source keeps `displayName` and `status` and discards the
-    rest — including `description`, which states the specific event in one
-    sentence and is the single most useful field the API returns.
-
-    `description` and `category` default to empty rather than raising:
-    getTrends lives under `app.bsky.unspecced`, so nothing it returns is a
-    contract. Same reasoning as `_normalise_status` in sources/bluesky.py —
-    degrade with a warning, do not kill the run.
-    """
+    """Metadata information for a single trending topic"""
 
     model_config = STRICT
 
-    # Bluesky's own `topic` uuid, stable while the trend lives. Kept for
-    # cross-run identification; NOT used as Topic.id, which needs to be
-    # readable because render output filenames are built from it.
     topic_id: str
     display_name: str
     description: str = ""
@@ -209,12 +229,12 @@ class TrendInfo(BaseModel):
 
 
 class Reply(BaseModel):
-    """One reply beneath a post. The conversation, as opposed to the news.
+    """A single reply to a post.
 
-    `author_key` is a truncated one-way hash of the poster's DID and exists
-    for exactly one purpose: counting how many distinct accounts are behind
-    a repeated phrase. Forty uses from three accounts is a dogpile, not a
-    zeitgeist. The handle itself has no downstream use and is never stored.
+    `author_key` is used to count the number of distinct accounts behind a repeated
+    phrase: forty uses from three accounts is a dogpile, not a zeitgeist. The handle
+    itself has no downstream use and is never stored, so can be calculated differently
+    per-platform.
     """
 
     model_config = STRICT
@@ -226,7 +246,7 @@ class Reply(BaseModel):
 
 
 class PostEvidence(BaseModel):
-    """A post together with what people said underneath it."""
+    """A post together with it's replies."""
 
     model_config = STRICT
 
@@ -237,10 +257,7 @@ class PostEvidence(BaseModel):
 
 
 class TrendEvidence(BaseModel):
-    """Everything one trend contributed to a run.
-
-    This is the ingest checkpoint's unit, replacing the flat `Item` list.
-    """
+    """All data for a trend, including it's metadata and all posts and replies."""
 
     model_config = STRICT
 
@@ -248,61 +265,16 @@ class TrendEvidence(BaseModel):
     posts: list[PostEvidence] = Field(default_factory=list)
 
 
-# score_components carries this alongside the real platform sub-scores. It is
-# a multiplier, not a platform's opinion, so it must never reach topic_scores
-# or be counted as a platform contributing to a topic.
-NON_PLATFORM_COMPONENTS = frozenset({"corroboration"})
-
-
-# Rendered into the distillation prompt. They live here, beside the members
-# they define, because a definition that drifts from its enum is worse than
-# none — and `test_every_taxonomy_member_is_defined` fails the moment a
-# member is added without one.
-#
-# These are not decoration. Ollama compiles a JSON schema into a grammar:
-# the enum values constrain which strings are emittable, but neither the
-# member list nor any schema `description` is shown to the model to reason
-# about. A taxonomy that lives only in the schema is invisible, and the
-# model picks whatever satisfies the grammar. Measured against qwen3.5, a
-# death came back `gross` until these reached the prompt.
-SENTIMENT_DEFINITIONS: dict[Sentiment, str] = {
-    Sentiment.CUTE: "small, endearing, harmless",
-    Sentiment.HEARTWARMING: "someone was helped, recognised, or came good",
-    Sentiment.FUNNY: "inherently absurd or comic",
-    Sentiment.AWE: "impressive in scale, skill, beauty or achievement",
-    Sentiment.SCHADENFREUDE: "someone powerful or deserving came unstuck",
-    Sentiment.OUTRAGE: "injustice, abuse of power, betrayal of trust",
-    Sentiment.SAD: "loss, death, grief, decline, suffering",
-    Sentiment.SCARY: "danger, threat, disaster, violence",
-    Sentiment.GROSS: (
-        "physically disgusting - bodily, filthy, nauseating. NOT morally "
-        "objectionable, which is outrage"
-    ),
-    Sentiment.CRINGE: "embarrassing, socially painful, secondhand shame",
-    Sentiment.MUNDANE: "ordinary, procedural, low-stakes",
-}
-
-REGISTER_DEFINITIONS: dict[Register, str] = {
-    Register.TRIBUTE: "earnest appreciation, mourning as celebration",
-    Register.MOURNING: "undiluted grief",
-    Register.DELIGHT: "uncomplicated shared enjoyment, nothing to argue about",
-    Register.OUTRAGE: "sincere anger, calls to act",
-    Register.DUNKING: "piling onto a target",
-    Register.GALLOWS: "joking precisely because it is grim",
-    Register.RIFFING: "in-jokes, wordplay, escalating bits",
-    Register.AWE: "sincere wonder",
-    Register.ALARM: "fear, warning, this-is-not-normal",
-    Register.DEBATE: "genuine disagreement",
-    Register.RESIGNATION: 'weary "of course this happened"',
-}
-
-
 class Phrase(BaseModel):
-    """Text that several people independently converged on.
+    """A repeated phrase detected in items relating to a trending topic.
 
-    Mined deterministically, never model-generated. Asked for catchphrases a
-    model returns plausible ones; the point of this field is that its counts
-    are true, because that is what licenses quoting it in a caption.
+    A phrase is stored alongside the number of times it was used and the number of
+    distinct authors that used it. This is calculated deterministically, rather than
+    being model-generated, to avoid unnecessary hallucinations.
+
+    The more times a phrase is used in a topic, the more likely it is to be a specific
+    part of the zeitgeist, and therefore the more likely it is to be either part of a
+    caption, or a meme in its own right.
     """
 
     model_config = STRICT
@@ -313,13 +285,7 @@ class Phrase(BaseModel):
 
 
 class Dossier(BaseModel):
-    """What a trend is actually about, and what the room is doing about it.
-
-    Replaces the label-and-summary pair that every caption used to be
-    written from. `summary` on the old path was written by a model that had
-    seen a tag vocabulary and no sentences; `what_happened` here is written
-    from the trend description, the posts and the replies.
-    """
+    """A model-generated, distilled summary of a trend"""
 
     model_config = STRICT
 
@@ -329,22 +295,18 @@ class Dossier(BaseModel):
     conversation_register: Register
     secondary_registers: list[Register] = Field(default_factory=list)
     event_sentiment: Sentiment
+
     # None when the model returned no usable number. A grammar cannot
     # enforce a numeric range, so an out-of-range value is always
-    # possible, and losing a whole dossier over one scalar would trade
-    # real content for nothing.
-    #
-    # There is no `valence`. Its only distinct contribution over
-    # event_sentiment was magnitude, and `register` answers the question
-    # magnitude was for - whether the room will take a joke - from what
-    # people are actually doing rather than a model's guess at severity.
+    # possible.
     meme_potential: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
+
     # Attached after the model call, not returned by it.
     recurring_phrases: list[Phrase] = Field(default_factory=list)
 
 
 class Topic(BaseModel):
-    """A cluster of items about the same thing."""
+    """Dossier and scoring information about a trending topic."""
 
     model_config = STRICT
 
@@ -370,7 +332,7 @@ class ScoredTopic(Topic):
 
 
 class MediaBrief(BaseModel):
-    """Instructions for rendering one piece of media."""
+    """LLM instructions for rendering a piece of media."""
 
     model_config = STRICT
 
