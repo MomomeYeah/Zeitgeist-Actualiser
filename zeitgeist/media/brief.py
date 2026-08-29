@@ -17,14 +17,22 @@ from zeitgeist.models import MediaBrief, ScoredTopic
 log = logging.getLogger(__name__)
 
 BRIEF_SYSTEM = (
-    "You write memes. Given a trending topic and a library of meme templates, "
-    "pick the template whose rhetorical shape genuinely fits the topic, then "
-    "write the caption for every one of its slots. Captions are short, "
-    "specific, and land for someone who has not read the source posts. Find "
-    "the humane or absurd angle rather than punching down, and never make a "
-    "joke at the expense of people who have been harmed. Use only template "
-    "ids from the library and fill exactly the slots that template lists."
+    "You write memes. Given a trending topic and a library of meme templates, pick the "
+    "template whose rhetorical shape genuinely fits the topic, then write the caption "
+    "for every one of its slots. Captions are short, specific, and land for someone "
+    "who has not read the source posts. Use only template ids from the library and "
+    "fill exactly the slots that template lists."
 )
+
+# BRIEF_SYSTEM = (
+#     "You write memes. Given a trending topic and a library of meme templates, "
+#     "pick the template whose rhetorical shape genuinely fits the topic, then "
+#     "write the caption for every one of its slots. Captions are short, "
+#     "specific, and land for someone who has not read the source posts. Find "
+#     "the humane or absurd angle rather than punching down, and never make a "
+#     "joke at the expense of people who have been harmed. Use only template "
+#     "ids from the library and fill exactly the slots that template lists."
+# )
 
 
 class BriefChoice(BaseModel):

@@ -1,7 +1,12 @@
 {
   "id": "hide_the_pain_harold",
   "image": "hide_the_pain_harold.png",
-  "shape": "smiling through quiet discomfort",
+  "shape": [
+    "Memes using this template create contrast between the forced smile of the subject and the text, which often describes an uncomfortable or awkward situation.",
+    "The meme is used to express feelings of discomfort, embarrassment, or frustration while maintaining a facade of happiness.",
+    "The situation or feelings expressed can be genuinely unfortunate or a humorous exaggeration of a minor inconvenience."
+  ],
+  "zshape": "smiling through quiet discomfort",
   "slots": [
     {
       "name": "top",

@@ -1,7 +1,7 @@
 {
   "id": "drake",
   "image": "drake.png",
-  "shape": "rejecting option A in favour of preferred option B",
+  "shape": "Rejecting option A in favour of preferred option B",
   "slots": [
     {
       "name": "rejected",

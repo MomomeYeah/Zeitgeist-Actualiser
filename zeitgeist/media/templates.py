@@ -28,7 +28,7 @@ class TemplateManifest(BaseModel):
 
     id: str
     image: str
-    shape: str
+    shape: str | list[str]
     slots: list[Slot]
 
 
