@@ -8,6 +8,7 @@ from zeitgeist.analysis.distil import DossierDraft
 from zeitgeist.config import Settings
 from zeitgeist.llm.base import FakeLLMProvider, LLMError
 from zeitgeist.media.brief import BriefChoice
+from zeitgeist.media.templates import TemplateError
 from zeitgeist.models import (
     BlueskyMetrics,
     Item,
@@ -321,3 +322,71 @@ def test_a_failing_stage_degrades_rather_than_killing_the_run(tmp_path):
     briefs = json.loads((run_dir / "briefs.json").read_text(encoding="utf-8"))
     assert [entry["topic_id"] for entry in briefs] == ["second"]
     assert len(list(run_dir.glob("*.png"))) == 1
+
+
+def test_an_unknown_template_id_fails_before_anything_is_fetched(tmp_path):
+    """Templates load at the top of the pipeline so a typo'd --templates id
+    costs nothing. Loading them at brief time instead would burn a full
+    Bluesky fan-out and a round of distillation calls before reporting it,
+    which is what this test exists to prevent.
+    """
+    source = _FakeTrendSource([_evidence()])
+    with pytest.raises(TemplateError):
+        run_pipeline(
+            settings=_settings(tmp_path),
+            source=source,
+            provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+            store=_store(tmp_path),
+            run_id="r1",
+            template_ids=["two_button"],
+        )
+    assert source.calls == 0
+
+
+def test_an_unknown_template_id_leaves_no_run_directory_behind(tmp_path):
+    settings = _settings(tmp_path)
+    with pytest.raises(TemplateError):
+        run_pipeline(
+            settings=settings,
+            source=_FakeTrendSource([_evidence()]),
+            provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+            store=_store(tmp_path),
+            run_id="r1",
+            template_ids=["two_button"],
+        )
+    assert not (settings.output_dir / "r1").exists()
+
+
+def test_filtering_confines_the_brief_to_the_named_templates(tmp_path):
+    """The model is only ever shown the filtered library, so a brief naming
+    an excluded template is rejected by the existing validator and the run
+    ends with no meme rather than silently rendering the wrong template.
+    """
+    run_dir = run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence()]),
+        # Two choices queued: both name "drake", so both attempts are
+        # rejected by the validator rather than by an exhausted queue.
+        provider=FakeLLMProvider(responses=[_draft(), _choice(), _choice()]),
+        store=_store(tmp_path),
+        run_id="r1",
+        template_ids=["two_buttons"],
+    )
+    assert json.loads((run_dir / "briefs.json").read_text(encoding="utf-8")) == []
+
+
+def test_the_prompt_lists_only_the_named_templates(tmp_path):
+    provider = FakeLLMProvider(responses=[_draft(), _choice(template_id="two_buttons")])
+    run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence()]),
+        provider=provider,
+        store=_store(tmp_path),
+        run_id="r1",
+        template_ids=["two_buttons"],
+    )
+    brief_prompt = next(
+        call.prompt for call in provider.calls if call.schema is BriefChoice
+    )
+    assert "id=two_buttons" in brief_prompt
+    assert "id=drake" not in brief_prompt

@@ -5,6 +5,7 @@ by eye. The validator is the gate.
 """
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 from PIL import Image
@@ -50,6 +51,28 @@ def load_templates(directory: Path) -> dict[str, TemplateManifest]:
     if not templates:
         raise TemplateError(f"No template manifests found in {directory}")
     return templates
+
+
+def select_templates(
+    templates: dict[str, TemplateManifest], ids: Sequence[str]
+) -> dict[str, TemplateManifest]:
+    """Narrow the library to `ids`.
+
+    An unknown id is an error rather than a silent drop: a typo would
+    otherwise leave a run narrower than asked for and looking successful.
+    Returns library order, not argument order, so the prompt's template
+    listing does not depend on how the ids were typed.
+    """
+    if not ids:
+        raise TemplateError("No template ids given")
+
+    wanted = set(ids)
+    if unknown := sorted(wanted - set(templates)):
+        raise TemplateError(
+            f"Unknown template id(s): {', '.join(unknown)}. "
+            f"Available: {', '.join(sorted(templates))}"
+        )
+    return {tid: manifest for tid, manifest in templates.items() if tid in wanted}
 
 
 def validate_templates(directory: Path) -> list[str]:

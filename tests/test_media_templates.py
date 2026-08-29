@@ -6,6 +6,7 @@ from PIL import Image
 from zeitgeist.media.templates import (
     TemplateError,
     load_templates,
+    select_templates,
     validate_templates,
 )
 
@@ -108,3 +109,39 @@ def test_shipped_templates_are_all_valid():
     from zeitgeist.config import PACKAGE_ROOT
 
     assert validate_templates(PACKAGE_ROOT / "media" / "templates") == []
+
+
+def test_select_narrows_the_library_to_the_named_ids(tmp_path):
+    for tid in ("drake", "two_buttons", "this_is_fine"):
+        _write_template(tmp_path, tid)
+    selected = select_templates(load_templates(tmp_path), ["drake", "this_is_fine"])
+    assert sorted(selected) == ["drake", "this_is_fine"]
+
+
+def test_select_keeps_library_order_regardless_of_argument_order(tmp_path):
+    """`_build_prompt` iterates the dict to list the library, so ordering by
+    the flag would make the prompt text depend on how the ids were typed.
+    """
+    for tid in ("aaa", "bbb", "ccc"):
+        _write_template(tmp_path, tid)
+    selected = select_templates(load_templates(tmp_path), ["ccc", "aaa"])
+    assert list(selected) == ["aaa", "ccc"]
+
+
+def test_select_rejects_an_unknown_id_naming_it_and_the_alternatives(tmp_path):
+    """Silently dropping a typo'd id would leave a narrowed run looking like
+    a successful one, which is the whole failure this guards against.
+    """
+    for tid in ("drake", "two_buttons"):
+        _write_template(tmp_path, tid)
+    with pytest.raises(TemplateError) as error:
+        select_templates(load_templates(tmp_path), ["drake", "two_button"])
+    message = str(error.value)
+    assert "two_button" in message
+    assert "two_buttons" in message
+
+
+def test_select_rejects_an_empty_id_list(tmp_path):
+    _write_template(tmp_path, "drake")
+    with pytest.raises(TemplateError):
+        select_templates(load_templates(tmp_path), [])

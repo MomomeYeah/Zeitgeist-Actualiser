@@ -24,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
         command="run",
         run_id=None,
         resume_from=Stage.INGEST.value,
+        templates=None,
         verbose=False,
     )
 
@@ -34,6 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[stage.value for stage in Stage],
         default=Stage.INGEST.value,
         help="Skip earlier stages and reuse their checkpoints",
+    )
+    run.add_argument(
+        "--templates",
+        default=None,
+        help="Comma-separated template ids the brief may choose from "
+        "(default: every template in the library)",
     )
     run.add_argument("--verbose", action="store_true")
 
@@ -77,6 +84,8 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if start_at is not Stage.INGEST and not args.run_id:
         parser.error("--resume-from requires --run-id")
 
+    template_ids = _template_ids(args.templates, parser)
+
     settings = _settings_or_exit(parser)
     store = Store(settings.db_path)
 
@@ -90,6 +99,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
                 store=store,
                 run_id=args.run_id or new_run_id(),
                 start_at=start_at,
+                template_ids=template_ids,
             )
         except (SourceError, DistilError, TemplateError, StoreSchemaError) as exc:
             print(f"Run failed: {exc}")
@@ -102,6 +112,19 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     items = (summary or {}).get("item_count", 0)
     print(f"Run complete: {run_dir} ({items} items, {memes} memes)")
     return 0
+
+
+def _template_ids(raw: str | None, parser: argparse.ArgumentParser) -> list[str] | None:
+    """None means the whole library. A flag that was given but names nothing
+    is an error: answering a request to narrow the run with an unnarrowed
+    one would be the wrong kind of forgiving.
+    """
+    if raw is None:
+        return None
+    ids = [part.strip() for part in raw.split(",") if part.strip()]
+    if not ids:
+        parser.error("--templates needs at least one template id")
+    return ids
 
 
 def _settings_or_exit(parser: argparse.ArgumentParser) -> Settings:

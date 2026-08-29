@@ -18,6 +18,7 @@ def test_bare_invocation_carries_every_run_attribute():
     args = build_parser().parse_args([])
     assert args.run_id is None
     assert args.resume_from == "ingest"
+    assert args.templates is None
     assert args.verbose is False
 
 
@@ -127,3 +128,45 @@ def test_stale_schema_prints_a_message_and_exits_nonzero_instead_of_a_traceback(
 
     assert main(["run"]) != 0
     assert str(db_path) in capsys.readouterr().out
+
+
+def test_template_ids_reach_the_pipeline(monkeypatch, tmp_path):
+    _set_minimal_settings_env(monkeypatch, tmp_path)
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli_module, "run_pipeline", lambda **kwargs: seen.update(kwargs) or tmp_path
+    )
+
+    main(["run", "--templates", "drake, two_buttons "])
+    assert seen["template_ids"] == ["drake", "two_buttons"]
+
+
+def test_omitting_the_flag_passes_no_template_filter(monkeypatch, tmp_path):
+    _set_minimal_settings_env(monkeypatch, tmp_path)
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli_module, "run_pipeline", lambda **kwargs: seen.update(kwargs) or tmp_path
+    )
+
+    main(["run"])
+    assert seen["template_ids"] is None
+
+
+def test_an_empty_templates_flag_is_rejected(capsys):
+    """Falling back to the full library here would answer a request to
+    narrow the run with an unnarrowed one.
+    """
+    with pytest.raises(SystemExit) as exit_info:
+        main(["run", "--templates", " , "])
+    assert exit_info.value.code == 2
+    assert "at least one template id" in capsys.readouterr().err
+
+
+def test_an_unknown_template_id_is_reported_and_exits_nonzero(
+    monkeypatch, tmp_path, capsys
+):
+    _set_minimal_settings_env(monkeypatch, tmp_path)
+    assert main(["run", "--templates", "two_button"]) != 0
+    output = capsys.readouterr().out
+    assert "two_button" in output
+    assert "two_buttons" in output

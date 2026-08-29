@@ -21,7 +21,7 @@ from zeitgeist.config import Settings
 from zeitgeist.llm.base import LLMProvider
 from zeitgeist.media.brief import generate_briefs
 from zeitgeist.media.render import RenderError, render_meme
-from zeitgeist.media.templates import TemplateManifest, load_templates
+from zeitgeist.media.templates import TemplateManifest, load_templates, select_templates
 from zeitgeist.models import Item, MediaBrief, ScoredTopic, Topic, TrendEvidence
 from zeitgeist.sources.base import TrendSource
 from zeitgeist.store import Store
@@ -50,7 +50,14 @@ def run_pipeline(
     store: Store,
     run_id: str,
     start_at: Stage = Stage.INGEST,
+    template_ids: list[str] | None = None,
 ) -> Path:
+    # Before the run directory exists and before anything is fetched: a
+    # mistyped template id then costs nothing and leaves nothing behind.
+    templates = load_templates(settings.templates_dir)
+    if template_ids is not None:
+        templates = select_templates(templates, template_ids)
+
     run_dir = Path(settings.output_dir) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     resuming = ORDER.index(start_at)
@@ -85,7 +92,6 @@ def run_pipeline(
         _write(run_dir / "ranked.json", ranked)
 
     ranked = _read(run_dir / "ranked.json", ScoredTopic)
-    templates = load_templates(settings.templates_dir)
     briefs = generate_briefs(ranked, templates, provider)
     _write(run_dir / "briefs.json", briefs)
 
