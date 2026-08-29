@@ -118,6 +118,22 @@ caption prompt:
 uv run zeitgeist run --run-id 20260816T120000Z --resume-from generate
 ```
 
+Narrow the library the model may choose from with `--templates`, a
+comma-separated list of ids. Combined with `--resume-from generate` this is
+the tight loop for working on one template: re-caption and re-render the same
+frozen topics against it alone, without re-scraping and without the model
+wandering off to a different template between attempts.
+
+```bash
+uv run zeitgeist run --run-id 20260816T120000Z --resume-from generate --templates drake
+```
+
+An id that is not in the library is an error, reported before the run starts
+rather than after the scrape. Note that with the library narrowed to one
+template the `rationale` in `briefs.json` becomes a post-hoc justification —
+the model had no choice to make — so it stops being useful for debugging why
+a template was picked.
+
 Check the template library after editing a manifest:
 
 ```bash
