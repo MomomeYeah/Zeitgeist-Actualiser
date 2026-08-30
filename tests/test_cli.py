@@ -1,10 +1,9 @@
-import json
 import sqlite3
 
 import pytest
-from PIL import Image
 
 import zeitgeist.cli as cli_module
+from tests.template_factory import make_manifest, write_library
 from zeitgeist.analysis.distil import DistilError
 from zeitgeist.cli import build_parser, main
 from zeitgeist.media.templates import TemplateError
@@ -63,20 +62,7 @@ def _use_synthetic_templates(monkeypatch, tmp_path, tid=TEMPLATE_ID):
     """Point Settings at a one-template library owned by the test, so the
     shipped library can gain and lose templates freely.
     """
-    directory = tmp_path / "templates"
-    directory.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (200, 200), "white").save(directory / f"{tid}.png")
-    (directory / f"{tid}.json").write_text(
-        json.dumps(
-            {
-                "id": tid,
-                "image": f"{tid}.png",
-                "shape": "a shape",
-                "slots": [{"name": "top", "box": [10, 10, 190, 90], "max_chars": 40}],
-            }
-        ),
-        encoding="utf-8",
-    )
+    directory = write_library(tmp_path / "templates", make_manifest(tid))
     monkeypatch.setenv("TEMPLATES_DIR", str(directory))
     return directory
 
