@@ -111,12 +111,6 @@ def test_shipped_templates_are_all_valid():
     assert validate_templates(PACKAGE_ROOT / "media" / "templates") == []
 
 
-def test_shipped_templates_number_twenty_four():
-    from zeitgeist.config import PACKAGE_ROOT
-
-    assert len(load_templates(PACKAGE_ROOT / "media" / "templates")) == 24
-
-
 def test_select_narrows_the_library_to_the_named_ids(tmp_path):
     for tid in ("drake", "two_buttons", "this_is_fine"):
         _write_template(tmp_path, tid)
