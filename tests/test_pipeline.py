@@ -1,8 +1,10 @@
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
+from PIL import Image
 
 from zeitgeist.analysis.distil import DossierDraft
 from zeitgeist.config import Settings
@@ -24,6 +26,9 @@ from zeitgeist.store import Store
 
 NOW = datetime(2026, 8, 26, tzinfo=UTC)
 
+TEMPLATE_A = "shape_alpha"
+TEMPLATE_B = "shape_beta"
+
 
 class _FakeTrendSource:
     name = "bluesky"
@@ -37,6 +42,42 @@ class _FakeTrendSource:
         return list(self._evidence)
 
 
+def _template_library(tmp_path) -> Path:
+    """Two synthetic templates the tests own outright.
+
+    The pipeline never reads the shipped library here, so templates can be
+    added or retired without breaking these tests. What ships is covered by
+    validate_templates in test_media_templates.py.
+    """
+    directory = tmp_path / "templates"
+    directory.mkdir(parents=True, exist_ok=True)
+    for tid in (TEMPLATE_A, TEMPLATE_B):
+        Image.new("RGB", (200, 200), "white").save(directory / f"{tid}.png")
+        (directory / f"{tid}.json").write_text(
+            json.dumps(
+                {
+                    "id": tid,
+                    "image": f"{tid}.png",
+                    "shape": f"the {tid} shape",
+                    "slots": [
+                        {
+                            "name": "rejected",
+                            "box": [10, 10, 190, 90],
+                            "max_chars": 40,
+                        },
+                        {
+                            "name": "preferred",
+                            "box": [10, 110, 190, 190],
+                            "max_chars": 40,
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+    return directory
+
+
 def _settings(tmp_path, **overrides: Any) -> Settings:
     base: dict[str, Any] = dict(
         sources=["bluesky"],
@@ -44,6 +85,7 @@ def _settings(tmp_path, **overrides: Any) -> Settings:
         topic_count=1,
         output_dir=tmp_path / "output",
         db_path=tmp_path / "data" / "z.db",
+        templates_dir=_template_library(tmp_path),
     )
     return Settings(**(base | overrides))
 
@@ -116,7 +158,7 @@ def _draft(**overrides: Any) -> DossierDraft:
 
 def _choice(**overrides: Any) -> BriefChoice:
     base: dict[str, Any] = dict(
-        template_id="drake",
+        template_id=TEMPLATE_A,
         caption_slots={"rejected": "Dogs", "preferred": "Cats"},
         rationale="Fits.",
     )
@@ -338,7 +380,7 @@ def test_an_unknown_template_id_fails_before_anything_is_fetched(tmp_path):
             provider=FakeLLMProvider(responses=[_draft(), _choice()]),
             store=_store(tmp_path),
             run_id="r1",
-            template_ids=["two_button"],
+            template_ids=["no_such_template"],
         )
     assert source.calls == 0
 
@@ -352,7 +394,7 @@ def test_an_unknown_template_id_leaves_no_run_directory_behind(tmp_path):
             provider=FakeLLMProvider(responses=[_draft(), _choice()]),
             store=_store(tmp_path),
             run_id="r1",
-            template_ids=["two_button"],
+            template_ids=["no_such_template"],
         )
     assert not (settings.output_dir / "r1").exists()
 
@@ -365,28 +407,29 @@ def test_filtering_confines_the_brief_to_the_named_templates(tmp_path):
     run_dir = run_pipeline(
         settings=_settings(tmp_path),
         source=_FakeTrendSource([_evidence()]),
-        # Two choices queued: both name "drake", so both attempts are
-        # rejected by the validator rather than by an exhausted queue.
+        # Two choices queued: both name the excluded template, so both
+        # attempts are rejected by the validator rather than by an
+        # exhausted queue.
         provider=FakeLLMProvider(responses=[_draft(), _choice(), _choice()]),
         store=_store(tmp_path),
         run_id="r1",
-        template_ids=["two_buttons"],
+        template_ids=[TEMPLATE_B],
     )
     assert json.loads((run_dir / "briefs.json").read_text(encoding="utf-8")) == []
 
 
 def test_the_prompt_lists_only_the_named_templates(tmp_path):
-    provider = FakeLLMProvider(responses=[_draft(), _choice(template_id="two_buttons")])
+    provider = FakeLLMProvider(responses=[_draft(), _choice(template_id=TEMPLATE_B)])
     run_pipeline(
         settings=_settings(tmp_path),
         source=_FakeTrendSource([_evidence()]),
         provider=provider,
         store=_store(tmp_path),
         run_id="r1",
-        template_ids=["two_buttons"],
+        template_ids=[TEMPLATE_B],
     )
     brief_prompt = next(
         call.prompt for call in provider.calls if call.schema is BriefChoice
     )
-    assert "id=two_buttons" in brief_prompt
-    assert "id=drake" not in brief_prompt
+    assert f"id={TEMPLATE_B}" in brief_prompt
+    assert f"id={TEMPLATE_A}" not in brief_prompt
