@@ -1,12 +1,16 @@
+import json
 import sqlite3
 
 import pytest
+from PIL import Image
 
 import zeitgeist.cli as cli_module
 from zeitgeist.analysis.distil import DistilError
 from zeitgeist.cli import build_parser, main
 from zeitgeist.media.templates import TemplateError
 from zeitgeist.sources.base import SourceError
+
+TEMPLATE_ID = "shape_alpha"
 
 
 def test_run_is_the_default_command():
@@ -53,6 +57,28 @@ def _set_minimal_settings_env(monkeypatch, tmp_path):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
     monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
     monkeypatch.setenv("DB_PATH", str(tmp_path / "data" / "z.db"))
+
+
+def _use_synthetic_templates(monkeypatch, tmp_path, tid=TEMPLATE_ID):
+    """Point Settings at a one-template library owned by the test, so the
+    shipped library can gain and lose templates freely.
+    """
+    directory = tmp_path / "templates"
+    directory.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (200, 200), "white").save(directory / f"{tid}.png")
+    (directory / f"{tid}.json").write_text(
+        json.dumps(
+            {
+                "id": tid,
+                "image": f"{tid}.png",
+                "shape": "a shape",
+                "slots": [{"name": "top", "box": [10, 10, 190, 90], "max_chars": 40}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEMPLATES_DIR", str(directory))
+    return directory
 
 
 def test_source_error_from_the_pipeline_prints_a_message_and_exits_nonzero(
@@ -137,8 +163,8 @@ def test_template_ids_reach_the_pipeline(monkeypatch, tmp_path):
         cli_module, "run_pipeline", lambda **kwargs: seen.update(kwargs) or tmp_path
     )
 
-    main(["run", "--templates", "drake, two_buttons "])
-    assert seen["template_ids"] == ["drake", "two_buttons"]
+    main(["run", "--templates", "alpha, beta "])
+    assert seen["template_ids"] == ["alpha", "beta"]
 
 
 def test_omitting_the_flag_passes_no_template_filter(monkeypatch, tmp_path):
@@ -165,8 +191,14 @@ def test_an_empty_templates_flag_is_rejected(capsys):
 def test_an_unknown_template_id_is_reported_and_exits_nonzero(
     monkeypatch, tmp_path, capsys
 ):
+    """The message must name both the id that was rejected and what was
+    available, or a typo reads as the library being broken.
+    """
     _set_minimal_settings_env(monkeypatch, tmp_path)
-    assert main(["run", "--templates", "two_button"]) != 0
+    _use_synthetic_templates(monkeypatch, tmp_path)
+    # Not a prefix of TEMPLATE_ID: a substring typo would make the first
+    # assertion pass on the suggestion alone.
+    assert main(["run", "--templates", "shape_alfa"]) != 0
     output = capsys.readouterr().out
-    assert "two_button" in output
-    assert "two_buttons" in output
+    assert "shape_alfa" in output
+    assert TEMPLATE_ID in output

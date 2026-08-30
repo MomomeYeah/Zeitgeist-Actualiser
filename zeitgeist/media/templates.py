@@ -1,7 +1,7 @@
 """Meme template manifests: loading and validation.
 
-At twenty-four hand-measured manifests, a mis-measured box will not be caught
-by eye. The validator is the gate.
+Across a library of hand-measured manifests, a mis-measured box will not be
+caught by eye. The validator is the gate.
 """
 
 import json
