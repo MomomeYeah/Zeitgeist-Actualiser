@@ -7,16 +7,19 @@ from pathlib import Path
 from PIL import Image
 
 from zeitgeist.media.render import render_meme
-from zeitgeist.media.templates import TemplateManifest
+from zeitgeist.media.templates import Slot, TemplateManifest
 from zeitgeist.models import MediaBrief
 
+# Kept identical to the template_dir fixture in tests/test_media_render.py.
+# Slots are built as Slot objects, not dicts, so a change to the model is a
+# type error here rather than a ValidationError at run time.
 MANIFEST = TemplateManifest(
     id="test",
     image="test.png",
     shape="a shape",
     slots=[
-        {"name": "top", "box": (10, 10, 390, 190), "max_chars": 60},
-        {"name": "bottom", "box": (10, 210, 390, 390), "max_chars": 60},
+        Slot(name="top", box=(10, 10, 390, 190), max_chars=60),
+        Slot(name="bottom", box=(10, 210, 390, 390), max_chars=60),
     ],
 )
 

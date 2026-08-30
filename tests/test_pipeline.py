@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from PIL import Image
 
+from tests.template_factory import make_manifest, make_slot, write_library
 from zeitgeist.analysis.distil import DossierDraft
 from zeitgeist.config import Settings
 from zeitgeist.llm.base import FakeLLMProvider, LLMError
@@ -49,33 +49,19 @@ def _template_library(tmp_path) -> Path:
     added or retired without breaking these tests. What ships is covered by
     validate_templates in test_media_templates.py.
     """
-    directory = tmp_path / "templates"
-    directory.mkdir(parents=True, exist_ok=True)
-    for tid in (TEMPLATE_A, TEMPLATE_B):
-        Image.new("RGB", (200, 200), "white").save(directory / f"{tid}.png")
-        (directory / f"{tid}.json").write_text(
-            json.dumps(
-                {
-                    "id": tid,
-                    "image": f"{tid}.png",
-                    "shape": f"the {tid} shape",
-                    "slots": [
-                        {
-                            "name": "rejected",
-                            "box": [10, 10, 190, 90],
-                            "max_chars": 40,
-                        },
-                        {
-                            "name": "preferred",
-                            "box": [10, 110, 190, 190],
-                            "max_chars": 40,
-                        },
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-    return directory
+    return write_library(
+        tmp_path / "templates",
+        *(
+            make_manifest(
+                tid,
+                slots=[
+                    make_slot("rejected", box=(10, 10, 190, 90)),
+                    make_slot("preferred", box=(10, 110, 190, 190)),
+                ],
+            )
+            for tid in (TEMPLATE_A, TEMPLATE_B)
+        ),
+    )
 
 
 def _settings(tmp_path, **overrides: Any) -> Settings:

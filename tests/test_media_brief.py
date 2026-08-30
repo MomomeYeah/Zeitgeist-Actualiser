@@ -2,6 +2,7 @@ from typing import Any
 
 import pytest
 
+from tests.template_factory import make_manifest, make_slot
 from zeitgeist.llm.base import FakeLLMProvider, LLMError
 from zeitgeist.media.brief import (
     BriefChoice,
@@ -14,26 +15,28 @@ from zeitgeist.models import Dossier, Phrase, Register, ScoredTopic, Sentiment
 
 
 def _templates() -> dict[str, TemplateManifest]:
-    return {
-        "drake": TemplateManifest(
-            id="drake",
-            image="drake.png",
+    """Shapes and budgets are spelled out because the prompt tests assert on
+    them; the boxes are arbitrary, since nothing here renders.
+    """
+    manifests = (
+        make_manifest(
+            "drake",
             shape="rejecting option A in favour of preferred option B",
             slots=[
-                {"name": "rejected", "box": (0, 0, 10, 10), "max_chars": 60},
-                {"name": "preferred", "box": (0, 10, 10, 20), "max_chars": 60},
+                make_slot("rejected", box=(0, 0, 10, 10), max_chars=60),
+                make_slot("preferred", box=(0, 10, 10, 20), max_chars=60),
             ],
         ),
-        "this_is_fine": TemplateManifest(
-            id="this_is_fine",
-            image="this_is_fine.png",
+        make_manifest(
+            "this_is_fine",
             shape="insisting all is well amid visible disaster",
             slots=[
-                {"name": "situation", "box": (0, 0, 10, 10), "max_chars": 60},
-                {"name": "denial", "box": (0, 10, 10, 20), "max_chars": 60},
+                make_slot("situation", box=(0, 0, 10, 10), max_chars=60),
+                make_slot("denial", box=(0, 10, 10, 20), max_chars=60),
             ],
         ),
-    }
+    )
+    return {manifest.id: manifest for manifest in manifests}
 
 
 def _scored_topic(

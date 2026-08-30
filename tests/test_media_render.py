@@ -1,9 +1,9 @@
 import pytest
 from PIL import Image, ImageChops, ImageStat
 
+from tests.template_factory import make_manifest, make_slot, write_library
 from zeitgeist.config import PACKAGE_ROOT
 from zeitgeist.media.render import RenderError, render_meme
-from zeitgeist.media.templates import TemplateManifest
 from zeitgeist.models import MediaBrief
 
 FONT = None  # Pillow's bundled scalable font; see resolve_font
@@ -11,17 +11,19 @@ FONT = None  # Pillow's bundled scalable font; see resolve_font
 
 @pytest.fixture
 def template_dir(tmp_path):
-    Image.new("RGB", (400, 400), "white").save(tmp_path / "test.png")
-    manifest = TemplateManifest(
-        id="test",
-        image="test.png",
+    """Kept identical to MANIFEST in scripts/make_golden.py, which renders
+    the committed golden. Drift in the boxes or the canvas size shows up as
+    a test_matches_the_golden_image failure.
+    """
+    manifest = make_manifest(
+        "test",
         shape="a shape",
         slots=[
-            {"name": "top", "box": (10, 10, 390, 190), "max_chars": 60},
-            {"name": "bottom", "box": (10, 210, 390, 390), "max_chars": 60},
+            make_slot("top", box=(10, 10, 390, 190), max_chars=60),
+            make_slot("bottom", box=(10, 210, 390, 390), max_chars=60),
         ],
     )
-    (tmp_path / "test.json").write_text(manifest.model_dump_json(), encoding="utf-8")
+    write_library(tmp_path, manifest, size=(400, 400))
     return tmp_path, manifest
 
 
