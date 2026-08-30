@@ -19,20 +19,14 @@ log = logging.getLogger(__name__)
 BRIEF_SYSTEM = (
     "You write memes. Given a trending topic and a library of meme templates, pick the "
     "template whose rhetorical shape genuinely fits the topic, then write the caption "
-    "for every one of its slots. Captions are short, specific, and land for someone "
-    "who has not read the source posts. Use only template ids from the library and "
-    "fill exactly the slots that template lists."
+    "for every one of its slots. "
+    "Captions should be concise, specific, and understandable to someone who has not "
+    "read the source material. They encapsulate the core idea, sentiment, and "
+    "emotional register of the given topic. Favour short, punchy captions that still "
+    "capture the topic's essence. Avoid generic or vague captions."
+    "Use only template ids from the library and fill exactly the slots that template "
+    "lists."
 )
-
-# BRIEF_SYSTEM = (
-#     "You write memes. Given a trending topic and a library of meme templates, "
-#     "pick the template whose rhetorical shape genuinely fits the topic, then "
-#     "write the caption for every one of its slots. Captions are short, "
-#     "specific, and land for someone who has not read the source posts. Find "
-#     "the humane or absurd angle rather than punching down, and never make a "
-#     "joke at the expense of people who have been harmed. Use only template "
-#     "ids from the library and fill exactly the slots that template lists."
-# )
 
 
 class BriefChoice(BaseModel):
@@ -124,7 +118,8 @@ def _build_prompt(topic: ScoredTopic, templates: dict[str, TemplateManifest]) ->
         f"- id={manifest.id} | shape: {manifest.shape} | "
         "slots: "
         + ", ".join(
-            f"{slot.name} (max {slot.max_chars} chars)" for slot in manifest.slots
+            f"{slot.name}, {slot.meaning} (max {slot.max_chars} chars)"
+            for slot in manifest.slots
         )
         for manifest in templates.values()
     )

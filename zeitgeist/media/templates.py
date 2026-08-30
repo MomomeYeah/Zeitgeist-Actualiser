@@ -20,6 +20,7 @@ class Slot(BaseModel):
     """One text box. `box` is [left, top, right, bottom] in pixels."""
 
     name: str
+    meaning: str
     box: tuple[int, int, int, int]
     max_chars: int
 
@@ -29,7 +30,7 @@ class TemplateManifest(BaseModel):
 
     id: str
     image: str
-    shape: str | list[str]
+    shape: str
     slots: list[Slot]
 
 

@@ -1,10 +1,11 @@
 {
   "id": "distracted_boyfriend",
   "image": "distracted_boyfriend.png",
-  "shape": "being tempted away from A by a newer B",
+  "shape": "Being drawn to a tempting alternative while neglecting what you already have.",
   "slots": [
     {
       "name": "boyfriend",
+      "meaning": "The person, group, or entity that is being distracted by something else.",
       "box": [
         575,
         370,
@@ -15,6 +16,7 @@
     },
     {
       "name": "girlfriend",
+      "meaning":"The person, group, or entity that is being neglected.",
       "box": [
         905,
         380,
@@ -25,6 +27,7 @@
     },
     {
       "name": "other_woman",
+      "meaning": "The person, group, or entity that the boyfriend is tempted by.",
       "box": [
         150,
         510,

@@ -5,6 +5,7 @@
   "slots": [
     {
       "name": "rejected",
+      "meaning": "The option that is being rejected, generally the correct or expected choice in the situation.",
       "box": [
         620,
         30,
@@ -15,6 +16,7 @@
     },
     {
       "name": "preferred",
+      "meaning": "The option that is being preferred, generally absurd, lazy, or oddly specific.",
       "box": [
         620,
         630,
