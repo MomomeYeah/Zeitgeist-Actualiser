@@ -1,0 +1,40 @@
+{
+  "id": "two_buttons",
+  "image": "two_buttons.png",
+  "shape": "Agonising over a dilemma between two contradictory options, both appealing or both terrible",
+  "slots": [
+    {
+      "name": "option_1",
+      "meaning": "The first option in the dilemma, which is one of the two choices the person is agonising over. This option should be a short phrase or sentence that clearly represents one side of the dilemma.",
+      "box": [
+        40,
+        80,
+        290,
+        200
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "option_2",
+      "meaning": "The second option in the dilemma, which is one of the two choices the person is agonising over. This option should be a short phrase or sentence that clearly represents the other side of the dilemma.",
+      "box": [
+        310,
+        50,
+        560,
+        170
+      ],
+      "max_chars": 108
+    },
+    {
+      "name": "subject",
+      "meaning": "The person or entity facing the dilemma. This could be a character, a public figure, or even an abstract concept. The subject should be represented in a way that makes it clear who is experiencing the dilemma.",
+      "box": [
+        40,
+        740,
+        560,
+        855
+      ],
+      "max_chars": 108
+    }
+  ]
+}

@@ -18,14 +18,18 @@ log = logging.getLogger(__name__)
 
 BRIEF_SYSTEM = (
     "You write memes. Given a trending topic and a library of meme templates, pick the "
-    "template whose rhetorical shape genuinely fits the topic, then write the caption "
-    "for every one of its slots. "
+    "template whose rhetorical shape best fits the topic, then write the caption for "
+    "every one of its slots. "
+    "\n\n"
     "Captions should be concise, specific, and understandable to someone who has not "
-    "read the source material. They encapsulate the core idea, sentiment, and "
-    "emotional register of the given topic. Favour short, punchy captions that still "
-    "capture the topic's essence. Avoid generic or vague captions."
-    "Use only template ids from the library and fill exactly the slots that template "
-    "lists."
+    "read the source material."
+    "\n\n"
+    "A caption should aim to be the shortest, punchiest line that captures the essence "
+    "of the topic, and encapsulates the core idea, sentiment, and emotional register "
+    "of the given topic. Avoid generic or vague captions."
+    "\n\n"
+    "Use only template ids from the library and fill every slot with a non-blank "
+    "caption. You must not leave any slots empty, or invent any new slots."
 )
 
 
