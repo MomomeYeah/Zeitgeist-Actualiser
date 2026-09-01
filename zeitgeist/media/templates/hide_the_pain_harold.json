@@ -1,25 +1,27 @@
 {
   "id": "hide_the_pain_harold",
   "image": "hide_the_pain_harold.png",
-  "shape": "smiling through quiet discomfort",
+  "shape": "Contrast between polite, professional, or positive outward appearance, and internal distress, dread, discomfort, or awkwardness.",
   "slots": [
     {
-      "name": "top",
+      "name": "external",
+      "meaning": "A seemingly positive or neutral external situation, context, or expression that contrasts with the subject's internal feelings.",
       "box": [
         15,
-        15,
+        135,
         465,
-        150
+        285
       ],
       "max_chars": 108
     },
     {
-      "name": "bottom",
+      "name": "internal",
+      "meaning": "The twist: a hidden source of stress, discomfort, or failure, or a hidden negative aspect of the situation.",
       "box": [
         15,
-        316,
+        435,
         465,
-        451
+        585
       ],
       "max_chars": 108
     }

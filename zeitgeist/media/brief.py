@@ -17,13 +17,19 @@ from zeitgeist.models import MediaBrief, ScoredTopic
 log = logging.getLogger(__name__)
 
 BRIEF_SYSTEM = (
-    "You write memes. Given a trending topic and a library of meme templates, "
-    "pick the template whose rhetorical shape genuinely fits the topic, then "
-    "write the caption for every one of its slots. Captions are short, "
-    "specific, and land for someone who has not read the source posts. Find "
-    "the humane or absurd angle rather than punching down, and never make a "
-    "joke at the expense of people who have been harmed. Use only template "
-    "ids from the library and fill exactly the slots that template lists."
+    "You write memes. Given a trending topic and a library of meme templates, pick the "
+    "template whose rhetorical shape best fits the topic, then write the caption for "
+    "every one of its slots. "
+    "\n\n"
+    "Captions should be concise, specific, and understandable to someone who has not "
+    "read the source material."
+    "\n\n"
+    "A caption should aim to be the shortest, punchiest line that captures the essence "
+    "of the topic, and encapsulates the core idea, sentiment, and emotional register "
+    "of the given topic. Avoid generic or vague captions."
+    "\n\n"
+    "Use only template ids from the library and fill every slot with a non-blank "
+    "caption. You must not leave any slots empty, or invent any new slots."
 )
 
 
@@ -116,7 +122,8 @@ def _build_prompt(topic: ScoredTopic, templates: dict[str, TemplateManifest]) ->
         f"- id={manifest.id} | shape: {manifest.shape} | "
         "slots: "
         + ", ".join(
-            f"{slot.name} (max {slot.max_chars} chars)" for slot in manifest.slots
+            f"{slot.name}, {slot.meaning} (max {slot.max_chars} chars)"
+            for slot in manifest.slots
         )
         for manifest in templates.values()
     )

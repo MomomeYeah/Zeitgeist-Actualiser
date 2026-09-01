@@ -27,10 +27,11 @@ DEFAULT_SIZE = (200, 200)
 def make_slot(
     name: str = "top",
     *,
+    meaning: str = "top",
     box: tuple[int, int, int, int] = DEFAULT_BOX,
     max_chars: int = 40,
 ) -> Slot:
-    return Slot(name=name, box=box, max_chars=max_chars)
+    return Slot(name=name, meaning=meaning, box=box, max_chars=max_chars)
 
 
 def make_manifest(

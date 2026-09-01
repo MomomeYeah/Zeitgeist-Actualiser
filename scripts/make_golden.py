@@ -18,8 +18,8 @@ MANIFEST = TemplateManifest(
     image="test.png",
     shape="a shape",
     slots=[
-        Slot(name="top", box=(10, 10, 390, 190), max_chars=60),
-        Slot(name="bottom", box=(10, 210, 390, 390), max_chars=60),
+        Slot(name="top", meaning="top", box=(10, 10, 390, 190), max_chars=60),
+        Slot(name="bottom", meaning="bottom", box=(10, 210, 390, 390), max_chars=60),
     ],
 )
 

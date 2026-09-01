@@ -20,6 +20,7 @@ class Slot(BaseModel):
     """One text box. `box` is [left, top, right, bottom] in pixels."""
 
     name: str
+    meaning: str
     box: tuple[int, int, int, int]
     max_chars: int
 

@@ -1,10 +1,11 @@
 {
   "id": "is_this_a_pigeon",
   "image": "is_this_a_pigeon.png",
-  "shape": "confidently misidentifying something obvious",
+  "shape": "Confidently misidentifying something obvious",
   "slots": [
     {
       "name": "subject",
+      "meaning": "The person or character who is misidentifying something, typically one who should know better, or is in a position of authority or expertise",
       "box": [
         40,
         60,
@@ -15,6 +16,7 @@
     },
     {
       "name": "object",
+      "meaning": "The object that is being misidentified",
       "box": [
         1120,
         470,
@@ -24,7 +26,8 @@
       "max_chars": 108
     },
     {
-      "name": "caption",
+      "name": "misidentification",
+      "meaning": "A question in the form, 'Is this a/an [X]?', where [X] is a humorous or absurd misidentification of the object",
       "box": [
         40,
         1220,

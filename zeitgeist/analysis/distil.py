@@ -48,6 +48,8 @@ class DistilError(Exception):
     """
 
 
+DISTIL_MAX_TOKENS = 16384
+
 DISTIL_SYSTEM = (
     "You analyse a trending conversation on social media and report what is "
     "actually going on in it.\n\n"
@@ -184,7 +186,9 @@ def _distil_one(
     # as a failed trend and silently skipped.
     prompt = _build_prompt(entry, replies, phrases, settings.distil_char_budget)
     try:
-        return provider.complete(prompt, DossierDraft, system=DISTIL_SYSTEM), phrases
+        return provider.complete(
+            prompt, DossierDraft, system=DISTIL_SYSTEM, max_tokens=DISTIL_MAX_TOKENS
+        ), phrases
     except Exception as exc:
         log.warning(
             "Distillation failed for %r; dropping: %s",
