@@ -22,13 +22,12 @@ and are reproduced faithfully. This document does not restate the design. It
 records what the design assumes that the codebase does not yet provide, and
 the decisions taken where the two disagree.
 
-**The web UI becomes the primary interface.** The CLI was the first
-implementation, built for fast iteration, and it keeps working throughout —
-it is the only way to produce a run until Phase C lands. But it stops being
-the thing the design serves, and where the two pull in different directions
-the UI wins. That is what licences moving the stage checkpoints off the
+**The web UI replaces the CLI.** The CLI was the first implementation, built
+for fast iteration, and this work deletes it rather than maintaining it
+alongside the UI. That is what licences moving the stage checkpoints off the
 filesystem, which the CLI's documented output contract would otherwise have
-made too invasive to justify.
+made too invasive to justify. See "The CLI is removed" for what happens to each
+command, and for how a run is produced before the API can start one.
 
 ## Scope
 
@@ -44,9 +43,9 @@ In:
 - Clearing `data/zeitgeist.db` and `output/`. Runs written before this work are
   discarded rather than migrated, so the new models can require the fields they
   always populate.
-- Progress and cancellation seams in the pipeline, defaulting to no-ops, so the
-  CLI passes neither and behaves as it does now. See "The CLI after this work"
-  for the end state of every command.
+- Progress and cancellation seams in the pipeline, defaulting to no-ops so a
+  direct caller need not construct them.
+- Deleting `zeitgeist/cli.py`. See "The CLI is removed".
 - A run execution service: a queue, a worker thread, live log capture, and
   stop/abort.
 - On-demand meme generation, both model-written and hand-written, and render
@@ -182,7 +181,8 @@ finished, a render that has not failed.
 
 Disposable is not free, though, and nothing here should read as licence to
 delete casually. A run costs minutes and real model calls to reproduce — the
-economics that put `--resume-from generate` in the CLI in the first place.
+economics that made resuming from `generate` worth building in the first
+place.
 
 ### Checkpoints
 
@@ -203,7 +203,7 @@ Whole documents rather than normalised tables, and that is deliberate.
 `evidence` is `list[TrendEvidence]`, which is a `TrendInfo` plus
 `list[PostEvidence]`, each of which is an `Item` carrying a discriminated
 `Metrics` union plus `list[Reply]`. Normalising that means five or six related
-tables and reassembling exact pydantic instances on read so `--resume-from`
+tables and reassembling exact pydantic instances on read so resuming a run
 still round-trips. Nothing queries *inside* evidence except "the replies for
 this topic's items", so the schema work buys nothing while the models are
 still moving. `model_validate_json` round-trips a payload perfectly.
@@ -360,18 +360,18 @@ transaction as the checkpoint it flattens, so it cannot drift. Its convenience
 justification was self-defeating: a schema change to `run_topics` bumps
 `SCHEMA_VERSION`, which means deleting the database, which deletes the
 `checkpoints` rows a rebuild would need as its source. And resume needs
-nothing, because `--resume-from generate` does not rewrite the `analyse`
+nothing, because resuming from `generate` does not rewrite the `analyse`
 checkpoint, so the rows flattened from it are still correct.
 
 The one case that survives — a bug in the flattening logic, with checkpoints
 intact — is a handful of lines against the store when it happens, not a command
-with a CLI surface and tests. Worth stating that it is absent by decision
+with an entry point and tests. Worth stating that it is absent by decision
 rather than oversight, because a derived table invites one.
 
 ## Pipeline changes
 
-Both seams default to no-ops, so `zeitgeist run` behaves as it does today
-apart from where its checkpoints land.
+Both seams default to no-ops, so a caller wanting neither — a test, or the dev
+harness — constructs neither.
 
 ### RunObserver
 
@@ -447,7 +447,7 @@ generator with `await asyncio.sleep(0.25)` between polls. Polling rather than
 `loop.call_soon_threadsafe` into an `asyncio.Queue` because a quarter-second of
 latency on a log line is invisible, and it keeps the logging handler free of
 any reference to the loop, which matters because the same handler has to work
-under `TestClient` and under the CLI.
+under `TestClient` and under the dev harness.
 
 Progress events cross the same boundary the same way: the observer writes
 `run_records`, `run_stages` and `run_topics` from the worker thread, and the
@@ -471,57 +471,68 @@ deliberate about not storing personal data, and a debug log that dumps reply
 text to disk would quietly undo it. Debug lines carry counts, ids, permalinks
 and elapsed times.
 
-## The CLI after this work
+## The CLI is removed
 
-The UI becomes primary, but the CLI is not deprecated and does not decay. It
-keeps a smaller, well-defined job: running the pipeline in a terminal, which is
-still the fastest way to iterate on prompts and templates.
+`zeitgeist/cli.py` is deleted in A1. The web UI is the interface; a second,
+parallel product surface for the same pipeline is not maintained.
 
-| Command | State |
-| --- | --- |
-| `zeitgeist run` | Works. `--run-id`, `--resume-from`, `--templates` and `--verbose` all keep their present meanings. Runs synchronously, in the foreground, logging to stdout. |
-| `zeitgeist validate-templates [--dir]` | Untouched. It deliberately builds no `Settings` and has nothing to do with storage. |
-| `zeitgeist serve` | New in A2. |
+`zeitgeist` remains the one console entry point, but it takes no subcommands —
+bare invocation starts the server, with `--host`, `--port` and `--reload` as
+its only flags. Everything `argparse` currently parses moves into the API:
+`--run-id` and `--resume-from` become `POST /api/runs/{id}/resume`,
+`--templates` becomes a field on that request and on `POST /api/runs`, and
+`--verbose` stops existing as a startup flag at all, because the server always
+captures at DEBUG and the toggle filters.
 
-What changes underneath `run`: checkpoints go to SQLite, PNGs to
-`output/<run-id>/renders/`. Two consequences to handle in A1 — `cli.py:111`
-counts memes by globbing the run directory for `*.png` and prints a path that
-now holds only images, so the completion line is rewritten; and the README's
-"Output lands in `output/<run-id>/`" section becomes wrong and is rewritten
-with it.
+`validate-templates` moves to `scripts/validate_templates.py`, beside the
+`preview_template_boxes.py`, `make_golden.py` and `capture_bluesky_fixtures.py`
+already there. It builds no `Settings` and calls
+`media.templates.validate_templates`, which does not move — only its entry
+point does. `tests/test_cli.py` goes with the module it tests.
 
-What `run` never gains: queueing, stop and abort, live progress beyond its own
-logging, on-demand generation, render deletion. Those are server-only, which is
-precisely why the observer and cancel-token seams default to no-ops — the CLI
-passes neither.
+### Running the pipeline before the worker exists
 
-The one real loss is `jq` over a checkpoint file. It is a one-liner rather than
-a missing capability, and does not warrant an `export` command:
+Deleting the CLI in A1 leaves nothing able to start a run until
+`POST /api/runs` lands in C. A2 would be reviewed against an empty database and
+B against empty screens, which makes neither phase's deliverable meaningful.
+
+So A1 also adds `scripts/run_pipeline.py`: a dev harness that builds
+`Settings`, a source, a provider and a `Store`, then calls `run_pipeline`.
+Fifteen lines, no `argparse`, no console entry point, no README mention.
+
+This is deliberately not the CLI under another name. The distinction that
+matters is that a CLI is a product surface — installed, documented, argued
+about, tested as a contract — and this is a developer's harness that happens to
+call the same function. It stays in `scripts/` after C, because scripted and
+repeated runs during development are useful and it costs nothing.
+
+### The tuning loop
+
+The loop this replaces is `--resume-from generate --templates drake`: edit a
+prompt or a manifest, re-render the same frozen topics, look at the output. Two
+things make the UI version work, and one of them is an addition.
+
+Template manifests are re-read per run by `load_templates`, so editing box
+coordinates needs no restart. Prompt edits live in Python and need one, which
+`--reload` gives — but uvicorn's reloader kills the worker thread mid-run if a
+file is saved while a pipeline is in flight. The run is reconciled to
+`interrupted` on restart so nothing corrupts, but it is lost. `serve` therefore
+does **not** reload by default; `--reload` is an explicit opt-in for when
+nothing is running.
+
+The addition: the design's "Resume from &lt;stage&gt;" button takes no options,
+so there is no way to resume with the template library narrowed — which is
+exactly the loop. `POST /api/runs/{id}/resume` accepts an optional
+`template_ids`, and the button gets a template selector beside it. Phase D's
+topic-detail panel is the better loop for a single topic; this covers the
+whole-run case the button already implies.
+
+The one unrecoverable loss is `jq` over a checkpoint file. It is a one-liner,
+not a missing capability:
 
 ```bash
-sqlite3 data/zeitgeist.db \
-  "select payload from checkpoints where run_id='...' and stage='analyse'" \
-  | jq '.[] | {label, trend_score}'
+sqlite3 data/zeitgeist.db "select payload from checkpoints where run_id='...' and stage='analyse'" | jq '.[] | {label, trend_score}'
 ```
-
-### Two ways to start a run
-
-Once `serve` exists, `zeitgeist run` and the server's worker are two processes
-that can both start a pipeline against one database. WAL keeps that safe —
-concurrent readers and a single writer — so nothing corrupts. What breaks is
-weaker and more confusing: the server's "at most one run" guarantee does not
-cover a CLI-launched run, so the UI shows nothing in flight while one is
-happening, and on local Ollama the two runs contend for one GPU and both crawl.
-
-So `run` first checks `run_records` for a row with status `running` and refuses
-if it finds one, naming the run. `--force` overrides. The stale case — a
-crashed process leaving a `running` row — is not something the CLI tries to
-distinguish, because a heartbeat is more machinery than this deserves; the
-server already reconciles stale rows to `interrupted` on startup, so it
-self-heals the next time `serve` runs, and `--force` covers the meantime.
-
-This is a guard, not a lock. Two people are not using this at once; the case it
-exists for is forgetting a server is already running.
 
 ## Run execution service
 
@@ -555,7 +566,7 @@ leaves the two stages that dominate wall-clock time still unable to run there.
 Converting the whole pipeline would mean async providers, `gather` plus a
 semaphore in place of the `ThreadPoolExecutor`, `run_in_executor` for Pillow
 regardless because it is CPU-bound, the same for `sqlite3`, and `run_pipeline`
-becoming `async def` with the CLI wrapping it in `asyncio.run`. That is a
+becoming `async def` with its callers wrapping it in `asyncio.run`. That is a
 rewrite of the pipeline's concurrency model, and it would not change the
 conclusion.
 
@@ -622,7 +633,7 @@ cacheable and the in-flight poll does not drag topic data along with it.
 | C | `GET /api/runs/active` | The in-flight run and the queue |
 | C | `GET /api/config/options` | Providers, per-provider models, platforms with enabled flags, templates with slots, `.env` defaults, key-present booleans |
 | C | `POST /api/runs` | Start or queue a run; "Re-run config" posts the old run's frozen config |
-| C | `POST /api/runs/{id}/resume` | `{stage}` — reuses the run's existing checkpoints |
+| C | `POST /api/runs/{id}/resume` | `{stage, template_ids?}` — reuses the run's existing checkpoints; `template_ids` narrows the library, which is the tuning loop |
 | C | `POST /api/runs/{id}/stop`, `POST /api/runs/{id}/abort` | Stop after this stage; abort now |
 | C | `GET /api/runs/{id}/events` | SSE: log lines and progress ticks |
 | D | `POST /api/runs/{id}/topics/{topic_id}/renders` | `{mode: "llm", template_id, count}` or `{mode: "manual", template_id, caption_slots}`; also what the below-the-cut `generate ↗` calls |
@@ -746,9 +757,9 @@ There is no free-text model field, per the design.
 **Verbose captures always, filters on toggle.** The handler runs at DEBUG for
 the whole run; the toggle filters what the client renders and what the stream
 sends. Flipping it works retroactively on lines already captured, which is what
-anyone toggling it mid-run wants. Mapping it literally to `--verbose` — a level
-set once at startup — would mean turning it on shows nothing until the next
-line arrives.
+anyone toggling it mid-run wants. The handoff maps this control to the CLI's
+`--verbose`; with the CLI gone there is nothing to map to, and the toggle is
+purely a filter over what the server has already captured.
 
 **Thumbnails are generated, not scaled.** 96px thumbnails written beside each
 PNG at render time, by the same code path that writes the render. The Runs list
@@ -761,8 +772,8 @@ Those are no longer files. Showing a filename for a database row would be a
 small lie on a screen whose whole job is telling you what a run actually did.
 
 The names themselves are worth keeping — `evidence`, `topics`, `ranked`,
-`briefs` are the pipeline's own vocabulary and appear in `--resume-from`, log
-lines and this spec. So the extension goes and the name stays: stage cards read
+`briefs` are the pipeline's own vocabulary and appear in the resume request,
+log lines and this spec. So the extension goes and the name stays: stage cards read
 `evidence · 1.3 MB`, and the failed row reads `ranked checkpoint intact`. Sizes
 come from the payload length rather than `stat`.
 
@@ -782,7 +793,7 @@ stripping every environment variable `Settings` reads.
   a pipeline nor a store.
 - Checkpoint round-tripping: write each stage's models through
   `write_checkpoint`, read them back with `read_checkpoint`, assert equality.
-  This is what `--resume-from` depends on, and a blob that does not round-trip
+  This is what resuming a run depends on, and a blob that does not round-trip
   breaks resume silently rather than loudly.
 - Transactional coupling: a checkpoint write that raises partway leaves
   neither the payload nor its `run_topics` rows behind.
@@ -826,23 +837,23 @@ Each phase gets its own implementation plan.
 prerequisite to everything and worth landing green on its own:
 
 *A1, storage.* `Topic.trend_status`; schema version 3 and the new tables;
-the CLI's completion line and the README's output section;
+deleting `cli.py` and `tests/test_cli.py`; `scripts/validate_templates.py` and
+`scripts/run_pipeline.py`; the README's usage sections;
 `store.write_checkpoint`/`read_checkpoint` replacing `pipeline._write`/`_read`;
 `RunConfig`, `StageRecord` and `RenderRecord`; renders written to
 `output/<run-id>/renders/` with thumbnails; the flattening into `run_topics`.
 Absorbing `runs` and `topics` into the new tables. No HTTP. Ends with
-`uv run zeitgeist run` persisting entirely through the store, the CLI otherwise
-behaving as it does today, and `data/zeitgeist.db` and `output/` cleared of
-everything that came before.
+`scripts/run_pipeline.py` persisting a complete run entirely through the store,
+and `data/zeitgeist.db` and `output/` cleared of everything that came before.
 
 *A2, the read API.* The FastAPI app, every read endpoint, image serving, the
-generated TypeScript types, and `zeitgeist serve`. Ends with a run produced by
-the CLI served correctly over HTTP.
+generated TypeScript types, and `zeitgeist` as a bare server entry point. Ends
+with a run produced by the harness served correctly over HTTP.
 
 **B — Frontend shell and read-only screens.** Vite scaffold, `tokens.css`,
 generated client, router and layout, the sidebar, and the merged Topics screen,
 Runs list, Run detail (completed and failed) and Topic detail. Ends with any
-run the CLI has produced browsable end to end.
+run the harness has produced browsable end to end.
 
 **C — Run execution.** `RunObserver` and `CancelToken`; the DEBUG log
 statements; log capture; the queue and worker; run lifecycle and startup
@@ -876,8 +887,6 @@ here:
 - **Mobile layouts.**
 - **A "jump to latest" affordance** when the log releases follow. The mocks
   draw the indicator but no way back to the bottom.
-- **A CLI path to on-demand generation.** `--resume-from generate --templates X`
-  already covers the tuning loop it would serve.
 
 Also out of scope, and worth naming so it is a decision rather than an
 oversight: cancellation inside the Bluesky fetch, fuzzy cross-run topic
