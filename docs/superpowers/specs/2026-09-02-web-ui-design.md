@@ -322,6 +322,30 @@ A directory that fails to parse is reported and skipped, not fatal. One
 half-written run — a process killed mid-write — should not stop the other
 thirty from being indexed.
 
+**One projection function, two callers.** The obvious failure mode for a
+derived index is drift: the live write path and the rebuild path construct the
+same rows in two places, and over time they stop agreeing, so a rebuild
+silently changes what the UI shows. The projection is therefore a single pure
+function — run directory artifacts in, read-model rows out — called by the
+observer as a run progresses and by `rebuild-index` afterwards. Neither caller
+builds rows itself.
+
+That gives the property a test can assert directly, and it is the one test that
+keeps the whole "database is a cache" claim honest: run a pipeline against
+fakes, snapshot the read model, run `rebuild-index` over the same directory,
+and assert the read model is byte-identical. If those ever diverge, the index
+has stopped being derived and the design has quietly broken.
+
+### What the read model may not hold
+
+Because it is rebuilt from disk, every column in it must be derivable from
+`output/`. This rules out anything the user creates in the UI and the pipeline
+does not write — a pinned topic, a "last viewed" timestamp, a note against a
+run. There is no such feature in this design, but there is an obvious pull
+towards adding one, so the rule is written down: state of that kind belongs in
+a separate table that `rebuild-index` does not drop, and mixing it into the
+projection tables is what would turn the cache back into a source of truth.
+
 ## Pipeline changes
 
 Both seams default to no-ops, so `zeitgeist run` behaves exactly as it does
