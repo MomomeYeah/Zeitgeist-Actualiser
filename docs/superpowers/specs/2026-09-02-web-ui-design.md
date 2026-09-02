@@ -44,8 +44,9 @@ In:
 - Clearing `data/zeitgeist.db` and `output/`. Runs written before this work are
   discarded rather than migrated, so the new models can require the fields they
   always populate.
-- Progress and cancellation seams in the pipeline, defaulting to no-ops so the
-  CLI keeps working unchanged.
+- Progress and cancellation seams in the pipeline, defaulting to no-ops, so the
+  CLI passes neither and behaves as it does now. See "The CLI after this work"
+  for the end state of every command.
 - A run execution service: a queue, a worker thread, live log capture, and
   stop/abort.
 - On-demand meme generation, both model-written and hand-written, and render
@@ -470,6 +471,58 @@ deliberate about not storing personal data, and a debug log that dumps reply
 text to disk would quietly undo it. Debug lines carry counts, ids, permalinks
 and elapsed times.
 
+## The CLI after this work
+
+The UI becomes primary, but the CLI is not deprecated and does not decay. It
+keeps a smaller, well-defined job: running the pipeline in a terminal, which is
+still the fastest way to iterate on prompts and templates.
+
+| Command | State |
+| --- | --- |
+| `zeitgeist run` | Works. `--run-id`, `--resume-from`, `--templates` and `--verbose` all keep their present meanings. Runs synchronously, in the foreground, logging to stdout. |
+| `zeitgeist validate-templates [--dir]` | Untouched. It deliberately builds no `Settings` and has nothing to do with storage. |
+| `zeitgeist serve` | New in A2. |
+
+What changes underneath `run`: checkpoints go to SQLite, PNGs to
+`output/<run-id>/renders/`. Two consequences to handle in A1 — `cli.py:111`
+counts memes by globbing the run directory for `*.png` and prints a path that
+now holds only images, so the completion line is rewritten; and the README's
+"Output lands in `output/<run-id>/`" section becomes wrong and is rewritten
+with it.
+
+What `run` never gains: queueing, stop and abort, live progress beyond its own
+logging, on-demand generation, render deletion. Those are server-only, which is
+precisely why the observer and cancel-token seams default to no-ops — the CLI
+passes neither.
+
+The one real loss is `jq` over a checkpoint file. It is a one-liner rather than
+a missing capability, and does not warrant an `export` command:
+
+```bash
+sqlite3 data/zeitgeist.db \
+  "select payload from checkpoints where run_id='...' and stage='analyse'" \
+  | jq '.[] | {label, trend_score}'
+```
+
+### Two ways to start a run
+
+Once `serve` exists, `zeitgeist run` and the server's worker are two processes
+that can both start a pipeline against one database. WAL keeps that safe —
+concurrent readers and a single writer — so nothing corrupts. What breaks is
+weaker and more confusing: the server's "at most one run" guarantee does not
+cover a CLI-launched run, so the UI shows nothing in flight while one is
+happening, and on local Ollama the two runs contend for one GPU and both crawl.
+
+So `run` first checks `run_records` for a row with status `running` and refuses
+if it finds one, naming the run. `--force` overrides. The stale case — a
+crashed process leaving a `running` row — is not something the CLI tries to
+distinguish, because a heartbeat is more machinery than this deserves; the
+server already reconciles stale rows to `interrupted` on startup, so it
+self-heals the next time `serve` runs, and `--force` covers the meantime.
+
+This is a guard, not a lock. Two people are not using this at once; the case it
+exists for is forgetting a server is already running.
+
 ## Run execution service
 
 ### Why a thread, not the event loop
@@ -773,6 +826,7 @@ Each phase gets its own implementation plan.
 prerequisite to everything and worth landing green on its own:
 
 *A1, storage.* `Topic.trend_status`; schema version 3 and the new tables;
+the CLI's completion line and the README's output section;
 `store.write_checkpoint`/`read_checkpoint` replacing `pipeline._write`/`_read`;
 `RunConfig`, `StageRecord` and `RenderRecord`; renders written to
 `output/<run-id>/renders/` with thumbnails; the flattening into `run_topics`.
@@ -781,9 +835,9 @@ Absorbing `runs` and `topics` into the new tables. No HTTP. Ends with
 behaving as it does today, and `data/zeitgeist.db` and `output/` cleared of
 everything that came before.
 
-*A2, the read API.* The FastAPI app, every read endpoint, image serving, and
-the generated TypeScript types. Ends with a run produced by the CLI served
-correctly over HTTP.
+*A2, the read API.* The FastAPI app, every read endpoint, image serving, the
+generated TypeScript types, and `zeitgeist serve`. Ends with a run produced by
+the CLI served correctly over HTTP.
 
 **B — Frontend shell and read-only screens.** Vite scaffold, `tokens.css`,
 generated client, router and layout, the sidebar, and the merged Topics screen,
@@ -822,6 +876,8 @@ here:
 - **Mobile layouts.**
 - **A "jump to latest" affordance** when the log releases follow. The mocks
   draw the indicator but no way back to the bottom.
+- **A CLI path to on-demand generation.** `--resume-from generate --templates X`
+  already covers the tuning loop it would serve.
 
 Also out of scope, and worth naming so it is a decision rather than an
 oversight: cancellation inside the Bluesky fetch, fuzzy cross-run topic
