@@ -183,7 +183,7 @@ finished, a render that has not failed.
 Disposable is not free, though. Deleting the database means re-running the
 pipeline, and a run costs minutes and real model calls — the same economics
 that put `--resume-from generate` in the CLI. That is why checkpoints are
-stored whole, and why the projection can be re-derived without re-scraping.
+stored whole: a run's evidence is expensive to obtain and cheap to keep.
 
 ### Checkpoints
 
@@ -234,25 +234,31 @@ Alongside `checkpoints`, and alongside the existing `runs`, `topics` and
   render is a `DELETE` here plus unlinking two files.
 - `log_lines` — one row per captured line: run id, timestamp, level, logger
   name, message.
-- `run_topics` — the projection. One row per topic per run, holding what the
-  topics index and ranking lists filter or sort on: `trend_status`,
-  `event_sentiment`, `conversation_register`, `meme_potential`, `trend_score`,
-  `final_score`, `final_rank`, `post_count`, `render_count`, `label_slug`, and
-  the top recurring phrase with its author count.
+- `run_topics` — one row per topic per run, holding what the topics index and
+  ranking lists filter or sort on: `trend_status`, `event_sentiment`,
+  `conversation_register`, `meme_potential`, `trend_score`, `final_score`,
+  `final_rank`, `post_count`, `label_slug`, and the top recurring phrase with
+  its author count.
+
+  Meme counts are **not** a column here. They are
+  `COUNT(*) FROM renders WHERE run_id = ? AND topic_id = ?`, joined at query
+  time. A denormalised `render_count` would have to be kept correct on every
+  render insert, failure and delete — including from the separate on-demand
+  executor — to save a join over a table holding single digits per run.
 
 `SCHEMA_VERSION` goes to 3.
 
-`run_topics` is the only derived table, and it is materialised rather than a
-view because the alternative does not scale. A view over `json_each(payload)`
-would always be consistent and never need re-deriving, but the cross-run
-queries — recurrence, the stale bucket, pagination — would then parse every
-run's `analyse` payload on every request. At a thousand runs that is a hundred
-megabytes of JSON per page load.
+`run_topics` holds nothing that is not in the `analyse` and `evaluate`
+payloads — it is those payloads flattened into columns you can filter, sort and
+join on. It is a real table rather than a view over `json_each(payload)`
+because the cross-run queries (recurrence, the stale bucket, pagination) would
+otherwise parse every run's `analyse` payload on every request: at a thousand
+runs, a hundred megabytes of JSON per page load.
 
-It is written in the same transaction as the checkpoint it derives from. That
-transaction is the thing the filesystem design could not offer: a process
-killed between writing a checkpoint and updating the index used to leave the
-two disagreeing until a rebuild, and now they commit together or not at all.
+It is written in the same transaction as the checkpoint it flattens, so the two
+cannot disagree. That transaction is what the filesystem design could not
+offer, and it is why nothing in this spec needs a command to repair the two
+against each other.
 
 Dossier prose, entities, the full phrase list and replies are not projected.
 Topic detail reads the `analyse` and `ingest` payloads for the one topic being
@@ -330,27 +336,23 @@ record changing class as it progresses — a worse model of a mutable in-flight
 record than four honest optionals. The rule is unrepresentable-invalid-states
 where a value is fixed at creation, not everywhere a `Literal` appears.
 
-### Re-deriving the projection
+### No rebuild command
 
-`zeitgeist rebuild-projection` drops `run_topics` and rewrites it from the
-`checkpoints` rows already in the database. It reads nothing but the database
-and touches nothing else.
+There is deliberately none. Earlier drafts of this spec carried one, and it
+does not survive the move to SQLite.
 
-This is a development convenience rather than an architectural pillar.
-Deleting the database is an acceptable answer to a schema problem, but it
-costs every run you have — minutes and model calls each — so adding a column
-to `run_topics` should not mean re-scraping Bluesky.
+Its consistency justification is gone: `run_topics` is written in the same
+transaction as the checkpoint it flattens, so it cannot drift. Its convenience
+justification was self-defeating: a schema change to `run_topics` bumps
+`SCHEMA_VERSION`, which means deleting the database, which deletes the
+`checkpoints` rows a rebuild would need as its source. And resume needs
+nothing, because `--resume-from generate` does not rewrite the `analyse`
+checkpoint, so the rows flattened from it are still correct.
 
-**One projection function, two callers.** The failure mode for any derived
-table is drift: the live write path and the re-derive path build the same rows
-in two places and stop agreeing, so re-deriving silently changes what the UI
-shows. The projection is a single pure function — checkpoint payloads in,
-`run_topics` rows out — called by the observer during a run and by
-`rebuild-projection` afterwards. Neither caller builds rows itself.
-
-That gives one test worth asserting directly: run a pipeline against fakes,
-snapshot `run_topics`, re-derive, assert identical. If those diverge, the
-projection has two implementations again.
+The one case that survives — a bug in the flattening logic, with checkpoints
+intact — is a handful of lines against the store when it happens, not a command
+with a CLI surface and tests. Worth stating that it is absent by decision
+rather than oversight, because a derived table invites one.
 
 ## Pipeline changes
 
@@ -518,7 +520,7 @@ what the New run screen's "queues it behind …" notice describes.
 - The worker constructs `Settings` from `.env` with the request's overrides
   applied, freezes it into `RunConfig`, inserts a `run_records` row with status
   `running`, and calls `run_pipeline` with an observer that updates the record,
-  the projection and the SSE buffer.
+  `run_topics` and the SSE buffer.
 - On completion, failure or abort it writes the terminal status and detaches
   the log handler.
 - On server startup, any run still marked `running` in the read model is
@@ -562,14 +564,14 @@ cacheable and the in-flight poll does not drag topic data along with it.
 `GET /api/runs/{id}/topics` returns the **full** ordering, not just the kept
 topics, because the ranking list draws below-the-cut rows with ranks and scores
 before dimming them. The `evaluate` checkpoint holds only the top `top_count`,
-so the full ordering is computed once when `run_topics` rows are written — by
-the observer during a run, or by `rebuild-projection` — by ranking every topic
-in the `analyse` payload with `sentiment.rank_score` under the run's frozen
+so the full ordering is computed once when `run_topics` rows are written, by
+ranking every topic in the `analyse` payload with `sentiment.rank_score` under
+the run's frozen
 `meme_potential_weight`. That is the same function `select()` ranks with, so
 the first `top_count` rows agree with the `evaluate` checkpoint by
 construction; that checkpoint supplies the cut line and nothing else. The
 endpoint then queries `run_topics` and does no sorting of its own. Ranks past
-the cut exist only in the projection, never in a checkpoint.
+the cut exist only in `run_topics`, never in a checkpoint.
 
 Reusing `rank_score` rather than re-deriving the ordering is deliberate: it is
 the single place the blend of trend score and meme potential is defined, and a
@@ -708,10 +710,9 @@ stripping every environment variable `Settings` reads.
   hand-written dicts — writing whole runs into a `Store` backed by `tmp_path`.
   Projection and API tests then run against rows the pipeline could actually
   have written, through the same `write_checkpoint` the pipeline calls.
-- The projection's single-implementation property, which is the one assertion
-  holding it together: run a pipeline against fakes, snapshot `run_topics`,
-  run `rebuild-projection`, assert the rows are identical. A second
-  implementation of the projection fails here and nowhere else.
+- The flattening logic directly: known `analyse` and `evaluate` payloads in,
+  expected `run_topics` rows out. It is a pure function, so this needs neither
+  a pipeline nor a store.
 - Checkpoint round-tripping: write each stage's models through
   `write_checkpoint`, read them back with `read_checkpoint`, assert equality.
   This is what `--resume-from` depends on, and a blob that does not round-trip
@@ -760,8 +761,8 @@ prerequisite to everything and worth landing green on its own:
 *A1, storage.* `Topic.trend_status`; schema version 3 and the new tables;
 `store.write_checkpoint`/`read_checkpoint` replacing `pipeline._write`/`_read`;
 `RunConfig`, `StageRecord` and `RenderRecord`; renders written to
-`output/<run-id>/renders/` with thumbnails; the projection function and
-`rebuild-projection`. No HTTP. Ends with `uv run zeitgeist run` persisting
+`output/<run-id>/renders/` with thumbnails; the flattening into `run_topics`.
+No HTTP. Ends with `uv run zeitgeist run` persisting
 entirely through the store, the CLI otherwise behaving as it does today, and
 `data/zeitgeist.db` and `output/` cleared of everything that came before.
 
