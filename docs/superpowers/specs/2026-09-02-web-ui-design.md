@@ -91,9 +91,8 @@ from the ambient environment at each invocation and never persisted, so it is
 not recoverable after the fact.
 
 **Per-stage timing and status.** The four stage cards want a name, a duration,
-a one-line summary and an artifact filename with its size. Nothing records
-stage boundaries. Artifacts can be `stat`ed, but durations for the runs already
-in `output/` are gone.
+a one-line summary and an artifact with its size. Nothing records stage
+boundaries at all, so durations do not exist to be read.
 
 **Failures.** `run_pipeline` calls `store.finish_run` only on success
 (`pipeline.py:96`); the CLI catches `SourceError`, `DistilError`,
@@ -180,10 +179,9 @@ a real state, never a migration concession.** A field is `| None` only where
 there genuinely is no value — a stage that has not started, a run that has not
 finished, a render that has not failed.
 
-Disposable is not free, though. Deleting the database means re-running the
-pipeline, and a run costs minutes and real model calls — the same economics
-that put `--resume-from generate` in the CLI. That is why checkpoints are
-stored whole: a run's evidence is expensive to obtain and cheap to keep.
+Disposable is not free, though, and nothing here should read as licence to
+delete casually. A run costs minutes and real model calls to reproduce — the
+economics that put `--resume-from generate` in the CLI in the first place.
 
 ### Checkpoints
 
@@ -222,12 +220,20 @@ file-management script.
 
 ### Tables
 
-Alongside `checkpoints`, and alongside the existing `runs`, `topics` and
-`topic_scores`, which keep their current role in cross-run trend scoring:
+Two of the three tables `store.py` has today are absorbed rather than kept
+alongside the new ones. `runs` holds run id, timings, status and item count,
+which is a strict subset of `run_records`; `topics` holds a run's label slug
+and trend score, which is a strict subset of `run_topics`. Keeping either pair
+would mean two tables to write, two to keep agreeing, and two places to look.
+`topic_scores` survives unchanged: per-platform sub-scores have no home in
+`run_topics`, and `previous_sub_scores` is the one query that needs them. It
+joins to `run_records` instead of `runs`.
+
+Alongside `checkpoints` and `topic_scores`, then:
 
 - `run_records` — one row per run: status, timings, the frozen `RunConfig` as
-  JSON, error class and stage, and the aggregate counts the Runs list shows.
-  Source of truth; none of it is derivable from a checkpoint.
+  JSON, error class and stage, item count, and the counts the Runs list shows
+  (trends fetched, topics kept, phrases found). Absorbs `runs`.
 - `run_stages` — one row per stage per run: status, timings, artifact size,
   summary line.
 - `renders` — one row per render. Source of truth, and mutable: deleting a
@@ -238,13 +244,20 @@ Alongside `checkpoints`, and alongside the existing `runs`, `topics` and
   ranking lists filter or sort on: `trend_status`, `event_sentiment`,
   `conversation_register`, `meme_potential`, `trend_score`, `final_score`,
   `final_rank`, `post_count`, `label_slug`, and the top recurring phrase with
-  its author count.
+  its author count. Absorbs `topics`.
 
   Meme counts are **not** a column here. They are
   `COUNT(*) FROM renders WHERE run_id = ? AND topic_id = ?`, joined at query
   time. A denormalised `render_count` would have to be kept correct on every
   render insert, failure and delete — including from the separate on-demand
   executor — to save a join over a table holding single digits per run.
+
+  The counts on `run_records` are a deliberate exception to that, not an
+  inconsistency: trends fetched, topics kept and phrases found are written once
+  in the transaction that completes the run, from data that never changes
+  afterwards. Renders are created and deleted long after a run ends, from a
+  second executor. Immutable-after-write is safe to denormalise;
+  mutable-after-write is not.
 
 `SCHEMA_VERSION` goes to 3.
 
@@ -356,8 +369,8 @@ rather than oversight, because a derived table invites one.
 
 ## Pipeline changes
 
-Both seams default to no-ops, so `zeitgeist run` behaves exactly as it does
-today.
+Both seams default to no-ops, so `zeitgeist run` behaves as it does today
+apart from where its checkpoints land.
 
 ### RunObserver
 
@@ -435,8 +448,9 @@ latency on a log line is invisible, and it keeps the logging handler free of
 any reference to the loop, which matters because the same handler has to work
 under `TestClient` and under the CLI.
 
-Progress events cross the same boundary the same way: the observer mutates the
-run record and the read model from the worker thread, and the SSE generator
+Progress events cross the same boundary the same way: the observer writes
+`run_records`, `run_stages` and `run_topics` from the worker thread, and the
+SSE generator
 emits a tick that tells the client to invalidate. No pipeline code ever touches
 the loop.
 
@@ -475,8 +489,8 @@ blocking things in a run and not the expensive one:
 | --- | --- | --- |
 | ingest | `asyncio.run(self._gather(...))`, async internally | seconds |
 | analyse | `ThreadPoolExecutor` over **sync** `provider.complete()` | minutes |
-| analyse | `Store.record_topics` — `sqlite3` | ms |
-| evaluate | 1.3MB blob write, pydantic over thousands of models | hundreds of ms |
+| analyse | checkpoint and `run_topics` write — `sqlite3` | ms |
+| ingest | 1.3MB checkpoint write, pydantic over thousands of models | hundreds of ms |
 | generate | `generate_briefs` — a sequential loop, one blocking call per topic | minutes |
 | generate | `_render_all` — Pillow decode, font fitting, PNG encode | ~100–300ms × N, CPU-bound |
 
@@ -506,7 +520,7 @@ Two consequences follow:
   `sqlite3.connect(self._path)` in `__init__`, and the default
   `check_same_thread=True` raises if that connection is used from another
   thread. The API's `Store` and the worker's are separate objects.
-- **The read model opens in WAL mode.** The worker writes while the API reads;
+- **The database opens in WAL mode.** The worker writes while the API reads;
   without WAL those reads block behind the writes, surfacing as the in-flight
   poll hitching every time a stage checkpoints.
 
@@ -523,7 +537,7 @@ what the New run screen's "queues it behind …" notice describes.
   `run_topics` and the SSE buffer.
 - On completion, failure or abort it writes the terminal status and detaches
   the log handler.
-- On server startup, any run still marked `running` in the read model is
+- On server startup, any run still marked `running` in `run_records` is
   marked `interrupted` — the process died mid-run, and the UI should say so
   rather than showing a run that will never progress. An interrupted run is
   resumable from its last good checkpoint like any other.
@@ -545,13 +559,13 @@ cacheable and the in-flight poll does not drag topic data along with it.
 
 | Phase | Endpoint | Serves |
 | --- | --- | --- |
-| A | `GET /api/runs?limit&cursor` | Runs list: status, timings, `25 trends → 5 kept`, phrase count, topic labels, thumbnails; for a failure the error, its stage, and what survived |
-| A | `GET /api/runs/{id}` | Frozen config, `stages[]`, error, computed `resume_stage` |
-| A | `GET /api/runs/{id}/topics` | Full ranking including below the cut |
-| A | `GET /api/runs/{id}/topics/{topic_id}` | Dossier, entities, `score_components`, phrases, replies, renders, recurrence |
-| A | `GET /api/runs/{id}/log?verbose=` | Historical log for a completed or failed run |
-| A | `GET /api/topics?window=6&status=` | Cross-run deduplicated index, recurrence, per-status bucket totals, and the sentiment distribution with its previous-run delta |
-| A | `GET /api/renders/{id}/image?size=full\|thumb` | PNG serving |
+| A2 | `GET /api/runs?limit&cursor` | Runs list: status, timings, `25 trends → 5 kept`, phrase count, topic labels, thumbnails; for a failure the error, its stage, and what survived |
+| A2 | `GET /api/runs/{id}` | Frozen config, `stages[]`, error, computed `resume_stage` |
+| A2 | `GET /api/runs/{id}/topics` | Full ranking including below the cut |
+| A2 | `GET /api/runs/{id}/topics/{topic_id}` | Dossier, entities, `score_components`, phrases, replies, renders, recurrence |
+| A2 | `GET /api/runs/{id}/log?verbose=` | Historical log for a completed or failed run |
+| A2 | `GET /api/topics?window=6&status=` | Cross-run deduplicated index, recurrence, per-status bucket totals, and the sentiment distribution with its previous-run delta |
+| A2 | `GET /api/renders/{id}/image?size=full\|thumb` | PNG serving |
 | C | `GET /api/runs/active` | The in-flight run and the queue |
 | C | `GET /api/config/options` | Providers, per-provider models, platforms with enabled flags, templates with slots, `.env` defaults, key-present booleans |
 | C | `POST /api/runs` | Start or queue a run; "Re-run config" posts the old run's frozen config |
@@ -566,8 +580,8 @@ topics, because the ranking list draws below-the-cut rows with ranks and scores
 before dimming them. The `evaluate` checkpoint holds only the top `top_count`,
 so the full ordering is computed once when `run_topics` rows are written, by
 ranking every topic in the `analyse` payload with `sentiment.rank_score` under
-the run's frozen
-`meme_potential_weight`. That is the same function `select()` ranks with, so
+the run's frozen `meme_potential_weight`. That is the same function `select()`
+ranks with, so
 the first `top_count` rows agree with the `evaluate` checkpoint by
 construction; that checkpoint supplies the cut line and nothing else. The
 endpoint then queries `run_topics` and does no sorting of its own. Ranks past
@@ -600,7 +614,7 @@ Routes: `/`, `/runs`, `/runs/new`, `/runs/:runId`, `/topics/:runId/:topicId`.
 Topic detail is run-scoped because the dossier, replies and renders all belong
 to one run, and because generating a meme needs an unambiguous run to
 attach to. The breadcrumb still reads `Topics / <topic id> · first seen <run
-id>` as designed, with "first seen" computed from the read model. The topics
+id>` as designed, with "first seen" computed from `run_topics`. The topics
 index links each topic to the most recent run containing it.
 
 `tokens.css` transcribes the handoff's colour, typography and geometry tables
@@ -708,8 +722,8 @@ stripping every environment variable `Settings` reads.
 - `tests/run_factory.py`, built the way `tests/template_factory.py` and commit
   0a057d2 established — fixtures constructed through the real models, never
   hand-written dicts — writing whole runs into a `Store` backed by `tmp_path`.
-  Projection and API tests then run against rows the pipeline could actually
-  have written, through the same `write_checkpoint` the pipeline calls.
+  Store and API tests then run against rows the pipeline could actually have
+  written, through the same `write_checkpoint` the pipeline calls.
 - The flattening logic directly: known `analyse` and `evaluate` payloads in,
   expected `run_topics` rows out. It is a pure function, so this needs neither
   a pipeline nor a store.
@@ -762,9 +776,10 @@ prerequisite to everything and worth landing green on its own:
 `store.write_checkpoint`/`read_checkpoint` replacing `pipeline._write`/`_read`;
 `RunConfig`, `StageRecord` and `RenderRecord`; renders written to
 `output/<run-id>/renders/` with thumbnails; the flattening into `run_topics`.
-No HTTP. Ends with `uv run zeitgeist run` persisting
-entirely through the store, the CLI otherwise behaving as it does today, and
-`data/zeitgeist.db` and `output/` cleared of everything that came before.
+Absorbing `runs` and `topics` into the new tables. No HTTP. Ends with
+`uv run zeitgeist run` persisting entirely through the store, the CLI otherwise
+behaving as it does today, and `data/zeitgeist.db` and `output/` cleared of
+everything that came before.
 
 *A2, the read API.* The FastAPI app, every read endpoint, image serving, and
 the generated TypeScript types. Ends with a run produced by the CLI served
@@ -786,8 +801,9 @@ and hand-written; briefing a topic that was never ranked, which is what the
 below-the-cut `generate ↗` needs; deletion; the two generation panels and the
 rendered grid with its three tile states.
 
-Order matters: B depends on A's endpoints, C on A's records, and D on C's
-executor. A and B could overlap once the response models are fixed.
+Order matters: A2 depends on A1's tables, B on A2's endpoints, C on A1's
+records, and D on C's executor. A2 and B could overlap once the response models
+are fixed.
 
 ## Deferred
 
