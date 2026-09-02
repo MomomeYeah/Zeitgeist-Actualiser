@@ -81,7 +81,7 @@ Out:
 ## What the design assumes the pipeline does not record
 
 Each of these is a display the mockups make and the codebase cannot currently
-satisfy. They are the reason Phase A exists.
+satisfy. They are the reason phases 1 and 2 exist.
 
 **Per-run config.** Run detail's config line (sources, `trend_limit`,
 `posts_per_trend`, `top_count`, model id) and the "Re-run config" action need
@@ -458,7 +458,7 @@ the loop.
 At present the pipeline emits four INFO lines per run plus warnings, and
 nothing at DEBUG on the live path — the only `log.debug` is in
 `consolidate.py`, which left the pipeline in the 2026-08-26 rework. The verbose
-toggle would therefore do nothing. Phase C adds DEBUG statements: per-trend
+toggle would therefore do nothing. Phase 3 adds DEBUG statements: per-trend
 fetch and reply counts in `sources.bluesky`, per-topic distil start and finish
 with elapsed and reply-character count in `analysis.distil`, chosen template
 and retry attempts in `media.brief`, and per-slot font fitting in
@@ -473,7 +473,8 @@ and elapsed times.
 
 ## The CLI is removed
 
-`zeitgeist/cli.py` is deleted in A1. The web UI is the interface; a second,
+`zeitgeist/cli.py` is deleted in phase 1. The web UI is the interface; a
+second,
 parallel product surface for the same pipeline is not maintained.
 
 `zeitgeist` remains the one console entry point, but it takes no subcommands —
@@ -492,19 +493,19 @@ point does. `tests/test_cli.py` goes with the module it tests.
 
 ### Running the pipeline before the worker exists
 
-Deleting the CLI in A1 leaves nothing able to start a run until
-`POST /api/runs` lands in C. A2 would be reviewed against an empty database and
-B against empty screens, which makes neither phase's deliverable meaningful.
+Deleting the CLI in phase 1 leaves nothing able to start a run until
+`POST /api/runs` lands in phase 3, and nothing able to produce data for the
+screens until then either.
 
-So A1 also adds `scripts/run_pipeline.py`: a dev harness that builds
+So phase 1 also adds `scripts/run_pipeline.py`: a dev harness that builds
 `Settings`, a source, a provider and a `Store`, then calls `run_pipeline`.
 Fifteen lines, no `argparse`, no console entry point, no README mention.
 
-This is deliberately not the CLI under another name. The distinction that
-matters is that a CLI is a product surface — installed, documented, argued
-about, tested as a contract — and this is a developer's harness that happens to
-call the same function. It stays in `scripts/` after C, because scripted and
-repeated runs during development are useful and it costs nothing.
+It stays for the life of the project, because scripted and repeated runs during
+development stay useful after the API can start one, and it costs nothing to
+keep. This is deliberately not the CLI under another name: a CLI is a product
+surface — installed, documented, argued about, tested as a contract — and this
+is a developer's harness that happens to call the same function.
 
 ### The tuning loop
 
@@ -523,7 +524,7 @@ nothing is running.
 The addition: the design's "Resume from &lt;stage&gt;" button takes no options,
 so there is no way to resume with the template library narrowed — which is
 exactly the loop. `POST /api/runs/{id}/resume` accepts an optional
-`template_ids`, and the button gets a template selector beside it. Phase D's
+`template_ids`, and the button gets a template selector beside it. Phase 7's
 topic-detail panel is the better loop for a single topic; this covers the
 whole-run case the button already implies.
 
@@ -623,21 +624,21 @@ cacheable and the in-flight poll does not drag topic data along with it.
 
 | Phase | Endpoint | Serves |
 | --- | --- | --- |
-| A2 | `GET /api/runs?limit&cursor` | Runs list: status, timings, `25 trends → 5 kept`, phrase count, topic labels, thumbnails; for a failure the error, its stage, and what survived |
-| A2 | `GET /api/runs/{id}` | Frozen config, `stages[]`, error, computed `resume_stage` |
-| A2 | `GET /api/runs/{id}/topics` | Full ranking including below the cut |
-| A2 | `GET /api/runs/{id}/topics/{topic_id}` | Dossier, entities, `score_components`, phrases, replies, renders, recurrence |
-| A2 | `GET /api/runs/{id}/log?verbose=` | Historical log for a completed or failed run |
-| A2 | `GET /api/topics?window=6&status=` | Cross-run deduplicated index, recurrence, per-status bucket totals, and the sentiment distribution with its previous-run delta |
-| A2 | `GET /api/renders/{id}/image?size=full\|thumb` | PNG serving |
-| C | `GET /api/runs/active` | The in-flight run and the queue |
-| C | `GET /api/config/options` | Providers, per-provider models, platforms with enabled flags, templates with slots, `.env` defaults, key-present booleans |
-| C | `POST /api/runs` | Start or queue a run; "Re-run config" posts the old run's frozen config |
-| C | `POST /api/runs/{id}/resume` | `{stage, template_ids?}` — reuses the run's existing checkpoints; `template_ids` narrows the library, which is the tuning loop |
-| C | `POST /api/runs/{id}/stop`, `POST /api/runs/{id}/abort` | Stop after this stage; abort now |
-| C | `GET /api/runs/{id}/events` | SSE: log lines and progress ticks |
-| D | `POST /api/runs/{id}/topics/{topic_id}/renders` | `{mode: "llm", template_id, count}` or `{mode: "manual", template_id, caption_slots}`; also what the below-the-cut `generate ↗` calls |
-| D | `DELETE /api/renders/{id}` | Deletes the `renders` row, the PNG and the thumbnail |
+| 2 | `GET /api/runs?limit&cursor` | Runs list: status, timings, `25 trends → 5 kept`, phrase count, topic labels, thumbnails; for a failure the error, its stage, and what survived |
+| 2 | `GET /api/runs/{id}` | Frozen config, `stages[]`, error, computed `resume_stage` |
+| 2 | `GET /api/runs/{id}/topics` | Full ranking including below the cut |
+| 2 | `GET /api/runs/{id}/topics/{topic_id}` | Dossier, entities, `score_components`, phrases, replies, renders, recurrence |
+| 2 | `GET /api/runs/{id}/log?verbose=` | Historical log for a completed or failed run |
+| 2 | `GET /api/topics?window=6&status=` | Cross-run deduplicated index, recurrence, per-status bucket totals, and the sentiment distribution with its previous-run delta |
+| 2 | `GET /api/renders/{id}/image?size=full\|thumb` | PNG serving |
+| 3 | `GET /api/runs/active` | The in-flight run and the queue |
+| 3 | `GET /api/config/options` | Providers, per-provider models, platforms with enabled flags, templates with slots, `.env` defaults, key-present booleans |
+| 3 | `POST /api/runs` | Start or queue a run; "Re-run config" posts the old run's frozen config |
+| 3 | `POST /api/runs/{id}/resume` | `{stage, template_ids?}` — reuses the run's existing checkpoints; `template_ids` narrows the library, which is the tuning loop |
+| 3 | `POST /api/runs/{id}/stop`, `POST /api/runs/{id}/abort` | Stop after this stage; abort now |
+| 3 | `GET /api/runs/{id}/events` | SSE: log lines and progress ticks |
+| 4 | `POST /api/runs/{id}/topics/{topic_id}/renders` | `{mode: "llm", template_id, count}` or `{mode: "manual", template_id, caption_slots}`; also what the below-the-cut `generate ↗` calls |
+| 4 | `DELETE /api/renders/{id}` | Deletes the `renders` row, the PNG and the thumbnail |
 
 `GET /api/runs/{id}/topics` returns the **full** ordering, not just the kept
 topics, because the ranking list draws below-the-cut rows with ranks and scores
@@ -831,44 +832,69 @@ there. The Stop hook and CI run all seven.
 
 ## Phases
 
-Each phase gets its own implementation plan.
+Seven phases, each its own implementation plan. Backend first, frontend second.
 
-**A — Storage and the read API.** Splits in two, because the storage move is
-prerequisite to everything and worth landing green on its own:
+That grouping is deliberate. Building screens against a growing API means the
+OpenAPI schema changes under code already written — types regenerate, response
+shapes shift, and frontend work gets redone for reasons that have nothing to do
+with the frontend. Fixing the contract once, before any screen exists, removes
+that entirely.
 
-*A1, storage.* `Topic.trend_status`; schema version 3 and the new tables;
-deleting `cli.py` and `tests/test_cli.py`; `scripts/validate_templates.py` and
-`scripts/run_pipeline.py`; the README's usage sections;
-`store.write_checkpoint`/`read_checkpoint` replacing `pipeline._write`/`_read`;
-`RunConfig`, `StageRecord` and `RenderRecord`; renders written to
-`output/<run-id>/renders/` with thumbnails; the flattening into `run_topics`.
-Absorbing `runs` and `topics` into the new tables. No HTTP. Ends with
-`scripts/run_pipeline.py` persisting a complete run entirely through the store,
-and `data/zeitgeist.db` and `output/` cleared of everything that came before.
+It is normally the wrong trade, because you usually need a screen in front of
+you to learn what its endpoint should return. It works here because the handoff
+specifies every field on every screen in high fidelity, so the response models
+can be derived from the mockups rather than discovered by building against
+them.
 
-*A2, the read API.* The FastAPI app, every read endpoint, image serving, the
-generated TypeScript types, and `zeitgeist` as a bare server entry point. Ends
-with a run produced by the harness served correctly over HTTP.
+The cost is that nothing is visible until phase 5. Phases 1–4 are verified by
+tests and by `curl`.
 
-**B — Frontend shell and read-only screens.** Vite scaffold, `tokens.css`,
-generated client, router and layout, the sidebar, and the merged Topics screen,
-Runs list, Run detail (completed and failed) and Topic detail. Ends with any
-run the harness has produced browsable end to end.
+**1 — Storage.** `Topic.trend_status`; schema version 3 and the new tables,
+absorbing `runs` and `topics`; `store.write_checkpoint`/`read_checkpoint`
+replacing `pipeline._write`/`_read`; `RunConfig`, `StageRecord` and
+`RenderRecord`; renders written to `output/<run-id>/renders/` with thumbnails;
+the flattening into `run_topics`; deleting `cli.py` and `tests/test_cli.py`;
+`scripts/validate_templates.py` and `scripts/run_pipeline.py`; the README's
+usage sections. No HTTP. Ends with `scripts/run_pipeline.py` persisting a
+complete run entirely through the store, and `data/zeitgeist.db` and `output/`
+cleared of everything that came before.
 
-**C — Run execution.** `RunObserver` and `CancelToken`; the DEBUG log
-statements; log capture; the queue and worker; run lifecycle and startup
-reconciliation; the write and SSE endpoints; `config/options`; the New run
-screen and the in-flight run detail states; the sidebar card and run strip.
-Ends with a run startable and watchable from the browser.
+**2 — Read API.** The FastAPI app, every read endpoint, image serving,
+`zeitgeist` as a bare server entry point, and the generated TypeScript types.
+Ends with a run produced by the harness served correctly over HTTP.
 
-**D — Renders as first-class entities.** On-demand generation, model-written
-and hand-written; briefing a topic that was never ranked, which is what the
-below-the-cut `generate ↗` needs; deletion; the two generation panels and the
-rendered grid with its three tile states.
+**3 — Execution backend.** `RunObserver` and `CancelToken`; the DEBUG log
+statements; log capture into `log_lines` and the ring buffer; the queue and
+worker thread; run lifecycle and startup reconciliation; `POST /api/runs`,
+resume, stop, abort; the SSE endpoint; `config/options` and the model registry.
+Ends with a run startable, watchable and stoppable over HTTP, with no UI.
 
-Order matters: A2 depends on A1's tables, B on A2's endpoints, C on A1's
-records, and D on C's executor. A2 and B could overlap once the response models
-are fixed.
+**4 — Generation backend.** The on-demand executor; briefing a topic that was
+never ranked, which is what the below-the-cut `generate ↗` needs; the
+model-written and hand-written render paths; `POST .../renders` and
+`DELETE /api/renders/{id}`. Ends with the API contract complete and the
+TypeScript types generated for the last time.
+
+**5 — Design system and read-only screens.** Vite scaffold, `tokens.css`, the
+shared primitives, the typed client, router, layout and sidebar; then the
+merged Topics screen, Runs list, Run detail (completed and failed) and Topic
+detail. Ends with any run the harness has produced browsable end to end.
+
+**6 — Run control screens.** The New run screen and its four config cards; the
+two in-flight run-detail states; the live log with its follow behaviour; the
+sidebar in-flight card and the run strip. Ends with a run startable and
+watchable from the browser.
+
+**7 — Generation screens.** The two generation panels on topic detail, the
+rendered grid with its three tile states, the inline delete confirm, and the
+below-the-cut `generate ↗` link. Ends with the design built.
+
+Dependencies run in order, with two exceptions worth knowing. Phase 5's design
+system — `tokens.css` and the primitives (`Chip`, `StatusPill`, `StageBar`,
+`SectionLabel`, `MemeTile`) — depends on nothing but the handoff's token table
+and could be built at any point, including first or in a parallel session. And
+phase 4 depends on phase 3 only for the executor; its render paths could be
+written earlier if that proved convenient.
 
 ## Deferred
 
