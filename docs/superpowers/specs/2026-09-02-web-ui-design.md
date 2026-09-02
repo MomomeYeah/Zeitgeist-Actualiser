@@ -485,6 +485,12 @@ its only flags. Everything `argparse` currently parses moves into the API:
 `--verbose` stops existing as a startup flag at all, because the server always
 captures at DEBUG and the toggle filters.
 
+`pyproject.toml`'s `[project.scripts]` entry names `zeitgeist.cli:main`, so it
+goes in the same commit — leaving the package with no console entry point until
+phase 2 restores it pointing at the server. Deleting the module while
+`pyproject.toml` still names it fails `uv sync --locked`, which is CI's first
+step, so everything behind it fails too.
+
 `validate-templates` moves to `scripts/validate_templates.py`, beside the
 `preview_template_boxes.py`, `make_golden.py` and `capture_bluesky_fixtures.py`
 already there. It builds no `Settings` and calls
@@ -830,6 +836,12 @@ npm --prefix web test
 OpenAPI type regeneration is folded into `typecheck`, so contract drift fails
 there. The Stop hook and CI run all seven.
 
+**It grows in phase 5, not before.** `web/` does not exist until then, so
+adding the three npm commands to `CLAUDE.md`, the Stop hook and the CI workflow
+any earlier turns every phase 1–4 pull request red for a directory that is not
+supposed to exist yet. Phase 5's plan owns that change, alongside the Vite
+scaffold that makes the commands runnable.
+
 ## Phases
 
 Seven phases, each its own implementation plan. Backend first, frontend second.
@@ -853,14 +865,16 @@ tests and by `curl`.
 absorbing `runs` and `topics`; `store.write_checkpoint`/`read_checkpoint`
 replacing `pipeline._write`/`_read`; `RunConfig`, `StageRecord` and
 `RenderRecord`; renders written to `output/<run-id>/renders/` with thumbnails;
-the flattening into `run_topics`; deleting `cli.py` and `tests/test_cli.py`;
+the flattening into `run_topics`; deleting `cli.py`, `tests/test_cli.py` and
+`pyproject.toml`'s `[project.scripts]` entry;
 `scripts/validate_templates.py` and `scripts/run_pipeline.py`; the README's
 usage sections. No HTTP. Ends with `scripts/run_pipeline.py` persisting a
 complete run entirely through the store, and `data/zeitgeist.db` and `output/`
 cleared of everything that came before.
 
 **2 — Read API.** The FastAPI app, every read endpoint, image serving,
-`zeitgeist` as a bare server entry point, and the generated TypeScript types.
+`zeitgeist` restored as a console entry point that starts the server, and the
+generated TypeScript types.
 Ends with a run produced by the harness served correctly over HTTP.
 
 **3 — Execution backend.** `RunObserver` and `CancelToken`; the DEBUG log
@@ -888,6 +902,20 @@ watchable from the browser.
 **7 — Generation screens.** The two generation panels on topic detail, the
 rendered grid with its three tile states, the inline delete confirm, and the
 below-the-cut `generate ↗` link. Ends with the design built.
+
+### Landing the work
+
+One branch and one pull request per phase, each off main, merged before the
+next begins. A single branch carrying all seven would produce a pull request
+spanning a storage rewrite, a REST API and a React application, with no green
+checkpoint anywhere inside it. The usual argument against small PRs — rebase
+churn from a moving main — does not apply, because nothing else moves main.
+
+Every phase must land green under the Definition of Done as it stands at that
+point, which is the four Python commands until phase 5 and seven after.
+
+The spec itself merges first, on its own, so that every phase branch starts
+from a main that already contains it.
 
 Dependencies run in order, with two exceptions worth knowing. Phase 5's design
 system — `tokens.css` and the primitives (`Chip`, `StatusPill`, `StageBar`,
