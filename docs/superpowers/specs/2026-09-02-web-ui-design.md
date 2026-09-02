@@ -22,6 +22,14 @@ and are reproduced faithfully. This document does not restate the design. It
 records what the design assumes that the codebase does not yet provide, and
 the decisions taken where the two disagree.
 
+**The web UI becomes the primary interface.** The CLI was the first
+implementation, built for fast iteration, and it keeps working throughout —
+it is the only way to produce a run until Phase C lands. But it stops being
+the thing the design serves, and where the two pull in different directions
+the UI wins. That is what licences moving the stage checkpoints off the
+filesystem, which the CLI's documented output contract would otherwise have
+made too invasive to justify.
+
 ## Scope
 
 In:
@@ -29,13 +37,15 @@ In:
 - A FastAPI server exposing REST endpoints over runs, topics and renders.
 - A React SPA reproducing the handoff's screens.
 - Per-run records the design needs and the pipeline does not currently write:
-  frozen config, stage timings, failure detail, a render ledger.
-- A SQLite read model over those records, rebuildable from disk.
-- Clearing `output/` and `data/zeitgeist.db`. Runs written before this work are
+  frozen config, stage timings, failure detail, a record per render.
+- Moving the four stage checkpoints out of `output/<run-id>/*.json` and into
+  SQLite, which becomes the source of truth for everything except rendered
+  images. See "Data model".
+- Clearing `data/zeitgeist.db` and `output/`. Runs written before this work are
   discarded rather than migrated, so the new models can require the fields they
-  always populate. See "Existing runs are discarded".
+  always populate.
 - Progress and cancellation seams in the pipeline, defaulting to no-ops so the
-  CLI is unchanged.
+  CLI keeps working unchanged.
 - A run execution service: a queue, a worker thread, live log capture, and
   stop/abort.
 - On-demand meme generation, both model-written and hand-written, and render
@@ -62,7 +72,8 @@ Out:
 | Frontend | React + TypeScript + Vite | Largest ecosystem for the pieces this design needs — React Router for six routes, TanStack Query for fetch-on-navigation plus the polled active run. |
 | Styling | CSS custom properties + CSS Modules | The handoff's token table maps 1:1 onto `:root` custom properties. The design is bespoke rather than systematic (radii of 11–12px, eight text opacities), so a utility framework's config would be a translation layer the handoff has to be read through. |
 | Live updates | SSE for the log, query invalidation for state | The log is the only thing that genuinely streams. A progress tick on the stream invalidates the run queries rather than a timer polling blindly. `EventSource` reconnects on its own and degrades to polling. |
-| Read model | SQLite index, prose on disk | `evidence.json` is 1.3MB per run and `topics.json` ~105KB. Indexing what the UI filters and sorts on, while reading prose per-topic from disk, keeps the database small and — critically — derivable. |
+| Storage | SQLite for everything but images | One store for structured data, the filesystem for binaries — Postgres-and-a-bucket, with `output/` as the bucket. Checkpoints and index commit in one transaction, so they cannot disagree. |
+| Migrations | None; delete and start again | The codebase is in active development and data loss is acceptable. `SCHEMA_VERSION` and `StoreSchemaError` already refuse a mismatched schema and say to delete — that *is* the strategy. |
 | Client types | `openapi-typescript`, checked in | One source of truth for the contract. Regeneration drift fails the gate. |
 | Fonts | `@fontsource` | A local tool should not need the network to render correctly. |
 | Layout | `web/` in this repo | Dev: Vite proxying `/api` to uvicorn. No CORS, one repository, one contract. |
@@ -99,16 +110,15 @@ failed or why.
 **Trend status on a topic.** The UI leans on `trend_status` throughout — topic
 cards, the `trending / saturating / cooling / stale` filters, ranking sublines.
 `Topic` has no such field. Status lives on `BlueskyMetrics.status` per item and
-on `TrendInfo.status` in `evidence.json`. `Topic` gains a `trend_status` field,
-populated in `distil.py` where the `TrendEvidence` is already in hand. Adding
-the field is preferable to joining through `evidence.json` on every read: it is
-a property of the topic, and the data is present at the point the topic is
-constructed.
+on `TrendInfo.status` in the ingest evidence. `Topic` gains a `trend_status`
+field, populated in `distil.py` where the `TrendEvidence` is already in hand.
+Adding the field is preferable to joining back through the ingest checkpoint on
+every read: it is a property of the topic, and the data is present at the point
+the topic is constructed.
 
 The field is **required** — `trend_status: TrendStatus`, no default. Every
 `TrendEvidence` carries a status, so a topic without one is a bug rather than a
-state. See "Existing runs are discarded" for why this does not need a migration
-concession.
+state. See "Data is disposable" for why this needs no migration concession.
 
 **Cross-run topic identity.** The topics index deduplicates by topic id and
 shows recurrence ("SEEN IN 3 RUNS", "NEW THIS RUN") plus a `stale` bucket of
@@ -134,88 +144,140 @@ event seam anywhere in the pipeline, and no cancellation.
 
 ## Data model
 
-### Existing runs are discarded
+### Everything lives in SQLite except the images
 
-`output/` is emptied and `data/zeitgeist.db` deleted as part of this work.
-Nothing on disk today is migrated or read.
+One store for structured data, the filesystem for binaries — the shape a
+production deployment would use with Postgres and object storage, with
+`output/` standing in for the bucket.
 
-This is a deliberate trade, and it buys more than it costs. Every run directory
-already written predates `run.json`, `renders.json`, the renders subdirectory
-and `Topic.trend_status`. Supporting them means either a synthesis path that
-invents `run.json` from directory mtimes and parses render provenance out of
-filenames, or optional fields on the new models standing in for data that was
-never recorded. The first is a body of code that exists solely to read seven
-directories once. The second is worse: it puts `| None` on fields that are
-always present going forward, so every consumer — API, read model, UI — has to
-handle a state that only ever existed historically, and the null branch is
-untestable against anything real.
+SQLite is the source of truth. The four stage checkpoints become rows rather
+than files, and `run.json` and `renders.json` — which earlier drafts of this
+spec invented to keep the filesystem authoritative — are gone. Rendered PNGs
+and their thumbnails stay on disk at
+`output/<run-id>/renders/<render_id>.png`, because image bytes belong behind a
+static file server or a CDN and never in a database. Swapping the local
+directory for real object storage later touches one module.
 
-What is lost is seven runs of meme output and the cross-run trend history in
-`topic_scores`, which `Store.previous_sub_scores` feeds into `rank_delta`. The
-store's own `StoreSchemaError` message already describes that loss as
-acceptable ("Delete it and re-run — cross-run trend history will be lost,
-nothing else"), and the history rebuilds over the next few runs.
+The consequence to hold onto: the database is authoritative for *whether a
+render exists*. A PNG deleted out from under it renders as a failed tile, not
+a crash.
 
-**The principle this sets, which applies to every model in this spec:**
-optionality expresses a real state, never a migration concession. A field is
-`| None` only where the pipeline genuinely has no value for it — a stage that
-has not started, a run that has not finished, a render that has not failed. It
-is never `| None` because an old file on disk lacks the key.
+### Data is disposable
 
-### Run directory artifacts
+Until stated otherwise, deleting `data/zeitgeist.db` and starting again is an
+acceptable answer to any schema problem. No migration code is written.
 
-Two new JSON artifacts per run directory, plus a log and a renders
-subdirectory. Writing them to disk rather than only to SQLite is what preserves
-the property that the database is a cache: everything the UI shows can be
-reconstructed from `output/` alone.
+`SCHEMA_VERSION` and `StoreSchemaError` stay exactly as they are and become
+the whole migration strategy: a mismatched schema refuses to open and tells
+you to delete the file. That is the right behaviour under this stance, because
+it turns silently wrong data into a clear instruction.
 
-`run.json` — the run's own record. Nothing in it is derivable from the stage
-checkpoints, which is why it must be written.
+Two things follow. Runs written before this work are discarded rather than
+migrated, which is what lets `Topic.trend_status` be required rather than
+carrying a `| None` that describes a historical accident. And new fields are
+required wherever the pipeline always populates them: **optionality expresses
+a real state, never a migration concession.** A field is `| None` only where
+there genuinely is no value — a stage that has not started, a run that has not
+finished, a render that has not failed.
+
+Disposable is not free, though. Deleting the database means re-running the
+pipeline, and a run costs minutes and real model calls — the same economics
+that put `--resume-from generate` in the CLI. That is why checkpoints are
+stored whole, and why the projection can be re-derived without re-scraping.
+
+### Checkpoints
+
+The four stage artifacts move into one table, holding exactly the JSON
+`_write` produces today:
+
+```sql
+CREATE TABLE checkpoints (
+    run_id     TEXT NOT NULL,
+    stage      TEXT NOT NULL,   -- ingest | analyse | evaluate | generate
+    payload    TEXT NOT NULL,   -- JSON array of model_dump(mode="json")
+    written_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, stage)
+);
+```
+
+Whole documents rather than normalised tables, and that is deliberate.
+`evidence` is `list[TrendEvidence]`, which is a `TrendInfo` plus
+`list[PostEvidence]`, each of which is an `Item` carrying a discriminated
+`Metrics` union plus `list[Reply]`. Normalising that means five or six related
+tables and reassembling exact pydantic instances on read so `--resume-from`
+still round-trips. Nothing queries *inside* evidence except "the replies for
+this topic's items", so the schema work buys nothing while the models are
+still moving. `model_validate_json` round-trips a payload perfectly.
+
+`pipeline._write` and `_read` become `store.write_checkpoint(run_id, stage,
+models)` and `store.read_checkpoint(run_id, stage, schema)`. `run_pipeline`
+already takes a `Store`, so the seam exists; `FileNotFoundError` becomes a
+`MissingCheckpoint` carrying the same meaning.
+
+Size is bounded and known: `evidence` is ~1.3MB per run and the other three
+are small, so roughly 1.5MB per run. A thousand runs is 1.5GB in one file,
+which SQLite handles without complaint. Because evidence is read only for
+topic detail's replies, pruning it later is a `DELETE` rather than a
+file-management script.
+
+### Tables
+
+Alongside `checkpoints`, and alongside the existing `runs`, `topics` and
+`topic_scores`, which keep their current role in cross-run trend scoring:
+
+- `run_records` — one row per run: status, timings, the frozen `RunConfig` as
+  JSON, error class and stage, and the aggregate counts the Runs list shows.
+  Source of truth; none of it is derivable from a checkpoint.
+- `run_stages` — one row per stage per run: status, timings, artifact size,
+  summary line.
+- `renders` — one row per render. Source of truth, and mutable: deleting a
+  render is a `DELETE` here plus unlinking two files.
+- `log_lines` — one row per captured line: run id, timestamp, level, logger
+  name, message.
+- `run_topics` — the projection. One row per topic per run, holding what the
+  topics index and ranking lists filter or sort on: `trend_status`,
+  `event_sentiment`, `conversation_register`, `meme_potential`, `trend_score`,
+  `final_score`, `final_rank`, `post_count`, `render_count`, `label_slug`, and
+  the top recurring phrase with its author count.
+
+`SCHEMA_VERSION` goes to 3.
+
+`run_topics` is the only derived table, and it is materialised rather than a
+view because the alternative does not scale. A view over `json_each(payload)`
+would always be consistent and never need re-deriving, but the cross-run
+queries — recurrence, the stale bucket, pagination — would then parse every
+run's `analyse` payload on every request. At a thousand runs that is a hundred
+megabytes of JSON per page load.
+
+It is written in the same transaction as the checkpoint it derives from. That
+transaction is the thing the filesystem design could not offer: a process
+killed between writing a checkpoint and updating the index used to leave the
+two disagreeing until a rebuild, and now they commit together or not at all.
+
+Dossier prose, entities, the full phrase list and replies are not projected.
+Topic detail reads the `analyse` and `ingest` payloads for the one topic being
+viewed.
+
+### Models
+
+`RunConfig` is the frozen settings subset that run detail's config line and
+"Re-run config" need: `sources`, `trend_limit`, `posts_per_trend`,
+`top_count`, `meme_potential_weight`, `phrase_min_authors`,
+`distil_char_budget`, `distil_concurrency`, `llm_provider`, `llm_model`,
+`template_ids`. A copy, not a reference to live `Settings`.
 
 ```python
 class StageRecord(BaseModel):
+    model_config = STRICT
+
     stage: Stage
-    status: Literal["ok", "failed", "skipped", "queued", "running"]
+    status: Literal["queued", "running", "ok", "failed", "skipped"]
     started_at: datetime | None
     finished_at: datetime | None
-    artifact: str | None          # "evidence.json"
     artifact_bytes: int | None
     summary: str                  # "25 trends, 214 posts, 3,318 replies"
 
 
-class RunRecord(BaseModel):
-    run_id: str
-    status: Literal["running", "ok", "failed", "aborted", "interrupted"]
-    started_at: datetime
-    finished_at: datetime | None
-    config: RunConfig             # frozen Settings subset
-    stages: list[StageRecord]
-    error: RunError | None        # class name, message, stage
-    resume_stage: Stage | None    # computed from the last ok checkpoint
-```
-
-Every `| None` on these two models is a real state and stays optional: a queued
-stage has not started, a running one has not finished, a failed one wrote no
-artifact, a successful run has no error, and a run whose ingest failed has no
-stage to resume from.
-
-`StageRecord` is deliberately **not** split into a discriminated union the way
-`RenderRecord` is, even though its status and its timestamps co-vary. A render
-is created as one kind or the other and never changes; a stage moves
-`queued → running → ok`, so a union would mean the record changing class as it
-progresses — a worse model of a mutable in-flight record than four honest
-optionals. The rule is unrepresentable-invalid-states where a value is fixed at
-creation, not everywhere a `Literal` appears.
-
-`RunConfig` is the subset the run detail config line and "Re-run config" need:
-`sources`, `trend_limit`, `posts_per_trend`, `top_count`,
-`meme_potential_weight`, `phrase_min_authors`, `distil_char_budget`,
-`distil_concurrency`, `llm_provider`, `llm_model`, `template_ids`. It is a
-frozen copy, not a reference to live `Settings`.
-
-`renders.json` — the mutable render ledger.
-
-```python
 class AutoOrigin(BaseModel):
     """A render the model briefed: it chose the template and said why."""
 
@@ -225,7 +287,7 @@ class AutoOrigin(BaseModel):
 
 
 class ManualOrigin(BaseModel):
-    """A render written by hand. No model call, so no template choice to explain."""
+    """A render written by hand. No model call, so no choice to explain."""
 
     model_config = STRICT
     provenance: Literal["manual"] = "manual"
@@ -237,7 +299,8 @@ Origin = Annotated[AutoOrigin | ManualOrigin, Field(discriminator="provenance")]
 class RenderRecord(BaseModel):
     model_config = STRICT
 
-    id: str                       # uuid4 hex
+    id: str                       # uuid4 hex, and the PNG's filename
+    run_id: str
     topic_id: str
     template_id: str
     caption_slots: dict[str, str]
@@ -247,104 +310,47 @@ class RenderRecord(BaseModel):
     created_at: datetime
 ```
 
+Every `| None` above is a real state: a queued stage has not started, a
+running one has not finished, a failed one wrote no artifact, a ready render
+has no error.
+
 `rationale` lives on `AutoOrigin` rather than on `RenderRecord` because a
 hand-written render has no template choice to justify — the person made it.
 Holding it as `rationale: str` with `""` for manual renders, or as
-`rationale: str | None` alongside a separate `provenance` flag, both make
-`provenance="manual"` with a non-empty rationale representable and meaningless.
-This is the same discriminated-union shape `Metrics` already uses in
-`models.py`, for the same reason: the checkpoint deserialises back to the
-concrete class rather than to whichever union member happens to validate.
+`rationale: str | None` beside a separate `provenance` flag, both make
+`provenance="manual"` with a non-empty rationale representable and
+meaningless. This is the discriminated-union shape `Metrics` already uses in
+`models.py`, for the same reason: the row deserialises back to the concrete
+class rather than to whichever union member happens to validate.
 
-`briefs.json` stays exactly as it is: the pipeline's immutable checkpoint of
-what the model produced, and the input `--resume-from generate` reads. Deleting
-a render touches `renders.json` and the PNG, never the checkpoint. The two
-answer different questions — "what did the model write this run" versus "what
-images exist now" — and conflating them would make deletion destroy a
-checkpoint.
+`StageRecord` is deliberately **not** split the same way, even though its
+status and its timestamps co-vary. A render is created as one kind and never
+changes; a stage moves `queued → running → ok`, so a union would mean the
+record changing class as it progresses — a worse model of a mutable in-flight
+record than four honest optionals. The rule is unrepresentable-invalid-states
+where a value is fixed at creation, not everywhere a `Literal` appears.
 
-`renders/<render_id>.png` and `renders/<render_id>.thumb.png` at 96px. The
-thumbnail exists because the Runs list draws renders at 34px and the PNGs are
-300–800KB.
+### Re-deriving the projection
 
-`run.log` — the run's log at DEBUG, one line per record, ISO-8601 timestamp,
-level, logger name, message. Scoped to the `zeitgeist` logger, deliberately not
-root: `httpx` and `anthropic` at DEBUG emit a line per HTTP request, roughly
-275 per run from Bluesky alone. See "Log capture".
+`zeitgeist rebuild-projection` drops `run_topics` and rewrites it from the
+`checkpoints` rows already in the database. It reads nothing but the database
+and touches nothing else.
 
-### SQLite read model
+This is a development convenience rather than an architectural pillar.
+Deleting the database is an acceptable answer to a schema problem, but it
+costs every run you have — minutes and model calls each — so adding a column
+to `run_topics` should not mean re-scraping Bluesky.
 
-`store.py` grows four tables alongside the existing `runs`, `topics` and
-`topic_scores`, which keep their current role in cross-run trend scoring and
-are not repurposed.
+**One projection function, two callers.** The failure mode for any derived
+table is drift: the live write path and the re-derive path build the same rows
+in two places and stop agreeing, so re-deriving silently changes what the UI
+shows. The projection is a single pure function — checkpoint payloads in,
+`run_topics` rows out — called by the observer during a run and by
+`rebuild-projection` afterwards. Neither caller builds rows itself.
 
-- `run_records` — one row per run: status, timings, duration, frozen config as
-  JSON, error class and stage, and the aggregate counts the Runs list shows
-  (trends fetched, topics kept, phrase count, render count).
-- `run_stages` — one row per stage per run.
-- `run_topics` — one row per topic per run, holding exactly what the topics
-  index and ranking lists filter or sort on: `trend_status`, `event_sentiment`,
-  `conversation_register`, `meme_potential`, `trend_score`, `final_score`,
-  `final_rank`, `post_count`, `render_count`, `label_slug`, and the top
-  recurring phrase with its author count.
-- `renders` — one row per render, mirroring `RenderRecord` plus its run id.
-
-Dossier prose, entities, the full phrase list, replies and evidence are never
-copied in. Topic detail reads them from `topics.json` and `evidence.json` for
-the one topic being viewed.
-
-`SCHEMA_VERSION` goes to 3.
-
-`rebuild-index` also rebuilds the pre-existing `topics` and `topic_scores`
-tables, not just the four new ones. Everything in them is derivable from
-`topics.json` — the label slug, `trend_score`, and each platform's entry in
-`score_components` less the `corroboration` multiplier, which
-`NON_PLATFORM_COMPONENTS` already excludes. That makes the whole database
-disposable rather than only the new half, and turns `StoreSchemaError`'s
-existing advice ("Delete it and re-run — cross-run trend history will be lost")
-into advice that loses nothing at all, provided `output/` is intact.
-
-### Rebuild
-
-`zeitgeist rebuild-index` drops every table in the read model and rebuilds it
-by reading `run.json`, `topics.json`, `ranked.json` and `renders.json` from
-each directory under `output/`. It reads only artifacts this spec defines;
-there is no synthesis path and no legacy handling, because there are no legacy
-runs.
-
-It is idempotent, and it is what makes the database disposable: a corrupted
-index, a schema bump, or a directory copied in from elsewhere are all fixed by
-running it. That is what allows `SCHEMA_VERSION` to advance without a migration
-and what lets the read model stay a pure projection rather than becoming a
-second source of truth.
-
-A directory that fails to parse is reported and skipped, not fatal. One
-half-written run — a process killed mid-write — should not stop the other
-thirty from being indexed.
-
-**One projection function, two callers.** The obvious failure mode for a
-derived index is drift: the live write path and the rebuild path construct the
-same rows in two places, and over time they stop agreeing, so a rebuild
-silently changes what the UI shows. The projection is therefore a single pure
-function — run directory artifacts in, read-model rows out — called by the
-observer as a run progresses and by `rebuild-index` afterwards. Neither caller
-builds rows itself.
-
-That gives the property a test can assert directly, and it is the one test that
-keeps the whole "database is a cache" claim honest: run a pipeline against
-fakes, snapshot the read model, run `rebuild-index` over the same directory,
-and assert the read model is byte-identical. If those ever diverge, the index
-has stopped being derived and the design has quietly broken.
-
-### What the read model may not hold
-
-Because it is rebuilt from disk, every column in it must be derivable from
-`output/`. This rules out anything the user creates in the UI and the pipeline
-does not write — a pinned topic, a "last viewed" timestamp, a note against a
-run. There is no such feature in this design, but there is an obvious pull
-towards adding one, so the rule is written down: state of that kind belongs in
-a separate table that `rebuild-index` does not drop, and mixing it into the
-projection tables is what would turn the cache back into a source of truth.
+That gives one test worth asserting directly: run a pipeline against fakes,
+snapshot `run_topics`, re-derive, assert identical. If those diverge, the
+projection has two implementations again.
 
 ## Pipeline changes
 
@@ -361,12 +367,17 @@ class RunObserver(Protocol):
     def stage_progress(
         self, stage: Stage, done: int, total: int, detail: str
     ) -> None: ...
-    def stage_finished(self, stage: Stage, artifact: Path | None) -> None: ...
+    def stage_finished(self, stage: Stage, payload_bytes: int | None) -> None: ...
     def topic_distilled(self, topic: Topic) -> None: ...
-    def render_finished(
-        self, brief: MediaBrief, path: Path | None, error: str | None
-    ) -> None: ...
+    def render_finished(self, render: RenderRecord) -> None: ...
 ```
+
+`stage_finished` reports the checkpoint's payload size rather than a path,
+because checkpoints are rows now; `None` is a stage that wrote none, which is a
+failed or skipped one. `render_finished` carries the whole `RenderRecord`
+rather than a brief and a path, since the record already holds the outcome —
+including `status="failed"` and its error, which is how a per-meme
+`RenderError` reaches the UI as a tile with a message instead of vanishing.
 
 `run_pipeline` takes `observer: RunObserver = NullObserver()`. `distil_topics`
 gains an `on_topic: Callable[[Topic], None] | None` callback, invoked as each
@@ -402,9 +413,15 @@ single-user local tool whose worst case is waiting out one fetch.
 
 A `logging.Handler` attached to the `zeitgeist` logger for the run's duration
 and detached after. Safe as a plain handler because the queue guarantees one
-run at a time. It writes two sinks: `run.log` on disk, which is what makes the
-post-mortem block work for a run that failed last week, and a bounded in-memory
-ring buffer, which is what the SSE stream reads.
+run at a time. It writes two sinks: the `log_lines` table, which is what makes
+the post-mortem block work for a run that failed last week, and a bounded
+in-memory ring buffer, which is what the SSE stream reads.
+
+Rows rather than a file because the verbose toggle becomes `WHERE level >= ?`
+and the log endpoint gets real pagination, neither of which a flat file does
+well. Lines are inserted in batches drained from the same deque that feeds the
+stream, not a row per `emit` — a DEBUG run emits several hundred lines and a
+transaction each would be gratuitous.
 
 That buffer is the seam between the worker thread and the event loop, and it is
 the one place the thread boundary needs care. It is a `collections.deque` with
@@ -457,7 +474,7 @@ blocking things in a run and not the expensive one:
 | ingest | `asyncio.run(self._gather(...))`, async internally | seconds |
 | analyse | `ThreadPoolExecutor` over **sync** `provider.complete()` | minutes |
 | analyse | `Store.record_topics` — `sqlite3` | ms |
-| evaluate | 1.3MB JSON write, pydantic over thousands of models | hundreds of ms |
+| evaluate | 1.3MB blob write, pydantic over thousands of models | hundreds of ms |
 | generate | `generate_briefs` — a sequential loop, one blocking call per topic | minutes |
 | generate | `_render_all` — Pillow decode, font fitting, PNG encode | ~100–300ms × N, CPU-bound |
 
@@ -499,9 +516,9 @@ what the New run screen's "queues it behind …" notice describes.
 - `POST /api/runs` enqueues. If the queue is empty and the worker idle, it
   starts immediately; otherwise the response says what it is behind.
 - The worker constructs `Settings` from `.env` with the request's overrides
-  applied, freezes it into `RunConfig`, writes `run.json` with status
+  applied, freezes it into `RunConfig`, inserts a `run_records` row with status
   `running`, and calls `run_pipeline` with an observer that updates the record,
-  the read model and the SSE buffer.
+  the projection and the SSE buffer.
 - On completion, failure or abort it writes the terminal status and detaches
   the log handler.
 - On server startup, any run still marked `running` in the read model is
@@ -536,22 +553,23 @@ cacheable and the in-flight poll does not drag topic data along with it.
 | C | `GET /api/runs/active` | The in-flight run and the queue |
 | C | `GET /api/config/options` | Providers, per-provider models, platforms with enabled flags, templates with slots, `.env` defaults, key-present booleans |
 | C | `POST /api/runs` | Start or queue a run; "Re-run config" posts the old run's frozen config |
-| C | `POST /api/runs/{id}/resume` | `{stage}` — reuses the existing run directory |
+| C | `POST /api/runs/{id}/resume` | `{stage}` — reuses the run's existing checkpoints |
 | C | `POST /api/runs/{id}/stop`, `POST /api/runs/{id}/abort` | Stop after this stage; abort now |
 | C | `GET /api/runs/{id}/events` | SSE: log lines and progress ticks |
 | D | `POST /api/runs/{id}/topics/{topic_id}/renders` | `{mode: "llm", template_id, count}` or `{mode: "manual", template_id, caption_slots}`; also what the below-the-cut `generate ↗` calls |
-| D | `DELETE /api/renders/{id}` | Deletes the ledger entry, the PNG and the thumbnail |
+| D | `DELETE /api/renders/{id}` | Deletes the `renders` row, the PNG and the thumbnail |
 
 `GET /api/runs/{id}/topics` returns the **full** ordering, not just the kept
 topics, because the ranking list draws below-the-cut rows with ranks and scores
-before dimming them. `ranked.json` holds only the top `top_count`, so the full
-ordering is computed once when `run_topics` rows are written — during the run,
-or by `rebuild-index` — by ranking every topic in `topics.json` with
-`sentiment.rank_score` under the run's frozen `meme_potential_weight`. That is
-the same function `select()` ranks with, so the first `top_count` rows agree
-with `ranked.json` by construction; `ranked.json` supplies the cut line and
-nothing else. The endpoint then queries `run_topics` and does no sorting of its
-own. Ranks past the cut exist only in the read model, never in a checkpoint.
+before dimming them. The `evaluate` checkpoint holds only the top `top_count`,
+so the full ordering is computed once when `run_topics` rows are written — by
+the observer during a run, or by `rebuild-projection` — by ranking every topic
+in the `analyse` payload with `sentiment.rank_score` under the run's frozen
+`meme_potential_weight`. That is the same function `select()` ranks with, so
+the first `top_count` rows agree with the `evaluate` checkpoint by
+construction; that checkpoint supplies the cut line and nothing else. The
+endpoint then queries `run_topics` and does no sorting of its own. Ranks past
+the cut exist only in the projection, never in a checkpoint.
 
 Reusing `rank_score` rather than re-deriving the ordering is deliberate: it is
 the single place the blend of trend score and meme potential is defined, and a
@@ -578,8 +596,8 @@ web/src/
 Routes: `/`, `/runs`, `/runs/new`, `/runs/:runId`, `/topics/:runId/:topicId`.
 
 Topic detail is run-scoped because the dossier, replies and renders all belong
-to one run, and because generating a meme needs an unambiguous run directory to
-write into. The breadcrumb still reads `Topics / <topic id> · first seen <run
+to one run, and because generating a meme needs an unambiguous run to
+attach to. The breadcrumb still reads `Topics / <topic id> · first seen <run
 id>` as designed, with "first seen" computed from the read model. The topics
 index links each topic to the most recent run containing it.
 
@@ -667,6 +685,18 @@ line arrives.
 PNG at render time, by the same code path that writes the render. The Runs list
 draws renders at 34px; sending 800KB per thumbnail would not.
 
+**Artifact filenames lose their extensions.** The design draws the artifact
+name on each stage card (`evidence.json`, `topics.json`, `ranked.json`,
+`briefs.json`) and uses one in the failed run row's copy, "ranked.json intact".
+Those are no longer files. Showing a filename for a database row would be a
+small lie on a screen whose whole job is telling you what a run actually did.
+
+The names themselves are worth keeping — `evidence`, `topics`, `ranked`,
+`briefs` are the pipeline's own vocabulary and appear in `--resume-from`, log
+lines and this spec. So the extension goes and the name stays: stage cards read
+`evidence · 1.3 MB`, and the failed row reads `ranked checkpoint intact`. Sizes
+come from the payload length rather than `stat`.
+
 ## Testing
 
 Backend testing follows the discipline already in the repository: hermetic, no
@@ -675,15 +705,19 @@ stripping every environment variable `Settings` reads.
 
 - `tests/run_factory.py`, built the way `tests/template_factory.py` and commit
   0a057d2 established — fixtures constructed through the real models, never
-  hand-written dicts — writing genuine artifacts into `tmp_path`. Read-model
-  and API tests run against artifacts the pipeline could actually have
-  produced.
-- `rebuild-index` is tested by building several run directories with the
-  factory, indexing them, and asserting the read model matches — then indexing
-  a second time and asserting the result is identical, since idempotence is the
-  property the whole "database is a cache" claim rests on. A deliberately
-  half-written directory asserts it is skipped and reported rather than
-  aborting the rebuild.
+  hand-written dicts — writing whole runs into a `Store` backed by `tmp_path`.
+  Projection and API tests then run against rows the pipeline could actually
+  have written, through the same `write_checkpoint` the pipeline calls.
+- The projection's single-implementation property, which is the one assertion
+  holding it together: run a pipeline against fakes, snapshot `run_topics`,
+  run `rebuild-projection`, assert the rows are identical. A second
+  implementation of the projection fails here and nowhere else.
+- Checkpoint round-tripping: write each stage's models through
+  `write_checkpoint`, read them back with `read_checkpoint`, assert equality.
+  This is what `--resume-from` depends on, and a blob that does not round-trip
+  breaks resume silently rather than loudly.
+- Transactional coupling: a checkpoint write that raises partway leaves
+  neither the payload nor its `run_topics` rows behind.
 - A `RecordingObserver`, the progress analogue of `FakeLLMProvider`: run the
   pipeline against fakes and assert the event sequence, including that
   `topic_distilled` fires per topic rather than once at the end.
@@ -720,14 +754,20 @@ there. The Stop hook and CI run all seven.
 
 Each phase gets its own implementation plan.
 
-**A — Run records and the read API.** `Topic.trend_status`; `RunRecord`,
-`StageRecord` and `RenderRecord`; `run.json` and `renders.json` written by the
-pipeline; the renders directory and thumbnails; schema version 3 and the four
-new tables; `rebuild-index`; the FastAPI app and every read endpoint; image
-serving. No UI. Ends with `uv run zeitgeist run` producing a directory that
-`rebuild-index` indexes and the API serves correctly over HTTP — which is also
-the point at which `output/` and `data/zeitgeist.db` are cleared, since the
-first run under the new models is the first one the API can read.
+**A — Storage and the read API.** Splits in two, because the storage move is
+prerequisite to everything and worth landing green on its own:
+
+*A1, storage.* `Topic.trend_status`; schema version 3 and the new tables;
+`store.write_checkpoint`/`read_checkpoint` replacing `pipeline._write`/`_read`;
+`RunConfig`, `StageRecord` and `RenderRecord`; renders written to
+`output/<run-id>/renders/` with thumbnails; the projection function and
+`rebuild-projection`. No HTTP. Ends with `uv run zeitgeist run` persisting
+entirely through the store, the CLI otherwise behaving as it does today, and
+`data/zeitgeist.db` and `output/` cleared of everything that came before.
+
+*A2, the read API.* The FastAPI app, every read endpoint, image serving, and
+the generated TypeScript types. Ends with a run produced by the CLI served
+correctly over HTTP.
 
 **B — Frontend shell and read-only screens.** Vite scaffold, `tokens.css`,
 generated client, router and layout, the sidebar, and the merged Topics screen,
