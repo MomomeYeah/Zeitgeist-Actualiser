@@ -58,7 +58,7 @@ Out:
 | Area | Choice | Why |
 | --- | --- | --- |
 | Backend | FastAPI + uvicorn | Pydantic 2 is already a dependency, so domain models serialise to responses with no translation layer. `ty`-clean. Its OpenAPI schema generates the TypeScript client types. |
-| Pipeline execution | A worker thread, never the event loop | `BlueskySource.fetch_evidence` calls `asyncio.run()` internally (`sources/bluesky.py:119`). That raises if called from a running loop, so the pipeline cannot execute on FastAPI's. |
+| Pipeline execution | A worker thread, never the event loop | A run takes minutes and the UI polls throughout it. Sharing a loop would stall request handling on every CPU-bound moment inside the run. See "Why a thread, not the event loop". |
 | Frontend | React + TypeScript + Vite | Largest ecosystem for the pieces this design needs — React Router for six routes, TanStack Query for fetch-on-navigation plus the polled active run. |
 | Styling | CSS custom properties + CSS Modules | The handoff's token table maps 1:1 onto `:root` custom properties. The design is bespoke rather than systematic (radii of 11–12px, eight text opacities), so a utility framework's config would be a translation layer the handoff has to be read through. |
 | Live updates | SSE for the log, query invalidation for state | The log is the only thing that genuinely streams. A progress tick on the stream invalidates the run queries rather than a timer polling blindly. `EventSource` reconnects on its own and degrades to polling. |
@@ -369,7 +369,10 @@ distil worker before each model call and inside `_render_all` between briefs.
 no interior checkpoint, so abort during ingest cannot take effect until the
 fetch returns. The UI shows "aborting…" for up to the remainder of the ingest.
 Threading a cancellation token through `BlueskySource`'s async fan-out would
-fix it and is deliberately not in scope here.
+fix it and is deliberately not in scope here. Running each pipeline in a
+subprocess would also fix it — abort becomes a kill — but it turns progress
+events and log capture into an IPC problem, which is a poor trade for a
+single-user local tool whose worst case is waiting out one fetch.
 
 ### Log capture
 
@@ -378,6 +381,21 @@ and detached after. Safe as a plain handler because the queue guarantees one
 run at a time. It writes two sinks: `run.log` on disk, which is what makes the
 post-mortem block work for a run that failed last week, and a bounded in-memory
 ring buffer, which is what the SSE stream reads.
+
+That buffer is the seam between the worker thread and the event loop, and it is
+the one place the thread boundary needs care. It is a `collections.deque` with
+a `maxlen` — `append` and `popleft` are atomic under the GIL, so no lock is
+needed — written by the handler on the worker thread and drained by the SSE
+generator with `await asyncio.sleep(0.25)` between polls. Polling rather than
+`loop.call_soon_threadsafe` into an `asyncio.Queue` because a quarter-second of
+latency on a log line is invisible, and it keeps the logging handler free of
+any reference to the loop, which matters because the same handler has to work
+under `TestClient` and under the CLI.
+
+Progress events cross the same boundary the same way: the observer mutates the
+run record and the read model from the worker thread, and the SSE generator
+emits a tick that tells the client to invalidate. No pipeline code ever touches
+the loop.
 
 At present the pipeline emits four INFO lines per run plus warnings, and
 nothing at DEBUG on the live path — the only `log.debug` is in
@@ -396,6 +414,60 @@ text to disk would quietly undo it. Debug lines carry counts, ids, permalinks
 and elapsed times.
 
 ## Run execution service
+
+### Why a thread, not the event loop
+
+FastAPI is built on asyncio, so the obvious question is whether the pipeline
+could run on its loop. It could be made to — but it should not, and the reason
+is not the one that first presents itself.
+
+The visible obstacle is that `BlueskySource.fetch_evidence` calls
+`asyncio.run(self._gather(...))` internally (`sources/bluesky.py:119`), which
+raises when called from a running loop. That is trivially fixable: expose
+`_gather` as an `async def fetch_evidence_async` and make the sync method a
+thin wrapper. It is also beside the point, because ingest is one of five
+blocking things in a run and not the expensive one:
+
+| Stage | Blocking work | Cost |
+| --- | --- | --- |
+| ingest | `asyncio.run(self._gather(...))`, async internally | seconds |
+| analyse | `ThreadPoolExecutor` over **sync** `provider.complete()` | minutes |
+| analyse | `Store.record_topics` — `sqlite3` | ms |
+| evaluate | 1.3MB JSON write, pydantic over thousands of models | hundreds of ms |
+| generate | `generate_briefs` — a sequential loop, one blocking call per topic | minutes |
+| generate | `_render_all` — Pillow decode, font fitting, PNG encode | ~100–300ms × N, CPU-bound |
+
+Both providers are synchronous: `anthropic.py` constructs `Anthropic`, not
+`AsyncAnthropic`, and `ollama.py` uses `httpx.Client()`. `distil.py` wraps them
+in a thread pool precisely because they block. So making ingest loop-native
+leaves the two stages that dominate wall-clock time still unable to run there.
+
+Converting the whole pipeline would mean async providers, `gather` plus a
+semaphore in place of the `ThreadPoolExecutor`, `run_in_executor` for Pillow
+regardless because it is CPU-bound, the same for `sqlite3`, and `run_pipeline`
+becoming `async def` with the CLI wrapping it in `asyncio.run`. That is a
+rewrite of the pipeline's concurrency model, and it would not change the
+conclusion.
+
+**The real reason is isolation.** A run takes minutes, and the UI polls the API
+for its entire duration. Sharing a loop means every CPU-bound moment inside the
+run — encoding a PNG, serialising 1.3MB of JSON, validating thousands of
+models — stalls request handling. The in-flight screen would stutter exactly
+when it is being watched. Even a fully async pipeline belongs off the
+request-handling loop, so the thread is the design rather than a workaround,
+and removing the `asyncio.run` would not justify moving it.
+
+Two consequences follow:
+
+- **The worker constructs its own `Store`.** `store.py:57` calls
+  `sqlite3.connect(self._path)` in `__init__`, and the default
+  `check_same_thread=True` raises if that connection is used from another
+  thread. The API's `Store` and the worker's are separate objects.
+- **The read model opens in WAL mode.** The worker writes while the API reads;
+  without WAL those reads block behind the writes, surfacing as the in-flight
+  poll hitching every time a stage checkpoints.
+
+### Queue and lifecycle
 
 A single worker thread with a FIFO queue, at most one run executing — which is
 what the New run screen's "queues it behind …" notice describes.
