@@ -50,6 +50,10 @@ In:
   stop/abort.
 - On-demand meme generation, both model-written and hand-written, and render
   deletion.
+- The five screens and states the handoff flags as not yet designed: the
+  full-size meme view, empty and first-run states, failure and abort states,
+  and a settings screen. Designed against the same token table; see "Screens
+  the handoff did not design".
 
 Out:
 
@@ -57,11 +61,8 @@ Out:
   localhost.
 - Production deployment. Development runs Vite and uvicorn as two processes;
   mounting the built SPA from `serve` is a later addition of about ten lines.
-- Mobile layouts, explicitly undesigned in the handoff.
-- The full-size meme detail view, empty and first-run states, the abort
-  confirmation dialog, and a settings screen for the `.env` values cut from the
-  New run screen. All four are flagged by the handoff as not yet designed; see
-  "Deferred".
+- Mobile layouts, explicitly undesigned in the handoff and deliberately not
+  inferred from the desktop ones. See "Deferred".
 
 ## Decisions
 
@@ -241,6 +242,9 @@ Alongside `checkpoints` and `topic_scores`, then:
   render is a `DELETE` here plus unlinking two files.
 - `log_lines` — one row per captured line: run id, timestamp, level, logger
   name, message.
+- `settings` — `key`, `value`, `updated_at`. One row per tuning field the
+  settings screen has overridden; absent means fall through to `.env`. See
+  "Settings storage".
 - `run_topics` — one row per topic per run, holding what the topics index and
   ranking lists filter or sort on: `trend_status`, `event_sentiment`,
   `conversation_register`, `meme_potential`, `trend_score`, `final_score`,
@@ -636,7 +640,10 @@ cacheable and the in-flight poll does not drag topic data along with it.
 | 2 | `GET /api/runs/{id}/topics/{topic_id}` | Dossier, entities, `score_components`, phrases, replies, renders, recurrence |
 | 2 | `GET /api/runs/{id}/log?verbose=` | Historical log for a completed or failed run |
 | 2 | `GET /api/topics?window=6&status=` | Cross-run deduplicated index, recurrence, per-status bucket totals, and the sentiment distribution with its previous-run delta |
+| 2 | `GET /api/renders/{id}` | One render with its `caption_slots` and, for an auto render, its `rationale`. Deep-links the full-size view |
 | 2 | `GET /api/renders/{id}/image?size=full\|thumb` | PNG serving |
+| 2 | `GET /api/settings` | Every tunable field with its value and which layer supplied it |
+| 3 | `PUT /api/settings` | Writes the `settings` table. Rejects any field outside the seven tunables |
 | 3 | `GET /api/runs/active` | The in-flight run and the queue |
 | 3 | `GET /api/config/options` | Providers, per-provider models, platforms with enabled flags, templates with slots, `.env` defaults, key-present booleans |
 | 3 | `POST /api/runs` | Start or queue a run; "Re-run config" posts the old run's frozen config |
@@ -671,16 +678,25 @@ boolean. The key itself is never returned.
 web/src/
   api/          generated types, typed fetch client, query hooks
   styles/       tokens.css, reset, fonts
-  components/   Chip, StatusPill, StageBar, MemeTile, SectionLabel, RankRow
+  components/   Chip, StatusPill, StageBar, MemeTile, SectionLabel, RankRow,
+                EmptyState, InlineConfirm
   features/
     topics/     TopicsPage, TopicCard, MoodBar, TopicDetailPage, GeneratePanels
     runs/       RunsPage, RunRow, InFlightCard, RunDetailPage, StageCards,
                 RankingList, LiveLog
+    renders/    RenderDetailPage
     newrun/     NewRunPage and the four config cards
+    settings/   SettingsPage and its three cards
   app/          router, AppLayout (Sidebar), providers
 ```
 
-Routes: `/`, `/runs`, `/runs/new`, `/runs/:runId`, `/topics/:runId/:topicId`.
+Routes: `/`, `/runs`, `/runs/new`, `/runs/:runId`, `/topics/:runId/:topicId`,
+`/runs/:runId/renders/:renderId`, `/settings`.
+
+`EmptyState` and `InlineConfirm` are shared primitives rather than per-screen
+code because both appear in several places and both are patterns rather than
+one-offs: the empty block on Runs, Topics and Topic detail, and the swap-in-place
+confirm on the render tile, the abort button and the meme view's delete.
 
 Topic detail is run-scoped because the dossier, replies and renders all belong
 to one run, and because generating a meme needs an unambiguous run to
@@ -727,6 +743,168 @@ lines batched and flushed per animation frame rather than appended one at a
 time; and a client-side cap of ~2000 lines, dropping the oldest, since the DOM
 otherwise grows unbounded on a long DEBUG run.
 
+## Screens the handoff did not design
+
+The handoff flags five gaps and asks that they be designed rather than
+improvised. They are designed here, against the same token table, and they are
+in scope. Mobile is the one exception and stays out — see "Deferred".
+
+Two rules govern all of it, both taken from the handoff rather than invented:
+**no modals**, because the design confirms a render deletion by swapping the
+tile footer in place and says so explicitly; and **no new tokens**, because
+anything needing a colour the table does not have is a sign the screen is
+fighting the design rather than extending it.
+
+### Full-size meme view
+
+Route `/runs/:runId/renders/:renderId`, `content-width` 1000px. Deep-linkable,
+which is why `GET /api/renders/{id}` exists rather than renders arriving only
+embedded in topic detail.
+
+Breadcrumb `Topics / <topic title> / <template id>`, the template id in mono.
+Header: the topic title in Outfit 800/28/1.12/`-.03em`, matching topic detail,
+with a chip row beneath — template id (mono, `accent-tint`) and `auto` or
+`manual` (white 8%). A metadata line in mono 400/10.5 carries
+`<run id> · <created> · <width>×<height> · <size>`.
+
+Body is `1fr 320px`, 14px gap:
+
+- **The image.** `surface-log` fill so a pale meme has something to sit
+  against, radius 14, 1px `border`, 18px padding, the PNG centred at
+  `max-height: 70vh` and `object-fit: contain`. Never upscaled past its natural
+  size — these are 1180px templates and a stretched meme looks broken.
+- **The brief.** A `surface` card, radius 9, 16px padding. Section label THE
+  BRIEF, then one block per slot: the slot's real name in mono 700/9.5/`.12em`
+  uppercase `text-40`, the caption beneath in Outfit 400/13/1.55, blocks
+  separated by `divider` hairlines. For an auto render, a second section label
+  WHY THIS TEMPLATE and the rationale in Outfit 400/13 `text-70`. For a manual
+  render that section is absent entirely — replaced by `written by hand` in
+  mono 400/10 `text-35`. The `AutoOrigin`/`ManualOrigin` split is what makes
+  that a presence check rather than an empty-string check.
+- Footer of the brief card: an accent pill **Download PNG**, and a ghost
+  **Delete** carrying the same inline confirm as the tile.
+
+### Empty states
+
+One pattern, two weights. The distinction is whether the emptiness is the
+app's condition or the user's own doing.
+
+**A genuinely empty app** gets a centred block inside the normal content area —
+header and sidebar stay, so nothing looks broken. `surface` fill, 1px dashed
+`border-strong`, radius 14, 40px padding, `max-width: 420px`, centred.
+Headline Outfit 700/15 `text`; body Outfit 400/12.5/1.5 `text-70`, two lines at
+most; then an accent pill button when there is an obvious next step.
+
+| Where | Headline | Body | Action |
+| --- | --- | --- | --- |
+| Runs and Topics, no runs at all | Nothing has run yet | A run reads Bluesky, works out what is trending, and generates memes about it. The first one takes a few minutes. | **New run** |
+| Topics, runs exist but nothing current | No topics in the last 6 runs | Everything has gone stale. Start a run to see what is trending now. | **New run** |
+| Topic detail, nothing rendered | — | A dashed tile row reading `Nothing rendered yet — use the panel above` in mono 10.5 `text-35`, in place of the grid | — |
+
+The no-runs state is the first screen anyone sees, which is why it is the one
+place the app explains what it does.
+
+**A filter that matched nothing** gets a single line, not a card: `No topics
+with this status.` in Outfit 400/12.5 `text-35`, 24px vertical padding,
+centred. Lighter on purpose — the user did this to themselves and the remedy is
+one click away in the chip row above.
+
+**A run whose generate stage produced nothing** is not an empty screen at all;
+the ranking is still there. A line sits above it in mono 400/10.5
+`contrast-light` — `No memes were rendered — every brief failed` — and every
+row shows `generate ↗` where its thumbnails would be.
+
+### Failure and abort states
+
+**Abort confirmation** swaps in place, exactly as the render tile's delete
+does. The ghost **Abort** button becomes `contrast` at 10% fill with a
+`rgba(61,99,230,.35)` border, reading `Abort run?` in `contrast-light` with
+`yes` / `no` in mono 700/10 separated by a `·`. 150ms ease-out. Reverts on
+`no`, on `Escape`, or on blur. **Stop after this stage** needs no confirm — it
+is not destructive.
+
+**A partially failed run** needs no new status. The run completed, so
+`RunRecord.status` stays `ok`, and "partial" is derived from `renders` where
+status is `failed`:
+
+- Runs list: the pill reads `OK · 3 of 5`, the `3 of 5` in `contrast-light`
+  against the usual `accent-tint` fill.
+- Run detail: the generate stage card keeps its accent bar — the stage did run
+  — but its summary reads `3 of 5 rendered · 2 failed`, and the failed rows in
+  the ranking show a dashed `rgba(61,99,230,.35)` tile with `failed` in mono
+  9.5 `contrast-light` where the thumbnail would be.
+
+**A source outage** — ingest returning nothing — is a failed run with one
+distinguishing feature: there is no checkpoint, so there is nothing to resume.
+`resume_stage` is `None`, and the UI must not offer a resume it cannot honour.
+The run row reads `SourceError in ingest — no trends returned` in column two,
+`nothing written` in column three, and column four shows `re-run ↗` in
+`contrast-light` rather than a resume command. On run detail the **Resume
+from** button is absent, not disabled, and **Re-run config** carries the action
+alone.
+
+### Settings
+
+Route `/settings`, reached from a third sidebar nav item beneath Runs. This is
+the one place these screens change the handoff's own layout rather than
+extending it; the in-flight card still pins to the bottom via `margin-top:
+auto`, so nothing else moves.
+
+Layout mirrors New run: `1fr 320px`, 18px gap, `content-width` 1000px, cards of
+`surface` at radius 12 and `17px 19px` padding, 16px between them.
+
+Three cards — **FAN-OUT** (`trend_limit`, `posts_per_trend`,
+`bluesky_fetch_concurrency`), **RANKING** (`meme_potential_weight`,
+`phrase_min_authors`), **DISTILLATION** (`distil_char_budget`,
+`distil_concurrency`). Each field is a row: name in mono 600/11.5, a 72px input
+right-aligned in mono 600/12 on `surface-log` with a 1px `border` at radius 8,
+and one line of explanation beneath in Outfit 400/11.5 `text-55` — lifted from
+the comments already in `config.py`, which explain every one of these better
+than new copy would. `trend_limit` carries the hint `max 25 · API ceiling`,
+because 25 is the endpoint's limit rather than a preference.
+
+Every field shows where its value came from, as a mono 9.5/`.12em` chip:
+`SET HERE` in `accent-tint`, `FROM .env` in white 8%, or `DEFAULT` in
+`text-30`. Making the layering visible is the point — a settings screen that
+hides which layer won is worse than no settings screen.
+
+Right column: an accent **Save** button full-width at 14px padding and radius
+9, a ghost **Reset to .env** beneath it that deletes the row so the fallback
+applies, and a mono 10.5 `text-35` note — `Changes apply to new runs. A run in
+flight keeps the config it froze.` That is true rather than reassuring:
+`RunConfig` is frozen per run.
+
+### Jump to latest
+
+When the live log releases follow, the accent `following` indicator becomes a
+button: the same 6px dot plus `jump to latest` in mono 600/9.5 accent on an
+`accent-tint` fill, radius 20, `4px 9px`. Clicking scrolls to the bottom and
+re-engages following. This is the one addition of my own rather than one the
+handoff asked for — the mocks draw the indicator but no way back.
+
+### Settings storage
+
+A `settings` table — `key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at
+TEXT NOT NULL` — and a custom `pydantic-settings` source that reads it.
+
+Precedence, highest first: constructor arguments, then environment variables,
+then the `settings` table, then `.env`, then field defaults. A shell variable
+beats the UI because an explicit `TREND_LIMIT=10` in front of a command should
+still win; the UI beats `.env` because the table is the more recent, more
+deliberate act.
+
+Two traps worth stating, because both are easy to walk into:
+
+- **The source cannot read `Settings.db_path`.** Resolving the database
+  location from the object being constructed is circular. The source reads
+  `DB_PATH` from the environment and `.env` directly, defaulting to
+  `data/zeitgeist.db`, independent of the instance.
+- **Only the seven tuning fields are writable.** `db_path`, `output_dir`,
+  `templates_dir`, `font_path`, `anthropic_api_key`, `ollama_host`,
+  `llm_provider`, `llm_model` and `sources` are not exposed and the endpoint
+  rejects them. A UI that can rewrite where the database lives, or that stores
+  an API key in a table, is a different and worse thing than a tuning screen.
+
 ## Decisions taken against the handoff
 
 The handoff asks for several things to be flagged rather than decided
@@ -767,6 +945,12 @@ sends. Flipping it works retroactively on lines already captured, which is what
 anyone toggling it mid-run wants. The handoff maps this control to the CLI's
 `--verbose`; with the CLI gone there is nothing to map to, and the toggle is
 purely a filter over what the server has already captured.
+
+**New run's metadata line changes.** The handoff has it read `defaults come
+from .env · changes apply to this run only`. With a settings screen writing a
+table that layers over `.env`, that is no longer where the defaults come from.
+It becomes `defaults come from settings · changes apply to this run only`, with
+Settings a link. The second clause is unchanged and still true.
 
 **Thumbnails are generated, not scaled.** 96px thumbnails written beside each
 PNG at render time, by the same code path that writes the render. The Runs list
@@ -861,7 +1045,8 @@ them.
 The cost is that nothing is visible until phase 5. Phases 1–4 are verified by
 tests and by `curl`.
 
-**1 — Storage.** `Topic.trend_status`; schema version 3 and the new tables,
+**1 — Storage.** `Topic.trend_status`; the `settings` table and its
+`pydantic-settings` source; schema version 3 and the new tables,
 absorbing `runs` and `topics`; `store.write_checkpoint`/`read_checkpoint`
 replacing `pipeline._write`/`_read`; `RunConfig`, `StageRecord` and
 `RenderRecord`; renders written to `output/<run-id>/renders/` with thumbnails;
@@ -872,16 +1057,18 @@ usage sections. No HTTP. Ends with `scripts/run_pipeline.py` persisting a
 complete run entirely through the store, and `data/zeitgeist.db` and `output/`
 cleared of everything that came before.
 
-**2 — Read API.** The FastAPI app, every read endpoint, image serving,
-`zeitgeist` restored as a console entry point that starts the server, and the
-generated TypeScript types.
+**2 — Read API.** The FastAPI app, every read endpoint including
+`GET /api/renders/{id}` and `GET /api/settings`, image serving, `zeitgeist`
+restored as a console entry point that starts the server, and the generated
+TypeScript types.
 Ends with a run produced by the harness served correctly over HTTP.
 
 **3 — Execution backend.** `RunObserver` and `CancelToken`; the DEBUG log
 statements; log capture into `log_lines` and the ring buffer; the queue and
 worker thread; run lifecycle and startup reconciliation; `POST /api/runs`,
-resume, stop, abort; the SSE endpoint; `config/options` and the model registry.
-Ends with a run startable, watchable and stoppable over HTTP, with no UI.
+resume, stop, abort; the SSE endpoint; `config/options` and the model registry;
+`PUT /api/settings`. Ends with a run startable, watchable and stoppable over
+HTTP, with no UI.
 
 **4 — Generation backend.** The on-demand executor; briefing a topic that was
 never ranked, which is what the below-the-cut `generate ↗` needs; the
@@ -892,16 +1079,21 @@ TypeScript types generated for the last time.
 **5 — Design system and read-only screens.** Vite scaffold, `tokens.css`, the
 shared primitives, the typed client, router, layout and sidebar; then the
 merged Topics screen, Runs list, Run detail (completed and failed) and Topic
-detail. Ends with any run the harness has produced browsable end to end.
+detail; the full-size meme view; the empty states and the filter-matched-nothing
+line; the partial-failure and source-outage presentations. Ends with any run the
+harness has produced browsable end to end, including one that failed and one
+that half-succeeded.
 
 **6 — Run control screens.** The New run screen and its four config cards; the
-two in-flight run-detail states; the live log with its follow behaviour; the
-sidebar in-flight card and the run strip. Ends with a run startable and
-watchable from the browser.
+two in-flight run-detail states; the live log with its follow behaviour and
+jump-to-latest; the inline abort confirmation; the sidebar in-flight card and
+the run strip; the settings screen and its third nav item. Ends with a run
+startable, watchable and abortable from the browser.
 
 **7 — Generation screens.** The two generation panels on topic detail, the
-rendered grid with its three tile states, the inline delete confirm, and the
-below-the-cut `generate ↗` link. Ends with the design built.
+rendered grid with its three tile states, the inline delete confirm, the
+below-the-cut `generate ↗` link, and the nothing-rendered-yet state. Ends with
+the design built.
 
 ### Landing the work
 
@@ -926,21 +1118,17 @@ written earlier if that proved convenient.
 
 ## Deferred
 
-Flagged by the handoff as not yet designed, and deliberately not improvised
-here:
+Everything else the handoff flags as undesigned is now in scope and specified
+in "Screens the handoff did not design". Two things are not:
 
-- **The full-size meme view.** The largest gap. Memes appear only as
-  thumbnails, so there is no screen for a PNG at real scale, the brief and slot
-  text behind it, or downloading it.
-- **Empty and first-run states.** No runs, no topics, no memes — the first
-  screen anyone sees.
-- **Failure states beyond the failed run row**: the abort confirmation, a
-  partial-failure run, and a source outage where ingest returns nothing. The
-  renderer fails per-meme, so partial failure is real.
-- **A settings screen** for the `.env` values cut from the New run screen.
-- **Mobile layouts.**
-- **A "jump to latest" affordance** when the log releases follow. The mocks
-  draw the indicator but no way back to the bottom.
+- **Mobile layouts.** Not a missing screen but a second layout for every screen
+  in the app, and the sidebar, the 4-up grids, the ranking grid and the
+  two-column generation panels each need rethinking rather than reflowing. The
+  handoff's own turn-1 mobile exploration was rejected, and it asks that mobile
+  be treated as undesigned rather than inferred from the desktop layouts.
+- **Music output.** The topic-detail grid has a dashed "Track — not built yet"
+  tile marking where a second output type would live. There is no pipeline
+  behind it, so there is nothing to build against.
 
 Also out of scope, and worth naming so it is a decision rather than an
 oversight: cancellation inside the Bluesky fetch, fuzzy cross-run topic
