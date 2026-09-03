@@ -1045,7 +1045,14 @@ def test_finishing_a_run_records_the_counts_the_runs_list_shows(tmp_path):
     record = store.get_run("r1")
     assert record is not None
     assert record.status == "ok"
-    assert (record.trends_found, record.topics_kept) == (25, 5)
+    # All four, not a sample: they are four ints bound positionally in one
+    # UPDATE, which is exactly the shape a swap hides in.
+    assert (
+        record.item_count,
+        record.trends_found,
+        record.topics_kept,
+        record.phrases_found,
+    ) == (214, 25, 5, 31)
     assert record.finished_at is not None
 
 
@@ -1262,11 +1269,19 @@ def test_writing_a_checkpoint_twice_replaces_it(tmp_path):
 
 
 def test_write_checkpoint_reports_the_payload_size(tmp_path):
+    """The stage card shows this number, so it has to be the size of what
+    was actually written - not merely some positive number. Returning
+    len(models) would satisfy `> 0` and be wrong by three orders."""
     store = _store(tmp_path)
 
     size = store.write_checkpoint("r1", Stage.ANALYSE, [make_topic()])
 
-    assert size > 0
+    [(stored_bytes,)] = store._conn.execute(
+        "SELECT LENGTH(CAST(payload AS BLOB)) FROM checkpoints "
+        "WHERE run_id = ? AND stage = ?",
+        ("r1", Stage.ANALYSE.value),
+    ).fetchall()
+    assert size == stored_bytes
 
 
 def test_reading_a_checkpoint_that_was_never_written_raises(tmp_path):
@@ -1553,7 +1568,7 @@ A pure function, and the accessor that writes what it returns.
 Create `tests/test_projection.py`:
 
 ```python
-from zeitgeist.models import Sentiment
+from zeitgeist.models import Register, Sentiment
 from zeitgeist.projection import flatten
 
 from tests.run_factory import make_dossier, make_topic
@@ -1618,13 +1633,26 @@ def test_the_top_phrase_is_the_one_with_the_most_distinct_authors():
     assert row.top_phrase_authors == 31
 
 
-def test_enums_are_flattened_to_their_values():
-    """SQLite has no enum type, and the API serialises these as strings."""
-    dossier = make_dossier(event_sentiment=Sentiment.SCHADENFREUDE)
+def test_the_dossier_fields_land_in_their_matching_columns():
+    """event_sentiment, conversation_register and meme_potential come from
+    three different Dossier fields through the same
+    `None if dossier is None else dossier.X` shape. Swapping two of those
+    assignments would still read plausibly, so all three are pinned.
+
+    Also covers the enum flattening: SQLite has no enum type and the API
+    serialises these as strings.
+    """
+    dossier = make_dossier(
+        event_sentiment=Sentiment.SCHADENFREUDE,
+        conversation_register=Register.DUNKING,
+        meme_potential=0.42,
+    )
 
     [row] = flatten("r1", [make_topic(dossier=dossier)], meme_potential_weight=0.3)
 
     assert row.event_sentiment == "schadenfreude"
+    assert row.conversation_register == "dunking"
+    assert row.meme_potential == 0.42
 
 
 def test_post_count_is_the_number_of_items_behind_the_topic():
@@ -2107,6 +2135,36 @@ def test_clearing_a_setting_falls_back_to_the_default(tmp_path, monkeypatch):
     assert Settings(_env_file=None).bluesky_trend_limit == 25
 
 
+def test_a_stored_setting_beats_a_dotenv_value(tmp_path, monkeypatch):
+    """The whole point of this source is *where* it sits. Every other test
+    here passes _env_file=None, so dotenv never participates and the
+    ordering bug the source exists to avoid - sitting after dotenv rather
+    than before it - would pass all of them."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("BLUESKY_TREND_LIMIT=7\n", encoding="utf-8")
+    _store_with(tmp_path, bluesky_trend_limit=11)
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "zeitgeist.db"))
+
+    settings = Settings(_env_file=env_file)
+
+    assert settings.bluesky_trend_limit == 11
+
+
+def test_a_dotenv_value_applies_once_the_override_is_cleared(tmp_path, monkeypatch):
+    """The other half of the same ordering: Reset to .env has to reveal the
+    file's value, not the field default."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("BLUESKY_TREND_LIMIT=7\n", encoding="utf-8")
+    _store_with(tmp_path, bluesky_trend_limit=11)
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "zeitgeist.db"))
+
+    store = Store(tmp_path / "zeitgeist.db")
+    store.clear_setting("bluesky_trend_limit")
+    store.close()
+
+    assert Settings(_env_file=env_file).bluesky_trend_limit == 7
+
+
 def test_a_missing_database_is_not_an_error(tmp_path, monkeypatch):
     """Settings must load before anything has created the database - the
     harness builds Settings in order to find out where the database goes."""
@@ -2348,8 +2406,10 @@ def test_a_thumbnail_fits_inside_the_box_and_keeps_its_aspect(tmp_path):
     out = write_thumbnail(source, tmp_path / "meme.thumb.png")
 
     with Image.open(out) as image:
-        assert max(image.size) == THUMBNAIL_PX
-        assert image.size == (96, 48)
+        # Derived from the constant rather than pinned at 96, so raising
+        # THUMBNAIL_PX stays a decision rather than a test failure. What is
+        # asserted is the 2:1 source keeping its shape.
+        assert image.size == (THUMBNAIL_PX, THUMBNAIL_PX // 2)
 
 
 def test_a_thumbnail_of_a_tall_image_is_bounded_by_its_height(tmp_path):
@@ -2359,7 +2419,7 @@ def test_a_thumbnail_of_a_tall_image_is_bounded_by_its_height(tmp_path):
     out = write_thumbnail(source, tmp_path / "tall.thumb.png")
 
     with Image.open(out) as image:
-        assert image.size == (24, 96)
+        assert image.size == (THUMBNAIL_PX // 4, THUMBNAIL_PX)
 
 
 def test_a_thumbnail_is_never_larger_than_its_source(tmp_path):
@@ -2938,6 +2998,27 @@ def test_a_skipped_stage_is_recorded_as_skipped(tmp_path):
     assert stages[Stage.GENERATE] == "ok"
 
 
+def test_stage_summaries_report_what_each_stage_did(tmp_path):
+    """The stage cards render this line verbatim, and nothing else asserts
+    it - a stage handed another stage's summary, or a miscounted one, would
+    show as plausible-looking noise on every run."""
+    store = _store(tmp_path)
+    run_id = run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence()]),
+        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+        store=store,
+        run_id="r1",
+    )
+
+    summaries = {s.stage: s.summary for s in store.stages_for_run(run_id)}
+
+    assert summaries[Stage.INGEST] == "1 trend, 1 post"
+    assert summaries[Stage.ANALYSE] == "1 topic distilled"
+    assert summaries[Stage.EVALUATE] == "1 of 1 kept"
+    assert summaries[Stage.GENERATE] == "1 of 1 rendered"
+
+
 def test_run_topics_covers_every_topic_not_just_the_kept_ones(tmp_path):
     """The ranking screen draws below-the-cut rows, so they need rows."""
     store = _store(tmp_path)
@@ -2953,6 +3034,9 @@ def test_run_topics_covers_every_topic_not_just_the_kept_ones(tmp_path):
 
     assert len(store.read_checkpoint(run_id, Stage.EVALUATE, ScoredTopic)) == 1
     assert len(store.run_topics(run_id)) == 2
+    # Two trends, so this run is also the plural branch of _count.
+    summaries = {s.stage: s.summary for s in store.stages_for_run(run_id)}
+    assert summaries[Stage.INGEST] == "2 trends, 2 posts"
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -3006,7 +3090,14 @@ def _stage(
     )
 ```
 
-In `run_pipeline`, record every stage in `ORDER`. A stage below `resuming` is `skipped` with no timings and the summary `"skipped"`; a stage that runs is timed with `datetime.now(UTC)` taken immediately before it starts. Use `store.write_analyse_checkpoint` in place of `store.write_checkpoint` for `Stage.ANALYSE`. Summaries: ingest `f"{len(evidence)} trends, {len(items)} posts"`, analyse `f"{len(topics)} topics distilled"`, evaluate `f"{len(ranked)} of {len(topics)} kept"`, generate `f"{rendered} of {len(briefs)} rendered"`.
+In `run_pipeline`, record every stage in `ORDER`. A stage below `resuming` is `skipped` with no timings and the summary `"skipped"`; a stage that runs is timed with `datetime.now(UTC)` taken immediately before it starts. Use `store.write_analyse_checkpoint` in place of `store.write_checkpoint` for `Stage.ANALYSE`. Summaries go through a pluralisation helper, because `"1 trends, 1 posts"` is what a naive f-string produces and the stage card renders this text verbatim:
+
+```python
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+```
+
+Ingest `f"{_count(len(evidence), 'trend')}, {_count(len(items), 'post')}"`, analyse `f"{_count(len(topics), 'topic')} distilled"`, evaluate `f"{len(ranked)} of {len(topics)} kept"`, generate `f"{rendered} of {len(briefs)} rendered"`. The last two need no helper — "of" carries the count.
 
 Add `StageRecord` to the records import.
 
