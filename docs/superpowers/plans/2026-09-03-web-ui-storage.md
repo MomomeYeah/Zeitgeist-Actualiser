@@ -1233,7 +1233,7 @@ Expected: PASS.
 
 Run: `uv run ruff check . && uv run ruff format --check . && uv run ty check && uv run pytest`
 
-Expected: `pytest` still fails in `tests/test_pipeline.py`, which calls `store.finish_run` with the old signature. That is Task 14's job. Everything else passes.
+Expected: `pytest` still fails in `tests/test_pipeline.py`. `run_pipeline` still calls `store.finish_run` with the old signature, so every test that runs the pipeline raises `TypeError`, including the two you just rewrote. Task 12 rewires the pipeline and makes them pass. Everything outside `test_pipeline.py` passes.
 
 - [ ] **Step 10: Commit**
 
