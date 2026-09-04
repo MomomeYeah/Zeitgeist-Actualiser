@@ -162,7 +162,24 @@ def make_topic(
 
 
 def make_scored_topic(
-    tid: str = "airport-cat", *, rank: int = 1, **kwargs
+    tid: str = "airport-cat",
+    *,
+    rank: int = 1,
+    label: str | None = None,
+    trend_status: TrendStatus = "trending",
+    trend_score: float = 0.91,
+    item_ids: list[str] | None = None,
+    dossier: Dossier | None = None,
+    score_components: dict[str, float] | None = None,
 ) -> ScoredTopic:
     """A ScoredTopic with the same defaults as `make_topic`, plus a rank."""
-    return ScoredTopic(**make_topic(tid, **kwargs).model_dump(), final_rank=rank)
+    topic = make_topic(
+        tid,
+        label=label,
+        trend_status=trend_status,
+        trend_score=trend_score,
+        item_ids=item_ids,
+        dossier=dossier,
+        score_components=score_components,
+    )
+    return ScoredTopic(**topic.model_dump(), final_rank=rank)
