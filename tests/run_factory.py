@@ -1,0 +1,168 @@
+"""Builders for run bookkeeping records and the topics tests store.
+
+Built through the real models for the same reason `template_factory` is: a
+change to `RunConfig` or `RenderRecord` surfaces as a type error at one site
+rather than as a ValidationError raised from inside dozens of unrelated
+tests. Passing these as plain dicts would defeat that — pydantic coerces
+them at runtime and ty never checks them.
+
+Defaults exist so a test states only what it asserts on. A test that cares
+about a topic's sentiment passes one; the rest say nothing and get something
+valid.
+"""
+
+from datetime import UTC, datetime
+from typing import Literal
+
+from zeitgeist.models import (
+    Dossier,
+    Phrase,
+    Register,
+    ScoredTopic,
+    Sentiment,
+    Topic,
+    TrendStatus,
+)
+from zeitgeist.records import (
+    AutoOrigin,
+    Origin,
+    RenderRecord,
+    RunConfig,
+    Stage,
+    StageRecord,
+    StageStatus,
+)
+
+FIXED_TIME = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+
+
+def make_run_config(
+    *,
+    sources: list[str] | None = None,
+    trend_limit: int = 25,
+    posts_per_trend: int = 10,
+    top_count: int = 5,
+    meme_potential_weight: float = 0.3,
+    phrase_min_authors: int = 3,
+    distil_char_budget: int = 24000,
+    distil_concurrency: int = 4,
+    llm_provider: str = "anthropic",
+    llm_model: str = "claude-sonnet-5",
+    template_ids: list[str] | None = None,
+) -> RunConfig:
+    return RunConfig(
+        sources=sources if sources is not None else ["bluesky"],
+        trend_limit=trend_limit,
+        posts_per_trend=posts_per_trend,
+        top_count=top_count,
+        meme_potential_weight=meme_potential_weight,
+        phrase_min_authors=phrase_min_authors,
+        distil_char_budget=distil_char_budget,
+        distil_concurrency=distil_concurrency,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        template_ids=template_ids,
+    )
+
+
+def make_stage_record(
+    stage: Stage = Stage.INGEST,
+    *,
+    status: StageStatus = "ok",
+    started_at: datetime | None = FIXED_TIME,
+    finished_at: datetime | None = FIXED_TIME,
+    payload_bytes: int | None = 1024,
+    summary: str = "25 trends",
+) -> StageRecord:
+    return StageRecord(
+        stage=stage,
+        status=status,
+        started_at=started_at,
+        finished_at=finished_at,
+        payload_bytes=payload_bytes,
+        summary=summary,
+    )
+
+
+def make_render_record(
+    rid: str = "rnd1",
+    *,
+    run_id: str = "20260901T120000Z",
+    topic_id: str = "airport-cat",
+    template_id: str = "drake",
+    caption_slots: dict[str, str] | None = None,
+    origin: Origin | None = None,
+    status: Literal["generating", "ready", "failed"] = "ready",
+    error: str | None = None,
+    created_at: datetime = FIXED_TIME,
+) -> RenderRecord:
+    return RenderRecord(
+        id=rid,
+        run_id=run_id,
+        topic_id=topic_id,
+        template_id=template_id,
+        caption_slots=(
+            caption_slots
+            if caption_slots is not None
+            else {"rejected": "a", "preferred": "b"}
+        ),
+        origin=origin if origin is not None else AutoOrigin(rationale="it fits"),
+        status=status,
+        error=error,
+        created_at=created_at,
+    )
+
+
+def make_dossier(
+    *,
+    event_sentiment: Sentiment = Sentiment.FUNNY,
+    conversation_register: Register = Register.RIFFING,
+    meme_potential: float | None = 0.86,
+    phrases: list[Phrase] | None = None,
+) -> Dossier:
+    return Dossier(
+        what_happened="A cat got into an airport.",
+        key_entities=["Heathrow"],
+        conversation_summary="Everyone is delighted.",
+        conversation_register=conversation_register,
+        event_sentiment=event_sentiment,
+        meme_potential=meme_potential,
+        recurring_phrases=(
+            phrases
+            if phrases is not None
+            else [Phrase(text="airport cat", occurrences=48, distinct_authors=31)]
+        ),
+    )
+
+
+def make_topic(
+    tid: str = "airport-cat",
+    *,
+    label: str | None = None,
+    trend_status: TrendStatus = "trending",
+    trend_score: float = 0.91,
+    item_ids: list[str] | None = None,
+    dossier: Dossier | None = None,
+    score_components: dict[str, float] | None = None,
+) -> Topic:
+    return Topic(
+        id=tid,
+        label=label if label is not None else tid.replace("-", " ").title(),
+        summary="A cat got into an airport.",
+        item_ids=item_ids if item_ids is not None else ["at://post/1"],
+        trend_status=trend_status,
+        trend_score=trend_score,
+        score_components=(
+            score_components
+            if score_components is not None
+            else {"bluesky": 0.91, "corroboration": 1.0}
+        ),
+        dossier=dossier if dossier is not None else make_dossier(),
+    )
+
+
+def make_scored_topic(
+    tid: str = "airport-cat", *, rank: int = 1, **kwargs
+) -> ScoredTopic:
+    """A ScoredTopic with the same defaults as `make_topic`, plus a rank."""
+    return ScoredTopic(**make_topic(tid, **kwargs).model_dump(), final_rank=rank)
