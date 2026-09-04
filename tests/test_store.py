@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from datetime import UTC, datetime
 
 import pytest
@@ -482,6 +483,49 @@ def test_creates_parent_directory(tmp_path):
     store = Store(tmp_path / "nested" / "dir" / "test.db")
     store.init_schema()
     assert (tmp_path / "nested" / "dir" / "test.db").exists()
+
+
+def _query_from_another_thread(store: Store) -> BaseException | None:
+    """Run a trivial query against `store` on a fresh thread and hand back
+    whatever it raised, or None if it didn't.
+    """
+    caught: list[BaseException | None] = [None]
+
+    def target() -> None:
+        try:
+            store._conn.execute("SELECT 1")
+        except BaseException as exc:  # noqa: BLE001 - relaying, not handling
+            caught[0] = exc
+
+    thread = threading.Thread(target=target)
+    thread.start()
+    thread.join()
+    return caught[0]
+
+
+def test_a_default_store_refuses_cross_thread_use(tmp_path):
+    """The safe default: a Store built for a single thread raises
+    immediately if another thread ever touches it by mistake, rather than
+    corrupting data silently. This is what the check_same_thread=False API
+    app passes stays opt-in for every other caller.
+    """
+    store = _store(tmp_path)
+
+    error = _query_from_another_thread(store)
+
+    assert isinstance(error, sqlite3.ProgrammingError)
+
+
+def test_check_same_thread_false_permits_cross_thread_use(tmp_path):
+    """The API app holds one Store across FastAPI's thread pool and
+    TestClient's portal thread, so it opts out of the guard above.
+    """
+    store = Store(tmp_path / "z.db", check_same_thread=False)
+    store.init_schema()
+
+    error = _query_from_another_thread(store)
+
+    assert error is None
 
 
 def test_a_checkpoint_round_trips_through_its_model(tmp_path):

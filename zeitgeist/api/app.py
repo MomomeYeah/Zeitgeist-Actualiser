@@ -36,7 +36,14 @@ def create_app(settings: Settings) -> FastAPI:
     # lifespan only when used as a context manager, and two of this task's
     # tests call `create_app` without a client at all. The lifespan's only
     # job is to close it.
-    store = Store(settings.db_path)
+    #
+    # check_same_thread=False: this Store is held for the app's whole
+    # lifetime, but ASGI servers dispatch sync dependencies and sync path
+    # operations through a thread pool, and TestClient runs the lifespan's
+    # startup/shutdown on its own portal thread — so the connection is
+    # legitimately touched from more than one thread. See the parameter's
+    # docstring on Store.__init__ for why that is safe here.
+    store = Store(settings.db_path, check_same_thread=False)
     store.init_schema()
 
     @asynccontextmanager

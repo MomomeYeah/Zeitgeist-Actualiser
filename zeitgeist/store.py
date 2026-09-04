@@ -44,19 +44,26 @@ class MissingCheckpoint(Exception):
 
 
 class Store:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, check_same_thread: bool = True) -> None:
+        """`check_same_thread` defaults to sqlite3's own safe default: a
+        `Store` built for a single thread should leave it alone, and gets
+        an immediate `sqlite3.ProgrammingError` if it is ever touched from
+        another one.
+
+        The API app (`zeitgeist/api/app.py`) is the one caller that passes
+        `False`. It opens a single `Store` for the whole life of the FastAPI
+        app, but that connection is touched from more than one thread: ASGI
+        servers dispatch sync dependencies and sync path operations through
+        a thread pool, and `TestClient` runs the lifespan's startup and
+        shutdown on its own portal thread. Passing `False` there is safe
+        because `sqlite3.threadsafety == 3` in this environment — the
+        underlying SQLite library is built in serialized mode, so a single
+        connection is safe to share across threads, concurrently, without
+        external locking.
+        """
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        # check_same_thread=False: the API app opens one Store for its whole
-        # lifetime (see zeitgeist/api/app.py), but FastAPI's lifespan and its
-        # sync dependencies can each run on a different thread than the one
-        # that constructed the app — ASGI servers dispatch sync code through
-        # a thread pool, and TestClient runs startup/shutdown on its own
-        # portal thread. Access here is still effectively serial (one event
-        # loop, no concurrent statement execution), so this only lifts
-        # sqlite3's same-thread guard rather than papering over real
-        # concurrent use.
-        self._conn = sqlite3.connect(self._path, check_same_thread=False)
+        self._conn = sqlite3.connect(self._path, check_same_thread=check_same_thread)
         # The worker thread writes while the API reads. Without WAL a reader
         # blocks behind every checkpoint write, which the UI feels as the
         # in-flight poll hitching.
