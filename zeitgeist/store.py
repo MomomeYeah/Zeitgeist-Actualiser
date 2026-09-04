@@ -6,37 +6,10 @@ from pathlib import Path
 
 from zeitgeist.analysis.slug import slugify
 from zeitgeist.models import Topic
+from zeitgeist.records import RunConfig, RunError, RunRecordRow, RunStatus
+from zeitgeist.schema import SCHEMA, SCHEMA_VERSION
 
-SCHEMA_VERSION = 2
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS runs (
-    run_id      TEXT PRIMARY KEY,
-    started_at  TEXT NOT NULL,
-    finished_at TEXT,
-    status      TEXT,
-    item_count  INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS topics (
-    run_id      TEXT NOT NULL,
-    label       TEXT NOT NULL,
-    trend_score REAL NOT NULL,
-    created_at  TEXT NOT NULL,
-    PRIMARY KEY (run_id, label)
-);
-
-CREATE TABLE IF NOT EXISTS topic_scores (
-    run_id    TEXT NOT NULL,
-    label     TEXT NOT NULL,
-    platform  TEXT NOT NULL,
-    sub_score REAL NOT NULL,
-    PRIMARY KEY (run_id, label, platform)
-);
-
-CREATE INDEX IF NOT EXISTS idx_topics_label ON topics (label);
-CREATE INDEX IF NOT EXISTS idx_topic_scores_label ON topic_scores (label);
-"""
+__all__ = ["SCHEMA_VERSION", "Store", "StoreSchemaError"]
 
 # score_components carries this alongside the real platform sub-scores. It is a
 # multiplier, not a platform's opinion, so it must never reach topic_scores or be
@@ -53,10 +26,14 @@ class Store:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self._path)
+        # The worker thread writes while the API reads. Without WAL a reader
+        # blocks behind every checkpoint write, which the UI feels as the
+        # in-flight poll hitching.
+        self._conn.execute("PRAGMA journal_mode = WAL")
 
     def init_schema(self) -> None:
         existing = self._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='runs'"
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='run_records'"
         ).fetchone()
         if existing is None:
             self._conn.executescript(SCHEMA)
@@ -72,20 +49,73 @@ class Store:
                 "cross-run trend history will be lost, nothing else."
             )
 
-    def start_run(self, run_id: str) -> None:
+    def start_run(self, run_id: str, config: RunConfig) -> None:
         self._conn.execute(
-            "INSERT OR REPLACE INTO runs (run_id, started_at) VALUES (?, ?)",
-            (run_id, _now()),
+            "INSERT OR REPLACE INTO run_records "
+            "(run_id, status, started_at, config) VALUES (?, ?, ?, ?)",
+            (run_id, "running", _now(), config.model_dump_json()),
         )
         self._conn.commit()
 
-    def finish_run(self, run_id: str, status: str, item_count: int) -> None:
+    def finish_run(
+        self,
+        run_id: str,
+        *,
+        status: RunStatus,
+        item_count: int,
+        trends_found: int,
+        topics_kept: int,
+        phrases_found: int,
+    ) -> None:
         self._conn.execute(
-            "UPDATE runs SET finished_at = ?, status = ?, item_count = ? "
-            "WHERE run_id = ?",
-            (_now(), status, item_count, run_id),
+            "UPDATE run_records SET status = ?, finished_at = ?, item_count = ?, "
+            "trends_found = ?, topics_kept = ?, phrases_found = ? WHERE run_id = ?",
+            (
+                status,
+                _now(),
+                item_count,
+                trends_found,
+                topics_kept,
+                phrases_found,
+                run_id,
+            ),
         )
         self._conn.commit()
+
+    def fail_run(self, run_id: str, error: RunError) -> None:
+        """Record why a run failed.
+
+        Separate from finish_run rather than a status argument to it, because
+        a failure has no counts to record and an error to record instead.
+        """
+        self._conn.execute(
+            "UPDATE run_records SET status = ?, finished_at = ?, error = ? "
+            "WHERE run_id = ?",
+            ("failed", _now(), error.model_dump_json(), run_id),
+        )
+        self._conn.commit()
+
+    def get_run(self, run_id: str) -> RunRecordRow | None:
+        row = self._conn.execute(
+            "SELECT run_id, status, started_at, finished_at, config, error, "
+            "item_count, trends_found, topics_kept, phrases_found "
+            "FROM run_records WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return RunRecordRow(
+            run_id=row[0],
+            status=row[1],
+            started_at=datetime.fromisoformat(row[2]),
+            finished_at=datetime.fromisoformat(row[3]) if row[3] else None,
+            config=RunConfig.model_validate_json(row[4]),
+            error=RunError.model_validate_json(row[5]) if row[5] else None,
+            item_count=row[6],
+            trends_found=row[7],
+            topics_kept=row[8],
+            phrases_found=row[9],
+        )
 
     def record_topics(self, run_id: str, topics: list[Topic]) -> None:
         # Keyed on slugify(label), not the raw label: labels are free text
@@ -94,11 +124,6 @@ class Store:
         # runs or rank_delta never finds a match against real data. This
         # fixes case and punctuation drift only, not wording drift — a
         # genuinely reworded label ("Rescue Dog Adoptions") still misses.
-        self._conn.executemany(
-            "INSERT OR REPLACE INTO topics "
-            "(run_id, label, trend_score, created_at) VALUES (?, ?, ?, ?)",
-            [(run_id, slugify(t.label), t.trend_score, _now()) for t in topics],
-        )
         self._conn.executemany(
             "INSERT OR REPLACE INTO topic_scores "
             "(run_id, label, platform, sub_score) VALUES (?, ?, ?, ?)",
@@ -121,12 +146,12 @@ class Store:
             """
             SELECT s.platform, s.label, s.sub_score
             FROM topic_scores s
-            JOIN runs r ON r.run_id = s.run_id
+            JOIN run_records r ON r.run_id = s.run_id
             WHERE s.run_id != ?
               AND r.started_at = (
                   SELECT MAX(r2.started_at)
                   FROM topic_scores s2
-                  JOIN runs r2 ON r2.run_id = s2.run_id
+                  JOIN run_records r2 ON r2.run_id = s2.run_id
                   WHERE s2.label = s.label
                     AND s2.platform = s.platform
                     AND s2.run_id != ?
@@ -139,18 +164,6 @@ class Store:
         for platform, label, sub_score in rows:
             previous.setdefault(platform, {})[label] = sub_score
         return previous
-
-    def run_summary(self, run_id: str) -> dict | None:
-        """Outcome of a run, or None if there is no such run. Used by the CLI
-        to report what a run actually did.
-        """
-        row = self._conn.execute(
-            "SELECT status, item_count, finished_at FROM runs WHERE run_id = ?",
-            (run_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return {"status": row[0], "item_count": row[1], "finished_at": row[2]}
 
     def close(self) -> None:
         self._conn.close()

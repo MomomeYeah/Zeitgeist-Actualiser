@@ -1,7 +1,11 @@
+import sqlite3
+
 import pytest
 
+from tests.run_factory import make_run_config
 from zeitgeist.analysis.slug import slugify
 from zeitgeist.models import Topic
+from zeitgeist.records import RunError, Stage
 from zeitgeist.store import SCHEMA_VERSION, Store, StoreSchemaError
 
 
@@ -22,13 +26,148 @@ def _store(tmp_path) -> Store:
     return store
 
 
+def test_schema_creates_every_table_the_ui_reads(tmp_path):
+    store = Store(tmp_path / "z.db")
+    store.init_schema()
+
+    names = {
+        row[0]
+        for row in store._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+
+    assert {
+        "checkpoints",
+        "run_records",
+        "run_stages",
+        "run_topics",
+        "renders",
+        "log_lines",
+        "settings",
+        "topic_scores",
+    } <= names
+
+
+def test_a_reader_is_not_blocked_by_an_open_write(tmp_path):
+    """The worker writes while the API reads. Without WAL the reader waits
+    for the writer and the in-flight poll hitches every time a stage
+    checkpoints; with it the reader sees the last committed snapshot.
+
+    Asserts the behaviour rather than `PRAGMA journal_mode`, which would
+    fail only if someone changed the setting on purpose.
+    """
+    path = tmp_path / "z.db"
+    writer = Store(path)
+    writer.init_schema()
+    writer.start_run("r1", make_run_config())
+
+    writer._conn.execute("BEGIN IMMEDIATE")
+    writer._conn.execute(
+        "INSERT INTO checkpoints (run_id, stage, payload, written_at) "
+        "VALUES ('r2', 'ingest', '[]', '2026-09-01T00:00:00+00:00')"
+    )
+
+    # timeout=0.1 so a rollback-journal database fails fast rather than
+    # hanging for sqlite3's five-second default.
+    reader = sqlite3.connect(path, timeout=0.1)
+    try:
+        [(count,)] = reader.execute("SELECT COUNT(*) FROM run_records").fetchall()
+    finally:
+        reader.close()
+        writer._conn.rollback()
+        writer.close()
+
+    assert count == 1
+
+
+def test_a_database_from_an_older_schema_is_refused(tmp_path):
+    path = tmp_path / "z.db"
+    store = Store(path)
+    store.init_schema()
+    store._conn.execute("PRAGMA user_version = 2")
+    store._conn.commit()
+    store.close()
+
+    with pytest.raises(StoreSchemaError, match="version 2"):
+        Store(path).init_schema()
+
+
+def test_a_started_run_records_the_config_it_froze(tmp_path):
+    """Run detail's config line and Re-run config both need what the run
+    used, which a since-edited .env cannot supply."""
+    store = _store(tmp_path)
+    config = make_run_config(top_count=9, llm_model="qwen3.5")
+
+    store.start_run("r1", config)
+
+    record = store.get_run("r1")
+    assert record is not None
+    assert record.status == "running"
+    assert record.config.top_count == 9
+    assert record.config.llm_model == "qwen3.5"
+    assert record.finished_at is None
+
+
+def test_finishing_a_run_records_the_counts_the_runs_list_shows(tmp_path):
+    store = _store(tmp_path)
+    store.start_run("r1", make_run_config())
+
+    store.finish_run(
+        "r1",
+        status="ok",
+        item_count=214,
+        trends_found=25,
+        topics_kept=5,
+        phrases_found=31,
+    )
+
+    record = store.get_run("r1")
+    assert record is not None
+    assert record.status == "ok"
+    # All four, not a sample: they are four ints bound positionally in one
+    # UPDATE, which is exactly the shape a swap hides in.
+    assert (
+        record.item_count,
+        record.trends_found,
+        record.topics_kept,
+        record.phrases_found,
+    ) == (214, 25, 5, 31)
+    assert record.finished_at is not None
+
+
+def test_a_failed_run_records_the_error_and_the_stage(tmp_path):
+    """Today a failure leaves a NULL status and the reason is only printed.
+    The Runs screen renders the class, the stage and the message."""
+    store = _store(tmp_path)
+    store.start_run("r1", make_run_config())
+
+    store.fail_run(
+        "r1",
+        RunError(kind="SourceError", message="no trends returned", stage=Stage.INGEST),
+    )
+
+    record = store.get_run("r1")
+    assert record is not None
+    assert record.status == "failed"
+    assert record.error is not None
+    assert record.error.kind == "SourceError"
+    assert record.error.stage is Stage.INGEST
+
+
+def test_get_run_returns_none_for_a_run_that_does_not_exist(tmp_path):
+    assert _store(tmp_path).get_run("nope") is None
+
+
 def test_previous_sub_scores_are_keyed_by_platform_then_label_slug(tmp_path):
     store = Store(tmp_path / "z.db")
     store.init_schema()
-    store.start_run("r1")
+    store.start_run("r1", make_run_config())
     store.record_topics("r1", [_topic("Shelter Dog Adoption", {"lemmy": 0.7})])
-    store.finish_run("r1", status="ok", item_count=1)
-    store.start_run("r2")
+    store.finish_run(
+        "r1", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
+    )
+    store.start_run("r2", make_run_config())
 
     previous = store.previous_sub_scores("r2")
 
@@ -40,10 +179,12 @@ def test_sub_scores_from_different_platforms_do_not_collide(tmp_path):
     A schema keyed only on (run_id, label) would silently lose one."""
     store = Store(tmp_path / "z.db")
     store.init_schema()
-    store.start_run("r1")
+    store.start_run("r1", make_run_config())
     store.record_topics("r1", [_topic("Cats", {"lemmy": 0.4, "wikipedia": 0.9})])
-    store.finish_run("r1", status="ok", item_count=1)
-    store.start_run("r2")
+    store.finish_run(
+        "r1", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
+    )
+    store.start_run("r2", make_run_config())
 
     previous = store.previous_sub_scores("r2")
 
@@ -57,10 +198,12 @@ def test_corroboration_is_not_persisted_as_a_platform(tmp_path):
     rank-delta compare a score against a multiplier."""
     store = Store(tmp_path / "z.db")
     store.init_schema()
-    store.start_run("r1")
+    store.start_run("r1", make_run_config())
     store.record_topics("r1", [_topic("Cats", {"lemmy": 0.4, "corroboration": 1.25})])
-    store.finish_run("r1", status="ok", item_count=1)
-    store.start_run("r2")
+    store.finish_run(
+        "r1", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
+    )
+    store.start_run("r2", make_run_config())
 
     previous = store.previous_sub_scores("r2")
 
@@ -71,20 +214,18 @@ def test_a_stale_database_is_rejected_with_an_actionable_message(tmp_path):
     """CREATE TABLE IF NOT EXISTS accepts an old schema silently and fails
     later with something cryptic. This turns it into a startup failure."""
     path = tmp_path / "z.db"
-    import sqlite3
-
-    conn = sqlite3.connect(path)
-    conn.executescript("CREATE TABLE runs (run_id TEXT PRIMARY KEY);")
-    conn.execute("PRAGMA user_version = 1")
-    conn.commit()
-    conn.close()
+    store = Store(path)
+    store.init_schema()
+    store._conn.execute("PRAGMA user_version = 1")
+    store._conn.commit()
+    store.close()
 
     # Matches the variable part — which file, and which versions — rather
     # than the fixed prose, following the same pattern as
     # tests/test_config.py's match="mastodon". Rewording the instruction is
     # a decision; failing to name the file the user must delete is a bug,
     # because the message is the only place that path appears.
-    with pytest.raises(StoreSchemaError, match=r"z\.db.*version 1.*expects 2"):
+    with pytest.raises(StoreSchemaError, match=r"z\.db.*version 1.*expects 3"):
         Store(path).init_schema()
 
 
@@ -111,9 +252,16 @@ def test_the_most_recent_prior_run_wins(tmp_path):
     store = Store(tmp_path / "z.db")
     store.init_schema()
     for run_id, sub_score in [("r1", 0.2), ("r2", 0.5), ("r3", 0.9)]:
-        store.start_run(run_id)
+        store.start_run(run_id, make_run_config())
         store.record_topics(run_id, [_topic("Cats", {"lemmy": sub_score})])
-        store.finish_run(run_id, status="ok", item_count=1)
+        store.finish_run(
+            run_id,
+            status="ok",
+            item_count=1,
+            trends_found=1,
+            topics_kept=1,
+            phrases_found=0,
+        )
 
     assert store.previous_sub_scores("r4") == {"lemmy": {"cats": 0.9}}
 
@@ -125,7 +273,7 @@ def test_each_label_and_platform_tracks_its_own_history(tmp_path):
     """
     store = Store(tmp_path / "z.db")
     store.init_schema()
-    store.start_run("r1")
+    store.start_run("r1", make_run_config())
     store.record_topics(
         "r1",
         [
@@ -133,11 +281,15 @@ def test_each_label_and_platform_tracks_its_own_history(tmp_path):
             _topic("Dogs", {"lemmy": 0.9}),
         ],
     )
-    store.finish_run("r1", status="ok", item_count=2)
+    store.finish_run(
+        "r1", status="ok", item_count=2, trends_found=2, topics_kept=2, phrases_found=0
+    )
 
-    store.start_run("r2")
+    store.start_run("r2", make_run_config())
     store.record_topics("r2", [_topic("Cats", {"lemmy": 0.7})])
-    store.finish_run("r2", status="ok", item_count=1)
+    store.finish_run(
+        "r2", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
+    )
 
     assert store.previous_sub_scores("r3") == {
         "lemmy": {"cats": 0.7, "dogs": 0.9},
@@ -154,7 +306,7 @@ def test_the_current_run_is_excluded_from_its_own_history(tmp_path):
     """
     store = Store(tmp_path / "z.db")
     store.init_schema()
-    store.start_run("r1")
+    store.start_run("r1", make_run_config())
     store.record_topics("r1", [_topic("Cats", {"lemmy": 0.8})])
 
     assert store.previous_sub_scores("r1") == {}
@@ -168,13 +320,17 @@ def test_the_excluded_runs_own_rows_do_not_hide_the_older_run(tmp_path):
     """
     store = Store(tmp_path / "z.db")
     store.init_schema()
-    store.start_run("r1")
+    store.start_run("r1", make_run_config())
     store.record_topics("r1", [_topic("Cats", {"lemmy": 0.2})])
-    store.finish_run("r1", status="ok", item_count=1)
+    store.finish_run(
+        "r1", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
+    )
 
-    store.start_run("r2")
+    store.start_run("r2", make_run_config())
     store.record_topics("r2", [_topic("Cats", {"lemmy": 0.99})])
-    store.finish_run("r2", status="ok", item_count=1)
+    store.finish_run(
+        "r2", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
+    )
 
     assert store.previous_sub_scores("r2") == {"lemmy": {"cats": 0.2}}
 
@@ -189,36 +345,14 @@ def test_relabelled_topic_is_still_matched_across_runs(tmp_path):
     """
     store = Store(tmp_path / "z.db")
     store.init_schema()
-    store.start_run("r1")
+    store.start_run("r1", make_run_config())
     store.record_topics("r1", [_topic("Shelter Dog Adoption", {"lemmy": 0.8})])
-    store.finish_run("r1", status="ok", item_count=1)
+    store.finish_run(
+        "r1", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
+    )
 
     previous = store.previous_sub_scores("r2")
     assert previous["lemmy"].get(slugify("shelter dog adoption")) == 0.8
-
-
-def test_finish_run_records_the_outcome_and_item_count(tmp_path):
-    """Without this, deleting the body of finish_run breaks no test, and the
-    CLI's closing summary silently reports nothing.
-    """
-    store = _store(tmp_path)
-    store.start_run("run1")
-    assert store.run_summary("run1") == {
-        "status": None,
-        "item_count": None,
-        "finished_at": None,
-    }
-
-    store.finish_run("run1", status="ok", item_count=42)
-    summary = store.run_summary("run1")
-    assert summary is not None
-    assert summary["status"] == "ok"
-    assert summary["item_count"] == 42
-    assert summary["finished_at"] is not None
-
-
-def test_run_summary_is_none_for_an_unknown_run(tmp_path):
-    assert _store(tmp_path).run_summary("never-happened") is None
 
 
 def test_init_schema_is_idempotent(tmp_path):

@@ -90,6 +90,27 @@ class RunError(BaseModel):
     stage: Stage
 
 
+class RunRecordRow(BaseModel):
+    """A row of `run_records`, read back.
+
+    The counts are `| None` because they are written when the run finishes;
+    a run still in flight has not counted anything yet.
+    """
+
+    model_config = STRICT
+
+    run_id: str
+    status: RunStatus
+    started_at: datetime
+    finished_at: datetime | None
+    config: RunConfig
+    error: RunError | None
+    item_count: int | None
+    trends_found: int | None
+    topics_kept: int | None
+    phrases_found: int | None
+
+
 class StageRecord(BaseModel):
     """One stage of one run.
 

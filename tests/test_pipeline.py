@@ -233,7 +233,10 @@ def test_item_count_reflects_the_posts_under_every_trend(tmp_path):
         store=store,
         run_id="r1",
     )
-    assert (store.run_summary("r1") or {})["item_count"] == 3
+
+    record = store.get_run("r1")
+    assert record is not None
+    assert record.item_count == 3
 
 
 def test_the_ingest_checkpoint_round_trips_through_trend_evidence(tmp_path):
@@ -269,11 +272,11 @@ def test_produces_a_png(tmp_path):
     assert list(run_dir.glob("*.png"))
 
 
-def test_records_the_run_in_the_store(tmp_path):
-    """Guards both that the run row is recorded (start_run/finish_run) and
-    that the pipeline's topics are persisted (record_topics). A single topic
-    can't be min-max normalised (score.py's MIN_TOPICS_TO_RANK), so it earns
-    no topic_scores row -- the topics table is the one to check.
+def test_records_the_run_and_its_topics_in_the_store(tmp_path):
+    """Guards both that the run row is recorded and that the pipeline's
+    topics are persisted. A single topic cannot be min-max normalised
+    (score.py's MIN_TOPICS_TO_RANK), so it earns no topic_scores row --
+    run_topics is the one to check.
     """
     store = _store(tmp_path)
     run_pipeline(
@@ -284,14 +287,10 @@ def test_records_the_run_in_the_store(tmp_path):
         run_id="r1",
     )
 
-    summary = store.run_summary("r1")
-    assert summary is not None
-    assert summary["status"] == "ok"
-
-    rows = store._conn.execute(
-        "SELECT label FROM topics WHERE run_id = ?", ("r1",)
-    ).fetchall()
-    assert rows == [("a-trend",)]
+    record = store.get_run("r1")
+    assert record is not None
+    assert record.status == "ok"
+    assert [row.label_slug for row in store.run_topics("r1")] == ["a-trend"]
 
 
 def test_resume_from_generate_reuses_ranked_topics(tmp_path):
