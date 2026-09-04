@@ -5,7 +5,7 @@ topic's dossier, and the log.
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from zeitgeist.api.app import get_store
-from zeitgeist.api.schemas import RunDetail, RunPage, RunSummary
+from zeitgeist.api.schemas import RankedTopic, RunDetail, RunPage, RunSummary
 from zeitgeist.records import ORDER, Stage
 from zeitgeist.store import Store
 
@@ -61,3 +61,21 @@ def read_run(run_id: str, store: Store = Depends(get_store)) -> RunDetail:
         stages=store.stages_for_run(run_id),
         resume_stage=resume_stage(store, run_id),
     )
+
+
+@router.get("/{run_id}/topics", response_model=list[RankedTopic])
+def read_ranking(run_id: str, store: Store = Depends(get_store)) -> list[RankedTopic]:
+    run = store.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"No such run: {run_id}")
+    counts = store.render_counts(run_id)
+    return [
+        RankedTopic(
+            topic=row,
+            render_count=counts.get(row.topic_id, 0),
+            above_cut=row.final_rank <= run.config.top_count,
+        )
+        # Already ordered by final_rank. The endpoint sorts by nothing of
+        # its own: rank_score is the single place the blend is defined.
+        for row in store.run_topics(run_id)
+    ]

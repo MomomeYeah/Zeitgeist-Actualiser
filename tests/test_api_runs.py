@@ -196,3 +196,82 @@ def test_an_unknown_run_is_a_404(tmp_path):
     client = seeded_client(tmp_path)
 
     assert client.get("/api/runs/nope").status_code == 404
+
+
+def test_the_ranking_includes_topics_below_the_cut(tmp_path):
+    """The screen draws them dimmed with a generate link - they were never
+    briefed, and that row is the escape hatch to brief them by hand."""
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                config=make_run_config(top_count=1),
+                topics=[
+                    make_topic("loud", trend_score=0.9),
+                    make_topic("quiet", trend_score=0.1),
+                ],
+            )
+        ],
+    )
+
+    body = client.get("/api/runs/20260901T120000Z/topics").json()
+
+    assert [entry["topic"]["topic_id"] for entry in body] == ["loud", "quiet"]
+    assert [entry["above_cut"] for entry in body] == [True, False]
+
+
+def test_the_ranking_is_ordered_by_the_stored_rank(tmp_path):
+    """final_rank was written with sentiment.rank_score. The endpoint sorts
+    by nothing of its own - a second implementation of the blend would
+    drift from the evaluate checkpoint silently."""
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                topics=[
+                    make_topic("third", trend_score=0.1),
+                    make_topic("first", trend_score=0.9),
+                    make_topic("second", trend_score=0.5),
+                ]
+            )
+        ],
+    )
+
+    body = client.get("/api/runs/20260901T120000Z/topics").json()
+
+    assert [entry["topic"]["final_rank"] for entry in body] == [1, 2, 3]
+    assert [entry["topic"]["topic_id"] for entry in body] == [
+        "first",
+        "second",
+        "third",
+    ]
+
+
+def test_each_topic_carries_its_render_count(tmp_path):
+    """`no memes yet` on a card is the cue to go and generate some, so a
+    zero has to be a real zero rather than a missing key."""
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                topics=[make_topic("cats"), make_topic("dogs")],
+                renders=[
+                    make_render_record("a", topic_id="cats"),
+                    make_render_record("b", topic_id="cats"),
+                ],
+            )
+        ],
+    )
+
+    body = {
+        entry["topic"]["topic_id"]: entry["render_count"]
+        for entry in client.get("/api/runs/20260901T120000Z/topics").json()
+    }
+
+    assert body == {"cats": 2, "dogs": 0}
+
+
+def test_the_ranking_of_an_unknown_run_is_a_404(tmp_path):
+    client = seeded_client(tmp_path)
+
+    assert client.get("/api/runs/nope/topics").status_code == 404

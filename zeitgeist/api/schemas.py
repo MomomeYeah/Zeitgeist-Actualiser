@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from zeitgeist.models import STRICT
+from zeitgeist.projection import TopicRow
 from zeitgeist.records import RunRecordRow, Stage, StageRecord
 
 # Four layers, though the settings screen draws three chips. A shell
@@ -65,3 +66,18 @@ class RunDetail(BaseModel):
     # None when nothing was written at all, which is what a source outage
     # looks like. The UI must not offer a resume it cannot honour.
     resume_stage: Stage | None
+
+
+class RankedTopic(BaseModel):
+    """One row of the ranking list.
+
+    `above_cut` is computed from the run's frozen `top_count` rather than
+    left to the client: the screen draws rows below the cut dashed and
+    dimmed with a generate link, so the rule is load-bearing.
+    """
+
+    model_config = STRICT
+
+    topic: TopicRow
+    render_count: int
+    above_cut: bool
