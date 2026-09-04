@@ -110,6 +110,7 @@ from fastapi.testclient import TestClient
 
 from zeitgeist.api import create_app
 from zeitgeist.config import Settings
+from zeitgeist.schema import SCHEMA_VERSION
 
 
 def _settings(tmp_path) -> Settings:
@@ -165,7 +166,11 @@ def test_the_app_creates_its_schema_on_startup(tmp_path):
         [(version,)] = conn.execute("PRAGMA user_version").fetchall()
     finally:
         conn.close()
-    assert version == 3
+    # Compared against the constant rather than a literal 3: bumping the
+    # schema version is a decision someone is entitled to make, and this
+    # test exists to catch init_schema not being called at all, which
+    # leaves the version at 0.
+    assert version == SCHEMA_VERSION
 ```
 
 - [ ] **Step 4: Run to verify they fail**
@@ -267,6 +272,7 @@ import uvicorn
 
 from zeitgeist.api import create_app
 from zeitgeist.config import Settings
+from zeitgeist.schema import SCHEMA_VERSION
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -370,6 +376,7 @@ from fastapi.testclient import TestClient
 
 from zeitgeist.api import create_app
 from zeitgeist.config import Settings
+from zeitgeist.schema import SCHEMA_VERSION
 from zeitgeist.models import Topic, TrendEvidence
 from zeitgeist.records import RenderRecord, RunConfig, Stage, StageRecord
 from zeitgeist.store import Store
@@ -1549,6 +1556,7 @@ Add to `tests/test_api_runs.py`:
 ```python
 from datetime import UTC, datetime
 
+from zeitgeist.api.runs import MAX_REPLIES
 from zeitgeist.models import (
     BlueskyMetrics,
     Item,
@@ -1681,6 +1689,32 @@ def test_a_reply_never_carries_an_author_key(tmp_path):
     raw = client.get("/api/runs/20260901T120000Z/topics/cats").text
 
     assert "author_key" not in raw
+
+
+def test_replies_are_capped_after_sorting_not_before(tmp_path):
+    """A topic can carry hundreds of replies and the card list is not
+    paginated. Nothing else here supplies more than a handful, so removing
+    the slice entirely would pass every other reply test — and capping
+    before the sort rather than after would keep an arbitrary twenty
+    instead of the twenty people actually engaged with."""
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                topics=[make_topic("cats", item_ids=["p1"])],
+                evidence=[
+                    _evidence_for(
+                        ["p1"], [_reply(f"reply {i}", i) for i in range(50)]
+                    )
+                ],
+            )
+        ],
+    )
+
+    body = client.get("/api/runs/20260901T120000Z/topics/cats").json()
+
+    assert len(body["replies"]) == MAX_REPLIES
+    assert body["replies"][0]["text"] == "reply 49"
 
 
 def test_topic_detail_reports_how_many_runs_the_topic_appeared_in(tmp_path):
@@ -2317,6 +2351,10 @@ def test_a_render_whose_file_is_gone_is_a_404(tmp_path):
 
 
 def test_an_unknown_size_is_rejected(tmp_path):
+    """Not a test of FastAPI's validation, despite appearances. If `size`
+    were typed `str` rather than the literal union, an unknown value would
+    reach `_image_path`, fall down its `else` branch, and silently serve the
+    thumbnail for any query string anyone typed."""
     client = seeded_client(
         tmp_path, runs=[SeededRun(renders=[make_render_record("rnd1")])]
     )
