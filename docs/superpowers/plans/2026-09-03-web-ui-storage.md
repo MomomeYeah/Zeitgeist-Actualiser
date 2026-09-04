@@ -3421,7 +3421,20 @@ Expected: only `renders/`. No `evidence.json`, `topics.json`, `ranked.json` or `
 
 ## Notes for the executor
 
-**Where the suite is red on purpose.** Tasks 4 and 5 are one reviewable change split for readability; the suite is red between them and Task 4 has no commit. From Task 5 through Task 14, `tests/test_pipeline.py` fails because the pipeline has not been rewired yet — that is expected and called out in each task's gate step. The suite is green again at Task 12 except for `tests/test_cli.py`, and fully green at Task 15.
+**Where the tree is red on purpose.** Tasks 4 and 5 are one reviewable change split for readability; the suite is red between them and Task 4 has no commit.
+
+From Task 5 until Task 12, **three of the four gate commands are red**, all from one root cause: `store.start_run` and `store.finish_run` change signature in Task 5, while their call sites in `zeitgeist/pipeline.py` and `zeitgeist/cli.py` are not rewired until Tasks 12 and 15.
+
+| Command | State between Tasks 5 and 12 |
+| --- | --- |
+| `uv run ruff check .` | green throughout |
+| `uv run ruff format --check .` | green throughout |
+| `uv run ty check` | **4 diagnostics** — `missing-argument` / `invalid-argument-type` at the `pipeline.py` and `cli.py` call sites |
+| `uv run pytest` | **~16 failures** — all of `tests/test_pipeline.py`, plus 3 in `tests/test_cli.py` |
+
+Task 12 clears the `pipeline.py` half; Task 15 clears the rest by deleting `cli.py`. The tree is fully green at Task 15 and only there.
+
+This is the price of splitting one coupled signature change across tasks so each is small enough to review. Intermediate commits on a branch are not individually CI'd — only the merged head is — so a red middle costs nothing as long as it is expected and bounded. An implementer seeing a failure **not** on this list should treat it as their own.
 
 **Do not add the frontend gate commands.** `CLAUDE.md`'s Definition of Done stays at four commands. `web/` does not exist until phase 5, and adding `npm --prefix web run lint` now turns every PR red for a directory that is not supposed to exist yet.
 
