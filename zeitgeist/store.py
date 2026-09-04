@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from zeitgeist.analysis.slug import slugify
 from zeitgeist.models import Topic
+from zeitgeist.projection import TopicRow
 from zeitgeist.records import (
     ORDER,
     RunConfig,
@@ -184,6 +185,63 @@ class Store:
         for platform, label, sub_score in rows:
             previous.setdefault(platform, {})[label] = sub_score
         return previous
+
+    def write_run_topics(self, rows: Sequence[TopicRow]) -> None:
+        self._conn.executemany(
+            "INSERT OR REPLACE INTO run_topics (run_id, topic_id, label, "
+            "label_slug, trend_status, event_sentiment, conversation_register, "
+            "meme_potential, trend_score, final_score, final_rank, post_count, "
+            "top_phrase, top_phrase_authors) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    row.run_id,
+                    row.topic_id,
+                    row.label,
+                    row.label_slug,
+                    row.trend_status,
+                    row.event_sentiment,
+                    row.conversation_register,
+                    row.meme_potential,
+                    row.trend_score,
+                    row.final_score,
+                    row.final_rank,
+                    row.post_count,
+                    row.top_phrase,
+                    row.top_phrase_authors,
+                )
+                for row in rows
+            ],
+        )
+        self._conn.commit()
+
+    def run_topics(self, run_id: str) -> list[TopicRow]:
+        rows = self._conn.execute(
+            "SELECT run_id, topic_id, label, label_slug, trend_status, "
+            "event_sentiment, conversation_register, meme_potential, trend_score, "
+            "final_score, final_rank, post_count, top_phrase, top_phrase_authors "
+            "FROM run_topics WHERE run_id = ? ORDER BY final_rank",
+            (run_id,),
+        ).fetchall()
+        return [
+            TopicRow(
+                run_id=row[0],
+                topic_id=row[1],
+                label=row[2],
+                label_slug=row[3],
+                trend_status=row[4],
+                event_sentiment=row[5],
+                conversation_register=row[6],
+                meme_potential=row[7],
+                trend_score=row[8],
+                final_score=row[9],
+                final_rank=row[10],
+                post_count=row[11],
+                top_phrase=row[12],
+                top_phrase_authors=row[13],
+            )
+            for row in rows
+        ]
 
     def write_checkpoint(
         self, run_id: str, stage: Stage, models: Sequence[BaseModel]

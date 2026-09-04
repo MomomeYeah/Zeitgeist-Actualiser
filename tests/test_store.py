@@ -14,6 +14,7 @@ from zeitgeist.models import (
     TrendEvidence,
     TrendInfo,
 )
+from zeitgeist.projection import flatten
 from zeitgeist.records import RunError, Stage
 from zeitgeist.store import SCHEMA_VERSION, MissingCheckpoint, Store, StoreSchemaError
 
@@ -531,3 +532,14 @@ def test_a_queued_stage_round_trips_its_absent_timings(tmp_path):
         None,
         None,
     )
+
+
+def test_run_topics_round_trip_through_the_store(tmp_path):
+    store = _store(tmp_path)
+    rows = flatten("r1", [make_topic("airport-cat")], meme_potential_weight=0.3)
+
+    store.write_run_topics(rows)
+
+    stored = store.run_topics("r1")
+    assert [row.topic_id for row in stored] == ["airport-cat"]
+    assert stored[0].label_slug == "airport-cat"

@@ -33,6 +33,19 @@ from zeitgeist.records import (
     StageStatus,
 )
 
+
+class _Unset:
+    """Distinguishes "caller didn't pass this" from "caller passed None".
+
+    `dossier` is itself `Dossier | None` on the model — None is dormant-path
+    data, not "use the default". A bare `= None` default can't tell the two
+    apart, so a caller asking for `dossier=None` would silently get
+    `make_dossier()` instead.
+    """
+
+
+_UNSET = _Unset()
+
 FIXED_TIME = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 
 
@@ -142,7 +155,7 @@ def make_topic(
     trend_status: TrendStatus = "trending",
     trend_score: float = 0.91,
     item_ids: list[str] | None = None,
-    dossier: Dossier | None = None,
+    dossier: Dossier | None | _Unset = _UNSET,
     score_components: dict[str, float] | None = None,
 ) -> Topic:
     return Topic(
@@ -157,7 +170,7 @@ def make_topic(
             if score_components is not None
             else {"bluesky": 0.91, "corroboration": 1.0}
         ),
-        dossier=dossier if dossier is not None else make_dossier(),
+        dossier=make_dossier() if isinstance(dossier, _Unset) else dossier,
     )
 
 
