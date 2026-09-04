@@ -68,7 +68,13 @@ def _bluesky(
 
 
 def _topic(topic_id: str, item_ids: list[str]) -> Topic:
-    return Topic(id=topic_id, label=topic_id.title(), summary="", item_ids=item_ids)
+    return Topic(
+        id=topic_id,
+        label=topic_id.title(),
+        summary="",
+        item_ids=item_ids,
+        trend_status="trending",
+    )
 
 
 def _two_topics_one_corroborated() -> tuple[list[Topic], list[Item]]:
@@ -114,9 +120,27 @@ def _history_case() -> tuple[list[Topic], list[Item]]:
         _lemmy("c", score=100, channel="c@h", age_hours=2),
     ]
     topics = [
-        Topic(id="steady", label="Steady Eddie", summary="", item_ids=["a"]),
-        Topic(id="rising", label="Rising Star", summary="", item_ids=["b"]),
-        Topic(id="quiet", label="Quiet One", summary="", item_ids=["c"]),
+        Topic(
+            id="steady",
+            label="Steady Eddie",
+            summary="",
+            item_ids=["a"],
+            trend_status="trending",
+        ),
+        Topic(
+            id="rising",
+            label="Rising Star",
+            summary="",
+            item_ids=["b"],
+            trend_status="trending",
+        ),
+        Topic(
+            id="quiet",
+            label="Quiet One",
+            summary="",
+            item_ids=["c"],
+            trend_status="trending",
+        ),
     ]
     return topics, items
 

@@ -166,6 +166,7 @@ def distil_topics(
                 label=entry.trend.display_name,
                 summary=draft.what_happened,
                 item_ids=[post.item.source_id for post in entry.posts],
+                trend_status=entry.trend.status,
                 dossier=Dossier(
                     **draft.model_dump(),
                     recurring_phrases=phrases,

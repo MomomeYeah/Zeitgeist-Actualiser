@@ -28,6 +28,7 @@ def _topic(topic_id: str, score: float, meme: float | None = None) -> Topic:
         label=topic_id,
         summary="s",
         item_ids=["i"],
+        trend_status="trending",
         trend_score=score,
         dossier=None if meme is None else _dossier(meme_potential=meme),
     )

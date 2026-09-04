@@ -11,6 +11,7 @@ def _topic(label: str, components: dict[str, float]) -> Topic:
         label=label,
         summary=f"About {label}.",
         item_ids=["x"],
+        trend_status="trending",
         score_components=components,
     )
 

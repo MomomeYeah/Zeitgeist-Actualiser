@@ -19,6 +19,7 @@ from zeitgeist.models import (
     Sentiment,
     TrendEvidence,
     TrendInfo,
+    TrendStatus,
 )
 
 NOW = datetime(2026, 8, 26, tzinfo=UTC)
@@ -59,6 +60,7 @@ def _evidence(
     *,
     replies: list[Reply] | None = None,
     posts: int = 1,
+    status: TrendStatus = "stale",
 ) -> TrendEvidence:
     return TrendEvidence(
         trend=TrendInfo(
@@ -68,7 +70,7 @@ def _evidence(
             category="business",
             post_count=4298,
             started_at=NOW,
-            status="stale",
+            status=status,
         ),
         posts=[
             PostEvidence(item=_item(f"p{i}"), replies=replies or [])
@@ -356,3 +358,14 @@ def test_an_explicit_null_is_accepted(field):
     """
     draft = DossierDraft.model_validate(_draft().model_dump() | {field: None})
     assert getattr(draft, field) is None
+
+
+def test_distil_carries_the_trend_status_onto_the_topic():
+    """The status is Bluesky's own read on the trend's movement. It reaches
+    the topic here or not at all — no later stage sees the evidence."""
+    evidence = _evidence(status="cooling")
+    provider = FakeLLMProvider(responses=[_draft()])
+
+    [topic] = distil_topics([evidence], provider, Settings(_env_file=None))
+
+    assert topic.trend_status == "cooling"

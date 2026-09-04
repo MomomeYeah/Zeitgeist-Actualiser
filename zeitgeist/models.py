@@ -314,6 +314,10 @@ class Topic(BaseModel):
     label: str
     summary: str
     item_ids: list[str]
+    # Bluesky's own read on the trend's movement, carried from TrendInfo at
+    # distillation. Required: every TrendEvidence has one, so a topic without
+    # it is a bug. The UI filters and ranks on this in five places.
+    trend_status: TrendStatus
     trend_score: float = 0.0
     score_components: dict[str, float] = Field(default_factory=dict)
     # None on the dormant path, which has no evidence to distil.
