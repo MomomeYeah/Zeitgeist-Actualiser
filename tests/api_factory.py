@@ -4,8 +4,8 @@ Seeded through the store's own writers rather than raw SQL: a hand-written
 INSERT would keep passing after `write_analyse_checkpoint` changed shape,
 and the endpoints would be serving a table layout nothing produces.
 
-`api_settings` points `output_dir` and `db_path` inside `tmp_path`, so a
-test's renders and database are its own.
+`api_settings` points `output_dir` inside `tmp_path` and reads `db_path`
+from `DB_PATH`, so a test's renders and database are its own.
 """
 
 import os
@@ -37,21 +37,21 @@ class SeededRun:
 
 
 def api_settings(tmp_path: Path) -> Settings:
-    # SettingsTableSource resolves where the settings table lives from
-    # DB_PATH (environment, then .env) rather than from this call's own
-    # db_path= argument: that argument becomes Settings.db_path, the object
-    # being constructed, and asking it where its own table is would be
-    # circular (see settings_source.SettingsTableSource's docstring). So
-    # DB_PATH is set here too, to the same file, the way
-    # tests/test_settings_source.py always does with monkeypatch.setenv —
-    # without it, a store.set_setting() written to this db_path is invisible
-    # to every Settings() this factory builds, because the table source goes
-    # looking in conftest's no-ambient-database.db instead.
-    db_path = tmp_path / "data" / "z.db"
-    os.environ["DB_PATH"] = str(db_path)
+    """Build the `Settings` a test's `TestClient` runs against.
+
+    `db_path` is read from `DB_PATH` rather than chosen here, because
+    `SettingsTableSource` resolves the settings table from that variable and
+    not from `Settings.db_path` — asking the object being constructed where
+    its own table lives would be circular (see
+    settings_source.SettingsTableSource's docstring). `conftest`'s autouse
+    fixture already points `DB_PATH` at a per-test path inside `tmp_path`
+    before every test body runs, so reading it here makes this factory and
+    the settings source agree by construction, with no environment mutation
+    and nothing to clean up.
+    """
     return Settings(
         _env_file=None,
-        db_path=db_path,
+        db_path=Path(os.environ["DB_PATH"]),
         output_dir=tmp_path / "output",
     )
 
