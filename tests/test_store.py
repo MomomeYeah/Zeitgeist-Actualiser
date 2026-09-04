@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from tests.run_factory import make_run_config, make_topic
+from tests.run_factory import make_run_config, make_stage_record, make_topic
 from zeitgeist.analysis.slug import slugify
 from zeitgeist.models import (
     BlueskyMetrics,
@@ -475,3 +475,59 @@ def test_an_empty_checkpoint_is_not_a_missing_one(tmp_path):
     store.write_checkpoint("r1", Stage.GENERATE, [])
 
     assert store.read_checkpoint("r1", Stage.GENERATE, MediaBrief) == []
+
+
+def test_stages_come_back_in_pipeline_order(tmp_path):
+    """The four stage cards are drawn left to right in the order they run,
+    not the order rows happened to be written."""
+    store = _store(tmp_path)
+    store.record_stage("r1", make_stage_record(Stage.GENERATE))
+    store.record_stage("r1", make_stage_record(Stage.INGEST))
+    store.record_stage("r1", make_stage_record(Stage.EVALUATE))
+    store.record_stage("r1", make_stage_record(Stage.ANALYSE))
+
+    stages = store.stages_for_run("r1")
+
+    assert [s.stage for s in stages] == [
+        Stage.INGEST,
+        Stage.ANALYSE,
+        Stage.EVALUATE,
+        Stage.GENERATE,
+    ]
+
+
+def test_recording_a_stage_twice_replaces_it(tmp_path):
+    """A stage moves queued to running to ok, rewriting its row each time."""
+    store = _store(tmp_path)
+    store.record_stage(
+        "r1", make_stage_record(Stage.INGEST, status="running", finished_at=None)
+    )
+
+    store.record_stage("r1", make_stage_record(Stage.INGEST, status="ok"))
+
+    [stage] = store.stages_for_run("r1")
+    assert stage.status == "ok"
+    assert stage.finished_at is not None
+
+
+def test_a_queued_stage_round_trips_its_absent_timings(tmp_path):
+    store = _store(tmp_path)
+    store.record_stage(
+        "r1",
+        make_stage_record(
+            Stage.GENERATE,
+            status="queued",
+            started_at=None,
+            finished_at=None,
+            payload_bytes=None,
+            summary="queued",
+        ),
+    )
+
+    [stage] = store.stages_for_run("r1")
+
+    assert (stage.started_at, stage.finished_at, stage.payload_bytes) == (
+        None,
+        None,
+        None,
+    )

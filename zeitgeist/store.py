@@ -10,7 +10,15 @@ from pydantic import BaseModel
 
 from zeitgeist.analysis.slug import slugify
 from zeitgeist.models import Topic
-from zeitgeist.records import RunConfig, RunError, RunRecordRow, RunStatus, Stage
+from zeitgeist.records import (
+    ORDER,
+    RunConfig,
+    RunError,
+    RunRecordRow,
+    RunStatus,
+    Stage,
+    StageRecord,
+)
 from zeitgeist.schema import SCHEMA, SCHEMA_VERSION
 
 __all__ = ["SCHEMA_VERSION", "MissingCheckpoint", "Store", "StoreSchemaError"]
@@ -205,6 +213,45 @@ class Store:
         if row is None:
             raise MissingCheckpoint(f"Run {run_id!r} has no {stage.value} checkpoint")
         return [schema.model_validate(entry) for entry in json.loads(row[0])]
+
+    def record_stage(self, run_id: str, record: StageRecord) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO run_stages (run_id, stage, status, "
+            "started_at, finished_at, payload_bytes, summary) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                record.stage.value,
+                record.status,
+                record.started_at.isoformat() if record.started_at else None,
+                record.finished_at.isoformat() if record.finished_at else None,
+                record.payload_bytes,
+                record.summary,
+            ),
+        )
+        self._conn.commit()
+
+    def stages_for_run(self, run_id: str) -> list[StageRecord]:
+        """In pipeline order. The four stage cards are drawn in the order the
+        stages run, which is not the order their rows were written.
+        """
+        rows = self._conn.execute(
+            "SELECT stage, status, started_at, finished_at, payload_bytes, summary "
+            "FROM run_stages WHERE run_id = ?",
+            (run_id,),
+        ).fetchall()
+        records = [
+            StageRecord(
+                stage=Stage(row[0]),
+                status=row[1],
+                started_at=datetime.fromisoformat(row[2]) if row[2] else None,
+                finished_at=datetime.fromisoformat(row[3]) if row[3] else None,
+                payload_bytes=row[4],
+                summary=row[5],
+            )
+            for row in rows
+        ]
+        return sorted(records, key=lambda record: ORDER.index(record.stage))
 
     def close(self) -> None:
         self._conn.close()
