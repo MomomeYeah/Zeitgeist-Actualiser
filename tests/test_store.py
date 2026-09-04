@@ -1,12 +1,21 @@
 import sqlite3
+from datetime import UTC, datetime
 
 import pytest
 
-from tests.run_factory import make_run_config
+from tests.run_factory import make_run_config, make_topic
 from zeitgeist.analysis.slug import slugify
-from zeitgeist.models import Topic
+from zeitgeist.models import (
+    BlueskyMetrics,
+    Item,
+    MediaBrief,
+    PostEvidence,
+    Topic,
+    TrendEvidence,
+    TrendInfo,
+)
 from zeitgeist.records import RunError, Stage
-from zeitgeist.store import SCHEMA_VERSION, Store, StoreSchemaError
+from zeitgeist.store import SCHEMA_VERSION, MissingCheckpoint, Store, StoreSchemaError
 
 
 def _topic(label: str, components: dict[str, float]) -> Topic:
@@ -17,6 +26,33 @@ def _topic(label: str, components: dict[str, float]) -> Topic:
         item_ids=["x"],
         trend_status="trending",
         score_components=components,
+    )
+
+
+def _trend_evidence() -> TrendEvidence:
+    metrics = BlueskyMetrics(
+        like_count=12,
+        reply_count=3,
+        repost_count=4,
+        trend="airport cat",
+        status="trending",
+        created_at=datetime(2026, 9, 1, tzinfo=UTC),
+    )
+    item = Item(
+        source_id="at://post/1",
+        title="A cat got into an airport.",
+        permalink="https://bsky.app/post/1",
+        fetched_at=datetime(2026, 9, 1, tzinfo=UTC),
+        metrics=metrics,
+    )
+    return TrendEvidence(
+        trend=TrendInfo(
+            topic_id="airport-cat",
+            display_name="Airport Cat",
+            started_at=datetime(2026, 9, 1, tzinfo=UTC),
+            status="trending",
+        ),
+        posts=[PostEvidence(item=item)],
     )
 
 
@@ -370,3 +406,72 @@ def test_creates_parent_directory(tmp_path):
     store = Store(tmp_path / "nested" / "dir" / "test.db")
     store.init_schema()
     assert (tmp_path / "nested" / "dir" / "test.db").exists()
+
+
+def test_a_checkpoint_round_trips_through_its_model(tmp_path):
+    """This is what resuming a run depends on. A payload that does not round
+    trip breaks resume silently rather than loudly."""
+    store = _store(tmp_path)
+    topics = [make_topic("airport-cat"), make_topic("stadium-rat")]
+
+    store.write_checkpoint("r1", Stage.ANALYSE, topics)
+    restored = store.read_checkpoint("r1", Stage.ANALYSE, Topic)
+
+    assert restored == topics
+
+
+def test_a_checkpoint_round_trips_a_discriminated_union(tmp_path):
+    """Metrics is discriminated on platform. A payload that deserialises to
+    the wrong union member would score the topic with the wrong scorer."""
+    store = _store(tmp_path)
+    evidence = [_trend_evidence()]
+
+    store.write_checkpoint("r1", Stage.INGEST, evidence)
+    [restored] = store.read_checkpoint("r1", Stage.INGEST, TrendEvidence)
+
+    assert isinstance(restored.posts[0].item.metrics, BlueskyMetrics)
+
+
+def test_writing_a_checkpoint_twice_replaces_it(tmp_path):
+    """Resuming rewrites the stages it re-runs."""
+    store = _store(tmp_path)
+    store.write_checkpoint("r1", Stage.ANALYSE, [make_topic("first")])
+
+    store.write_checkpoint("r1", Stage.ANALYSE, [make_topic("second")])
+
+    [topic] = store.read_checkpoint("r1", Stage.ANALYSE, Topic)
+    assert topic.id == "second"
+
+
+def test_write_checkpoint_reports_the_payload_size(tmp_path):
+    """The stage card shows this number, so it has to be the size of what
+    was actually written - not merely some positive number. Returning
+    len(models) would satisfy `> 0` and be wrong by three orders."""
+    store = _store(tmp_path)
+
+    size = store.write_checkpoint("r1", Stage.ANALYSE, [make_topic()])
+
+    [(stored_bytes,)] = store._conn.execute(
+        "SELECT LENGTH(CAST(payload AS BLOB)) FROM checkpoints "
+        "WHERE run_id = ? AND stage = ?",
+        ("r1", Stage.ANALYSE.value),
+    ).fetchall()
+    assert size == stored_bytes
+
+
+def test_reading_a_checkpoint_that_was_never_written_raises(tmp_path):
+    """Resuming from a stage whose predecessor never ran must say so, not
+    return an empty list that looks like a run with no topics."""
+    store = _store(tmp_path)
+
+    with pytest.raises(MissingCheckpoint, match="analyse"):
+        store.read_checkpoint("r1", Stage.ANALYSE, Topic)
+
+
+def test_an_empty_checkpoint_is_not_a_missing_one(tmp_path):
+    """A generate stage that briefed nothing wrote an empty list. That is a
+    result, and resuming past it must not raise."""
+    store = _store(tmp_path)
+    store.write_checkpoint("r1", Stage.GENERATE, [])
+
+    assert store.read_checkpoint("r1", Stage.GENERATE, MediaBrief) == []

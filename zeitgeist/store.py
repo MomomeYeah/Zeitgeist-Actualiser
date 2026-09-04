@@ -1,15 +1,19 @@
 """Cross-run history. The minimum needed to detect topics rising and falling."""
 
+import json
 import sqlite3
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pydantic import BaseModel
+
 from zeitgeist.analysis.slug import slugify
 from zeitgeist.models import Topic
-from zeitgeist.records import RunConfig, RunError, RunRecordRow, RunStatus
+from zeitgeist.records import RunConfig, RunError, RunRecordRow, RunStatus, Stage
 from zeitgeist.schema import SCHEMA, SCHEMA_VERSION
 
-__all__ = ["SCHEMA_VERSION", "Store", "StoreSchemaError"]
+__all__ = ["SCHEMA_VERSION", "MissingCheckpoint", "Store", "StoreSchemaError"]
 
 # score_components carries this alongside the real platform sub-scores. It is a
 # multiplier, not a platform's opinion, so it must never reach topic_scores or be
@@ -19,6 +23,14 @@ NON_PLATFORM_COMPONENTS = frozenset({"corroboration"})
 
 class StoreSchemaError(RuntimeError):
     """The database on disk was written by a different schema version."""
+
+
+class MissingCheckpoint(Exception):
+    """A stage was resumed from, but its predecessor never wrote anything.
+
+    Distinct from an empty checkpoint, which is a result: a generate stage
+    that briefed nothing wrote `[]`, and resuming past it is legitimate.
+    """
 
 
 class Store:
@@ -164,6 +176,35 @@ class Store:
         for platform, label, sub_score in rows:
             previous.setdefault(platform, {})[label] = sub_score
         return previous
+
+    def write_checkpoint(
+        self, run_id: str, stage: Stage, models: Sequence[BaseModel]
+    ) -> int:
+        """Persist a stage's output. Returns the payload's size in bytes,
+        which is what the stage card displays.
+
+        Sequence rather than list: list is invariant, so a list[Topic] is not
+        a list[BaseModel] and every call site would be rejected.
+        """
+        payload = json.dumps([model.model_dump(mode="json") for model in models])
+        self._conn.execute(
+            "INSERT OR REPLACE INTO checkpoints "
+            "(run_id, stage, payload, written_at) VALUES (?, ?, ?, ?)",
+            (run_id, stage.value, payload, _now()),
+        )
+        self._conn.commit()
+        return len(payload.encode("utf-8"))
+
+    def read_checkpoint[T: BaseModel](
+        self, run_id: str, stage: Stage, schema: type[T]
+    ) -> list[T]:
+        row = self._conn.execute(
+            "SELECT payload FROM checkpoints WHERE run_id = ? AND stage = ?",
+            (run_id, stage.value),
+        ).fetchone()
+        if row is None:
+            raise MissingCheckpoint(f"Run {run_id!r} has no {stage.value} checkpoint")
+        return [schema.model_validate(entry) for entry in json.loads(row[0])]
 
     def close(self) -> None:
         self._conn.close()
