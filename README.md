@@ -119,11 +119,6 @@ Check the template library after editing a manifest:
 uv run python scripts/validate_templates.py
 ```
 
-## Web UI
-
-The pipeline is driven through a web UI rather than a CLI; see
-`docs/superpowers/specs/2026-09-02-web-ui-design.md` for its design.
-
 ## Running a local model
 
 Install Ollama, and run a model locally:
@@ -184,6 +179,37 @@ the provider:
 - `DISTIL_CONCURRENCY` (default 4) is how many distillation calls run in
   parallel. Local Ollama serialises on one GPU, so 1-2 is right there; a
   hosted provider benefits from the default.
+
+## The web UI
+
+The pipeline is driven through a web UI rather than a CLI; see
+`docs/superpowers/specs/2026-09-02-web-ui-design.md` for its design. This
+phase ships the read-only API behind it:
+
+```bash
+uv run zeitgeist
+```
+
+That serves on `127.0.0.1:8000` by default. `--host` and `--port` change
+where it binds; `--reload` restarts the server on file changes and is off
+by default, deliberately — uvicorn's reloader kills a run in flight, and
+phase 3 adds runs that can be in flight.
+
+The API documents itself: `http://127.0.0.1:8000/docs` for the interactive
+schema, `http://127.0.0.1:8000/openapi.json` for the raw one.
+
+This phase serves reads only. Starting a run is still
+`uv run python scripts/run_pipeline.py`, above.
+
+When phase 5 builds the frontend, its TypeScript types are generated from
+the same schema:
+
+```bash
+npx openapi-typescript http://127.0.0.1:8000/openapi.json -o web/src/api/schema.ts
+```
+
+That is deliberately not run yet — there is no `web/` and no gate command
+that would check the result.
 
 ## Tests
 
