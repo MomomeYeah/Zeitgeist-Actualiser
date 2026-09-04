@@ -106,3 +106,19 @@ def test_a_key_outside_the_writable_set_is_ignored_by_the_source(tmp_path, monke
     monkeypatch.setenv("DB_PATH", str(tmp_path / "zeitgeist.db"))
 
     assert Settings(_env_file=None).anthropic_api_key == ""
+
+
+def test_an_ambient_database_cannot_leak_into_settings(tmp_path, monkeypatch):
+    """conftest points DB_PATH at a nonexistent file per test, because
+    settings_source falls back to a relative data/zeitgeist.db when the
+    variable is unset. Without that, running the app once locally would
+    silently feed real tuned values into every Settings() in the suite."""
+    ambient = tmp_path / "data"
+    ambient.mkdir()
+    store = Store(ambient / "zeitgeist.db")
+    store.init_schema()
+    store.set_setting("bluesky_trend_limit", "99")
+    store.close()
+    monkeypatch.chdir(tmp_path)
+
+    assert Settings(_env_file=None).bluesky_trend_limit == 25
