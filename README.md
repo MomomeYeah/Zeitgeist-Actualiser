@@ -86,59 +86,43 @@ label and a summary.
 ## Running
 
 ```bash
-uv run zeitgeist run
+uv run python scripts/run_pipeline.py
 ```
 
-The pipeline runs four stages, each checkpointed to JSON before the next
-begins:
+The pipeline runs four stages, each checkpointed before the next begins:
 
 1. **Ingest** — fetches Bluesky's own trends, then each trend's posts, then
-   the reply threads under those posts, concurrently. Writes `evidence.json`.
+   the reply threads under those posts, concurrently.
 2. **Analyse** — mines recurring phrases deterministically (a phrase counts
    once `PHRASE_MIN_AUTHORS` distinct accounts have used it), then makes one
    LLM call per trend producing a dossier: what happened, what people are
    saying, how the event feels, and what posture the conversation is taking.
-   Writes `topics.json`.
 3. **Evaluate** — ranks topics on trend score alone and keeps the top
-   `TOPIC_COUNT`. Writes `ranked.json`.
+   `TOPIC_COUNT`.
 4. **Generate** — writes captions and renders one PNG per selected topic.
 
-Output lands in `output/<run-id>/`: the four stage checkpoints as JSON, plus
-one PNG per selected topic.
-
-Re-run only the meme generation against an existing run — this re-runs stage
-4 against the frozen `ranked.json` from that run. Ingest and analysis are
-skipped entirely, so there is no re-scraping and no re-paying for
-distillation; caption writing itself still calls the model once per
-selected topic, so this is not free with a hosted provider, just far
-cheaper than a full run. It is the loop for tuning meme templates and the
-caption prompt:
+Stage checkpoints are written to SQLite at `data/zeitgeist.db`; rendered
+memes land in `output/<run-id>/renders/`, one PNG and one 96px thumbnail
+per meme. Read a checkpoint back with:
 
 ```bash
-uv run zeitgeist run --run-id 20260816T120000Z --resume-from generate
+sqlite3 data/zeitgeist.db "select payload from checkpoints where run_id='...' and stage='analyse'" | jq
 ```
 
-Narrow the library the model may choose from with `--templates`, a
-comma-separated list of ids. Combined with `--resume-from generate` this is
-the tight loop for working on one template: re-caption and re-render the same
-frozen topics against it alone, without re-scraping and without the model
-wandering off to a different template between attempts.
-
-```bash
-uv run zeitgeist run --run-id 20260816T120000Z --resume-from generate --templates drake
-```
-
-An id that is not in the library is an error, reported before the run starts
-rather than after the scrape. Note that with the library narrowed to one
-template the `rationale` in `briefs.json` becomes a post-hoc justification —
-the model had no choice to make — so it stops being useful for debugging why
-a template was picked.
+Resuming a run from a later stage — the loop for tuning meme templates and
+the caption prompt without re-scraping or re-paying for distillation — is
+not available from this harness; it arrives with the API in phase 3.
 
 Check the template library after editing a manifest:
 
 ```bash
-uv run zeitgeist validate-templates
+uv run python scripts/validate_templates.py
 ```
+
+## Web UI
+
+The pipeline is driven through a web UI rather than a CLI; see
+`docs/superpowers/specs/2026-09-02-web-ui-design.md` for its design.
 
 ## Running a local model
 
