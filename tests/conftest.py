@@ -13,6 +13,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 # work), and Settings(_env_file=None) only disables .env, not os.environ —
 # so left alone, the suite's result depends on who is running it.
 _SETTINGS_ENV_VARS = (
+    "DB_PATH",
     "SOURCES",
     "ANTHROPIC_API_KEY",
     "LLM_PROVIDER",

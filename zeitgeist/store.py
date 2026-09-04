@@ -348,6 +348,26 @@ class Store:
         ).fetchall()
         return [_render(row) for row in rows]
 
+    def get_settings(self) -> dict[str, str]:
+        return {
+            row[0]: row[1]
+            for row in self._conn.execute("SELECT key, value FROM settings")
+        }
+
+    def set_setting(self, key: str, value: str) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
+            (key, value, _now()),
+        )
+        self._conn.commit()
+
+    def clear_setting(self, key: str) -> None:
+        """Delete the override so the .env value, or the field default, applies
+        again. This is what the settings screen's "Reset to .env" does.
+        """
+        self._conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+        self._conn.commit()
+
     def close(self) -> None:
         self._conn.close()
 
