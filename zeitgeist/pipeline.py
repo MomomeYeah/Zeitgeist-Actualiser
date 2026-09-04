@@ -9,7 +9,6 @@ import json
 import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from enum import StrEnum
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -23,20 +22,11 @@ from zeitgeist.media.brief import generate_briefs
 from zeitgeist.media.render import RenderError, render_meme
 from zeitgeist.media.templates import TemplateManifest, load_templates, select_templates
 from zeitgeist.models import Item, MediaBrief, ScoredTopic, Topic, TrendEvidence
+from zeitgeist.records import ORDER, Stage
 from zeitgeist.sources.base import TrendSource
 from zeitgeist.store import Store
 
 log = logging.getLogger(__name__)
-
-
-class Stage(StrEnum):
-    INGEST = "ingest"
-    ANALYSE = "analyse"
-    EVALUATE = "evaluate"
-    GENERATE = "generate"
-
-
-ORDER = [Stage.INGEST, Stage.ANALYSE, Stage.EVALUATE, Stage.GENERATE]
 
 
 def new_run_id() -> str:
