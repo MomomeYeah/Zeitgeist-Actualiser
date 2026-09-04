@@ -42,6 +42,35 @@ def test_the_newest_occurrence_wins(tmp_path):
     assert body["topics"][0]["topic"]["run_id"] == "20260901T110000Z"
 
 
+def test_dedup_uses_label_slug_not_topic_id(tmp_path):
+    """The cross-run identity is `label_slug`, not `topic_id` — a run-scoped
+    id is not an identity at all. Two runs that use different topic ids for
+    the same label must still collapse to one card, `run_count == 2`, with
+    the newer row's `topic_id` and `run_id` surviving. Deduping on
+    `topic_id` instead would see "cats-v1" and "cats-v2" as unrelated and
+    report two cards, each with `run_count == 1`."""
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id="20260901T100000Z",
+                topics=[make_topic("cats-v1", label="Cats", trend_score=0.1)],
+            ),
+            SeededRun(
+                run_id="20260901T110000Z",
+                topics=[make_topic("cats-v2", label="Cats", trend_score=0.9)],
+            ),
+        ],
+    )
+
+    body = client.get("/api/topics").json()
+
+    assert len(body["topics"]) == 1
+    assert body["topics"][0]["run_count"] == 2
+    assert body["topics"][0]["topic"]["topic_id"] == "cats-v2"
+    assert body["topics"][0]["topic"]["run_id"] == "20260901T110000Z"
+
+
 def test_the_window_bounds_how_many_runs_are_considered(tmp_path):
     client = seeded_client(
         tmp_path,
@@ -173,6 +202,40 @@ def test_each_indexed_topic_carries_its_render_count(tmp_path):
 
     body = client.get("/api/topics").json()
 
+    assert body["topics"][0]["render_count"] == 2
+
+
+def test_render_count_does_not_collide_across_runs(tmp_path):
+    """The router keys render counts on `f"{run_id}:{topic_id}"` because a
+    bare `topic_id` collides across runs. Two runs both carrying topic id
+    `"cats"` with different render counts must report the newest run's
+    count — not the older run's, and not their sum. A bare-key lookup, kept
+    consistent on both the write and read side, would silently overwrite
+    the newer run's count with the older run's instead."""
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id="20260901T100000Z",
+                topics=[make_topic("cats")],
+                renders=[
+                    make_render_record("a", run_id="20260901T100000Z", topic_id="cats"),
+                ],
+            ),
+            SeededRun(
+                run_id="20260901T110000Z",
+                topics=[make_topic("cats")],
+                renders=[
+                    make_render_record("b", run_id="20260901T110000Z", topic_id="cats"),
+                    make_render_record("c", run_id="20260901T110000Z", topic_id="cats"),
+                ],
+            ),
+        ],
+    )
+
+    body = client.get("/api/topics").json()
+
+    assert body["topics"][0]["topic"]["run_id"] == "20260901T110000Z"
     assert body["topics"][0]["render_count"] == 2
 
 
