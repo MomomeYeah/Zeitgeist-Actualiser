@@ -1,17 +1,13 @@
 """Stage orchestration and checkpointing.
 
 Each stage writes its output before the next begins, so stage D can be re-run
-against a frozen ranked.json while tuning prompts, and a crash always leaves
-partial artifacts to inspect.
+against a frozen checkpoint while tuning prompts, and a crash always leaves
+partial checkpoints to inspect.
 """
 
-import json
 import logging
-from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-
-from pydantic import BaseModel
 
 from zeitgeist.analysis.distil import distil_topics
 from zeitgeist.analysis.score import score_topics
@@ -22,7 +18,8 @@ from zeitgeist.media.brief import generate_briefs
 from zeitgeist.media.render import RenderError, render_meme
 from zeitgeist.media.templates import TemplateManifest, load_templates, select_templates
 from zeitgeist.models import Item, MediaBrief, ScoredTopic, Topic, TrendEvidence
-from zeitgeist.records import ORDER, Stage
+from zeitgeist.projection import flatten
+from zeitgeist.records import ORDER, RunConfig, Stage
 from zeitgeist.sources.base import TrendSource
 from zeitgeist.store import Store
 
@@ -41,28 +38,28 @@ def run_pipeline(
     run_id: str,
     start_at: Stage = Stage.INGEST,
     template_ids: list[str] | None = None,
-) -> Path:
-    # Before the run directory exists and before anything is fetched: a
-    # mistyped template id then costs nothing and leaves nothing behind.
+) -> str:
+    """Run the pipeline, returning the run id.
+
+    Returns the id rather than the run directory because the directory now
+    holds only rendered images; everything else lives in the store, and the
+    id is what every caller looks records up by.
+    """
+    # Before the run row exists and before anything is fetched: a mistyped
+    # template id then costs nothing and leaves nothing behind.
     templates = load_templates(settings.templates_dir)
     if template_ids is not None:
         templates = select_templates(templates, template_ids)
 
-    run_dir = Path(settings.output_dir) / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
     resuming = ORDER.index(start_at)
+    store.start_run(run_id, RunConfig.freeze(settings, template_ids))
 
-    store.start_run(run_id)
-
-    # Stage A — fatal on failure: with no evidence there is nothing to
-    # analyse. Everything expensive happens here and in ANALYSE, so a brief
-    # or template change re-runs from GENERATE against frozen dossiers.
     if resuming <= ORDER.index(Stage.INGEST):
         evidence = source.fetch_evidence(settings)
         log.info("Fetched %d trends", len(evidence))
-        _write(run_dir / "evidence.json", evidence)
+        store.write_checkpoint(run_id, Stage.INGEST, evidence)
     else:
-        evidence = _read(run_dir / "evidence.json", TrendEvidence)
+        evidence = store.read_checkpoint(run_id, Stage.INGEST, TrendEvidence)
 
     items: list[Item] = [post.item for entry in evidence for post in entry.posts]
 
@@ -73,23 +70,34 @@ def run_pipeline(
         )
         log.info("Distilled %d topics", len(topics))
         store.record_topics(run_id, topics)
-        _write(run_dir / "topics.json", topics)
+        store.write_checkpoint(run_id, Stage.ANALYSE, topics)
+        store.write_run_topics(flatten(run_id, topics, settings.meme_potential_weight))
 
     if resuming <= ORDER.index(Stage.EVALUATE):
-        topics = _read(run_dir / "topics.json", Topic)
+        topics = store.read_checkpoint(run_id, Stage.ANALYSE, Topic)
         ranked = select(topics, settings.topic_count, settings.meme_potential_weight)
         log.info("Selected %d topics", len(ranked))
-        _write(run_dir / "ranked.json", ranked)
+        store.write_checkpoint(run_id, Stage.EVALUATE, ranked)
 
-    ranked = _read(run_dir / "ranked.json", ScoredTopic)
+    ranked = store.read_checkpoint(run_id, Stage.EVALUATE, ScoredTopic)
     briefs = generate_briefs(ranked, templates, provider)
-    _write(run_dir / "briefs.json", briefs)
+    store.write_checkpoint(run_id, Stage.GENERATE, briefs)
 
-    rendered = _render_all(briefs, templates, settings, run_dir)
+    run_dir = Path(settings.output_dir) / run_id
+    rendered = _render_all(briefs, templates, settings, run_dir, run_id, store)
     log.info("Rendered %d memes into %s", rendered, run_dir)
 
-    store.finish_run(run_id, status="ok", item_count=len(items))
-    return run_dir
+    store.finish_run(
+        run_id,
+        status="ok",
+        item_count=len(items),
+        trends_found=len(evidence),
+        topics_kept=len(ranked),
+        phrases_found=sum(
+            len(t.dossier.recurring_phrases) if t.dossier else 0 for t in ranked
+        ),
+    )
+    return run_id
 
 
 def _render_all(
@@ -97,6 +105,8 @@ def _render_all(
     templates: dict[str, TemplateManifest],
     settings: Settings,
     run_dir: Path,
+    run_id: str,
+    store: Store,
 ) -> int:
     count = 0
     for position, brief in enumerate(briefs, start=1):
@@ -112,17 +122,3 @@ def _render_all(
         except RenderError as exc:
             log.warning("Could not render %r: %s", brief.topic_id, exc)
     return count
-
-
-# Sequence rather than list: list is invariant, so a list[Item] is not a
-# list[BaseModel] and every call site was rejected. _write only iterates.
-def _write(path: Path, models: Sequence[BaseModel]) -> None:
-    payload = [model.model_dump(mode="json") for model in models]
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-
-def _read[T: BaseModel](path: Path, schema: type[T]) -> list[T]:
-    if not path.is_file():
-        raise FileNotFoundError(f"Missing checkpoint: {path}")
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    return [schema.model_validate(entry) for entry in raw]
