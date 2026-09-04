@@ -41,6 +41,18 @@ def _count(n: int, noun: str) -> str:
     return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
 
 
+def _posts(evidence: list[TrendEvidence]) -> list[Item]:
+    """Every post under every trend, flattened.
+
+    A function rather than the comprehension written out in both ingest
+    branches: the evidence is derived identically whether it was just fetched
+    or read back from the checkpoint, and the ingest summary needs the count
+    before the branches rejoin, so neither branch can simply fall through to
+    a shared line.
+    """
+    return [post.item for entry in evidence for post in entry.posts]
+
+
 def _stage(
     store: Store,
     run_id: str,
@@ -106,7 +118,7 @@ def run_pipeline(
         evidence = source.fetch_evidence(settings)
         log.info("Fetched %d trends", len(evidence))
         size = store.write_checkpoint(run_id, Stage.INGEST, evidence)
-        items = [post.item for entry in evidence for post in entry.posts]
+        items = _posts(evidence)
         _stage(
             store,
             run_id,
@@ -117,7 +129,7 @@ def run_pipeline(
         )
     else:
         evidence = store.read_checkpoint(run_id, Stage.INGEST, TrendEvidence)
-        items = [post.item for entry in evidence for post in entry.posts]
+        items = _posts(evidence)
         _skip(store, run_id, Stage.INGEST)
 
     if resuming <= ORDER.index(Stage.ANALYSE):
@@ -127,7 +139,6 @@ def run_pipeline(
             topics, items, datetime.now(UTC), store.previous_sub_scores(run_id)
         )
         log.info("Distilled %d topics", len(topics))
-        store.record_topics(run_id, topics)
         size = store.write_analyse_checkpoint(
             run_id, topics, settings.meme_potential_weight
         )

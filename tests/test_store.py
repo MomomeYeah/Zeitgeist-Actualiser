@@ -68,6 +68,24 @@ def _store(tmp_path) -> Store:
     return store
 
 
+def _analyse(store: Store, run_id: str, topics: list[Topic]) -> None:
+    """Persist a run's topics the one way production does.
+
+    `topic_scores` has no writer of its own: it is filled inside the analyse
+    checkpoint's transaction. Building the table by hand in the history tests
+    below would let that transaction stop writing it without a single failure
+    here.
+
+    `start_run` runs first because `previous_sub_scores` joins `topic_scores`
+    to `run_records` to order by `started_at`: a run with no `run_records`
+    row is invisible to that join, however faithfully its checkpoint was
+    written. Production always calls `store.start_run` before analyse, so
+    skipping it here would test a state that never occurs.
+    """
+    store.start_run(run_id, make_run_config())
+    store.write_analyse_checkpoint(run_id, topics, meme_potential_weight=0.3)
+
+
 def test_schema_creates_every_table_the_ui_reads(tmp_path):
     store = Store(tmp_path / "z.db")
     store.init_schema()
@@ -133,6 +151,57 @@ def test_a_database_from_an_older_schema_is_refused(tmp_path):
 
     with pytest.raises(StoreSchemaError, match="version 2"):
         Store(path).init_schema()
+
+
+def test_a_real_older_database_is_refused_rather_than_adopted(tmp_path):
+    """Schema 2's tables were `runs` and `topics`; schema 3 declares neither.
+    Probing for a table only the *current* schema names therefore reads a
+    genuine v2 file as fresh, runs the IF NOT EXISTS DDL beside its tables and
+    stamps it 3 — no error, and the surviving topic_scores history stranded
+    behind a join to a run_records that has no rows for it. This builds the
+    file the real transition produces rather than stamping a v3 file with an
+    older number, which is the case the two tests above already cover.
+    """
+    path = tmp_path / "z.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, started_at TEXT)")
+    old.execute("CREATE TABLE topics (run_id TEXT, label_slug TEXT)")
+    old.execute("PRAGMA user_version = 2")
+    old.commit()
+    old.close()
+
+    with pytest.raises(StoreSchemaError, match=r"version 2.*expects 3"):
+        Store(path).init_schema()
+
+
+def test_resuming_a_run_keeps_the_time_it_actually_began(tmp_path):
+    """The Runs list orders by started_at and renders a duration from it. A
+    resume that reset it would move the run to the top of the list and report
+    the resume as its start; the counts and the error, which describe the
+    attempt being redone, must still be cleared.
+    """
+    store = _store(tmp_path)
+    store.start_run("r1", make_run_config())
+    # Backdated rather than compared against the first call's own timestamp:
+    # two start_run calls a microsecond apart can share a clock reading on
+    # Windows, and this test must fail on a store that rewrites the column.
+    began = datetime(2026, 8, 1, 9, 30, tzinfo=UTC)
+    store._conn.execute("UPDATE run_records SET started_at = ?", (began.isoformat(),))
+    store._conn.commit()
+    store.finish_run(
+        "r1", status="ok", item_count=9, trends_found=2, topics_kept=1, phrases_found=0
+    )
+
+    store.start_run("r1", make_run_config(top_count=42))
+
+    resumed = store.get_run("r1")
+    assert resumed is not None
+    assert resumed.started_at == began
+    assert resumed.status == "running"
+    assert resumed.finished_at is None
+    assert resumed.item_count is None
+    # The config is still replaced: a resume can narrow the template library.
+    assert resumed.config.top_count == 42
 
 
 def test_a_started_run_records_the_config_it_froze(tmp_path):
@@ -205,7 +274,7 @@ def test_previous_sub_scores_are_keyed_by_platform_then_label_slug(tmp_path):
     store = Store(tmp_path / "z.db")
     store.init_schema()
     store.start_run("r1", make_run_config())
-    store.record_topics("r1", [_topic("Shelter Dog Adoption", {"lemmy": 0.7})])
+    _analyse(store, "r1", [_topic("Shelter Dog Adoption", {"lemmy": 0.7})])
     store.finish_run(
         "r1", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
     )
@@ -222,7 +291,7 @@ def test_sub_scores_from_different_platforms_do_not_collide(tmp_path):
     store = Store(tmp_path / "z.db")
     store.init_schema()
     store.start_run("r1", make_run_config())
-    store.record_topics("r1", [_topic("Cats", {"lemmy": 0.4, "wikipedia": 0.9})])
+    _analyse(store, "r1", [_topic("Cats", {"lemmy": 0.4, "wikipedia": 0.9})])
     store.finish_run(
         "r1", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
     )
@@ -241,7 +310,7 @@ def test_corroboration_is_not_persisted_as_a_platform(tmp_path):
     store = Store(tmp_path / "z.db")
     store.init_schema()
     store.start_run("r1", make_run_config())
-    store.record_topics("r1", [_topic("Cats", {"lemmy": 0.4, "corroboration": 1.25})])
+    _analyse(store, "r1", [_topic("Cats", {"lemmy": 0.4, "corroboration": 1.25})])
     store.finish_run(
         "r1", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
     )
@@ -295,7 +364,7 @@ def test_the_most_recent_prior_run_wins(tmp_path):
     store.init_schema()
     for run_id, sub_score in [("r1", 0.2), ("r2", 0.5), ("r3", 0.9)]:
         store.start_run(run_id, make_run_config())
-        store.record_topics(run_id, [_topic("Cats", {"lemmy": sub_score})])
+        _analyse(store, run_id, [_topic("Cats", {"lemmy": sub_score})])
         store.finish_run(
             run_id,
             status="ok",
@@ -316,7 +385,8 @@ def test_each_label_and_platform_tracks_its_own_history(tmp_path):
     store = Store(tmp_path / "z.db")
     store.init_schema()
     store.start_run("r1", make_run_config())
-    store.record_topics(
+    _analyse(
+        store,
         "r1",
         [
             _topic("Cats", {"lemmy": 0.2, "wikipedia": 0.6}),
@@ -328,7 +398,7 @@ def test_each_label_and_platform_tracks_its_own_history(tmp_path):
     )
 
     store.start_run("r2", make_run_config())
-    store.record_topics("r2", [_topic("Cats", {"lemmy": 0.7})])
+    _analyse(store, "r2", [_topic("Cats", {"lemmy": 0.7})])
     store.finish_run(
         "r2", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
     )
@@ -349,7 +419,7 @@ def test_the_current_run_is_excluded_from_its_own_history(tmp_path):
     store = Store(tmp_path / "z.db")
     store.init_schema()
     store.start_run("r1", make_run_config())
-    store.record_topics("r1", [_topic("Cats", {"lemmy": 0.8})])
+    _analyse(store, "r1", [_topic("Cats", {"lemmy": 0.8})])
 
     assert store.previous_sub_scores("r1") == {}
 
@@ -363,13 +433,13 @@ def test_the_excluded_runs_own_rows_do_not_hide_the_older_run(tmp_path):
     store = Store(tmp_path / "z.db")
     store.init_schema()
     store.start_run("r1", make_run_config())
-    store.record_topics("r1", [_topic("Cats", {"lemmy": 0.2})])
+    _analyse(store, "r1", [_topic("Cats", {"lemmy": 0.2})])
     store.finish_run(
         "r1", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
     )
 
     store.start_run("r2", make_run_config())
-    store.record_topics("r2", [_topic("Cats", {"lemmy": 0.99})])
+    _analyse(store, "r2", [_topic("Cats", {"lemmy": 0.99})])
     store.finish_run(
         "r2", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
     )
@@ -388,7 +458,7 @@ def test_relabelled_topic_is_still_matched_across_runs(tmp_path):
     store = Store(tmp_path / "z.db")
     store.init_schema()
     store.start_run("r1", make_run_config())
-    store.record_topics("r1", [_topic("Shelter Dog Adoption", {"lemmy": 0.8})])
+    _analyse(store, "r1", [_topic("Shelter Dog Adoption", {"lemmy": 0.8})])
     store.finish_run(
         "r1", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
     )
@@ -561,23 +631,60 @@ def test_the_analyse_checkpoint_and_its_rows_commit_together(tmp_path):
     assert len(store.run_topics("r1")) == 1
 
 
-def test_a_failure_partway_leaves_neither_the_payload_nor_the_rows(
-    tmp_path, monkeypatch
-):
-    """The whole 'they cannot disagree' claim rests on one transaction. Two
-    separate commits would leave a window where a crash strands one."""
+def test_the_analyse_checkpoint_also_writes_the_cross_run_sub_scores(tmp_path):
+    """topic_scores is derived from the same payload and has no other writer.
+    Committing it separately, before the checkpoint, left a window where a
+    crash stranded sub-scores for a run whose analyse never landed — and
+    previous_sub_scores feeds those into the next run's rank delta."""
+    store = _store(tmp_path)
+
+    _analyse(store, "r1", [_topic("Cats", {"lemmy": 0.4})])
+
+    assert store.previous_sub_scores("r2") == {"lemmy": {"cats": 0.4}}
+
+
+def test_re_analysing_a_run_leaves_only_the_new_topics(tmp_path):
+    """Reachable from start_at=ANALYSE. Keyed on (run_id, topic_id), an upsert
+    with no clear leaves every topic the previous analyse produced: three rows
+    against a checkpoint holding two, two of them ranked 1, and stale sub-
+    scores feeding the next run's rank delta under labels this run dropped.
+    """
+    store = _store(tmp_path)
+    _analyse(store, "r1", [_topic("Aardvarks", {"lemmy": 0.9}), _topic("Bees", {})])
+
+    _analyse(store, "r1", [_topic("Cats", {"lemmy": 0.1})])
+
+    rows = store.run_topics("r1")
+    assert [row.topic_id for row in rows] == ["cats"]
+    assert [row.final_rank for row in rows] == [1]
+    assert store.previous_sub_scores("r2") == {"lemmy": {"cats": 0.1}}
+
+
+def test_a_failure_partway_leaves_none_of_the_three(tmp_path, monkeypatch):
+    """The whole 'they cannot disagree' claim rests on one transaction.
+    Separate commits would leave a window where a crash strands one.
+
+    Fails the *last* insert, so the checkpoint and run_topics rows are already
+    written inside the transaction and have to be rolled back — a test that
+    failed the first would pass against three independent commits.
+    """
     store = _store(tmp_path)
 
     def boom(*args, **kwargs):
         raise RuntimeError("interrupted")
 
-    monkeypatch.setattr(store, "_insert_run_topics", boom)
+    monkeypatch.setattr(store, "_insert_topic_scores", boom)
 
     with pytest.raises(RuntimeError):
-        store.write_analyse_checkpoint("r1", [make_topic()], meme_potential_weight=0.3)
+        store.write_analyse_checkpoint(
+            "r1", [_topic("Cats", {"lemmy": 0.4})], meme_potential_weight=0.3
+        )
 
-    assert store._conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
-    assert store._conn.execute("SELECT COUNT(*) FROM run_topics").fetchone()[0] == 0
+    counts = [
+        store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in ("checkpoints", "run_topics", "topic_scores")
+    ]
+    assert counts == [0, 0, 0]
 
 
 def test_a_render_round_trips_with_its_origin_intact(tmp_path):

@@ -243,19 +243,6 @@ def test_item_count_reflects_the_posts_under_every_trend(tmp_path):
     assert record.item_count == 3
 
 
-def test_produces_a_png(tmp_path):
-    store = _store(tmp_path)
-    run_id = run_pipeline(
-        settings=_settings(tmp_path),
-        source=_FakeTrendSource([_evidence()]),
-        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
-        store=store,
-        run_id="r1",
-    )
-
-    assert list((tmp_path / "output" / run_id / "renders").glob("*.png"))
-
-
 def test_a_render_lands_in_the_renders_subdirectory_with_a_thumbnail(tmp_path):
     store = _store(tmp_path)
     run_id = run_pipeline(

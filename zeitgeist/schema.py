@@ -117,6 +117,9 @@ CREATE TABLE IF NOT EXISTS topic_scores (
 );
 
 CREATE INDEX IF NOT EXISTS idx_run_topics_slug ON run_topics (label_slug);
+-- The topics index deduplicates across runs by topic id, which the
+-- (run_id, topic_id) primary key cannot serve: run_id leads it.
+CREATE INDEX IF NOT EXISTS idx_run_topics_topic ON run_topics (topic_id);
 CREATE INDEX IF NOT EXISTS idx_run_topics_status ON run_topics (trend_status);
 CREATE INDEX IF NOT EXISTS idx_renders_run_topic ON renders (run_id, topic_id);
 CREATE INDEX IF NOT EXISTS idx_topic_scores_label ON topic_scores (label);

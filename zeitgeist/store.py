@@ -54,10 +54,18 @@ class Store:
         self._conn.execute("PRAGMA journal_mode = WAL")
 
     def init_schema(self) -> None:
-        existing = self._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='run_records'"
-        ).fetchone()
-        if existing is None:
+        # "Is this file fresh?" is asked of the whole database, not of one
+        # table's name. Probing for a table this version happens to declare
+        # takes the create-fresh branch for every *older* schema — whose
+        # sentinel table had a different name — so the IF NOT EXISTS DDL runs
+        # alongside the old tables and stamps the current version onto them.
+        # StoreSchemaError would then never fire for the one transition it
+        # exists to catch, and the surviving history would be unreachable
+        # rather than reported.
+        [(tables,)] = self._conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+        if tables == 0:
             self._conn.executescript(SCHEMA)
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self._conn.commit()
@@ -72,9 +80,22 @@ class Store:
             )
 
     def start_run(self, run_id: str, config: RunConfig) -> None:
+        """Open a run, or reopen one being resumed.
+
+        Upsert rather than INSERT OR REPLACE, so `started_at` survives a
+        resume. The Runs list orders by it and renders a duration from it, so
+        replacing the row would make a run resumed a day later claim to have
+        begun a day late. Everything else *is* cleared: the outcome, its
+        counts and any error describe the previous attempt, which is being
+        redone.
+        """
         self._conn.execute(
-            "INSERT OR REPLACE INTO run_records "
-            "(run_id, status, started_at, config) VALUES (?, ?, ?, ?)",
+            "INSERT INTO run_records (run_id, status, started_at, config) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(run_id) DO UPDATE SET "
+            "status = excluded.status, config = excluded.config, "
+            "finished_at = NULL, error = NULL, item_count = NULL, "
+            "trends_found = NULL, topics_kept = NULL, phrases_found = NULL",
             (run_id, "running", _now(), config.model_dump_json()),
         )
         self._conn.commit()
@@ -139,7 +160,7 @@ class Store:
             phrases_found=row[9],
         )
 
-    def record_topics(self, run_id: str, topics: list[Topic]) -> None:
+    def _insert_topic_scores(self, run_id: str, topics: Sequence[Topic]) -> None:
         # Keyed on slugify(label), not the raw label: labels are free text
         # the model regenerates every run, so "Shelter Dog Adoption" and
         # "shelter dog adoption" must be treated as the same topic across
@@ -156,13 +177,12 @@ class Store:
                 if platform not in NON_PLATFORM_COMPONENTS
             ],
         )
-        self._conn.commit()
 
     def previous_sub_scores(self, exclude_run_id: str) -> dict[str, dict[str, float]]:
         """Each platform's sub-score per label-slug, from the most recent
         prior run containing that platform/label pair. Keys are
-        slugify(label) (see record_topics); callers must look up with the
-        same normalisation, which score_topics does.
+        slugify(label) (see `_insert_topic_scores`); callers must look up with
+        the same normalisation, which score_topics does.
         """
         rows = self._conn.execute(
             """
@@ -271,17 +291,28 @@ class Store:
     def write_analyse_checkpoint(
         self, run_id: str, topics: Sequence[Topic], meme_potential_weight: float
     ) -> int:
-        """Write the analyse payload and its flattened rows in one transaction.
+        """Write the analyse payload and everything derived from it in one
+        transaction.
 
-        Together, or not at all. `run_topics` is derived from this payload,
-        and the claim that the two cannot disagree only holds if a crash
-        between them leaves neither.
+        Together, or not at all. `run_topics` and `topic_scores` are both
+        derived from this payload, and the claim that they cannot disagree
+        with it only holds if a crash leaves none of the three.
+
+        Both derived tables are cleared for this run first. Their keys are
+        `(run_id, topic_id)` and `(run_id, label, platform)`, so an upsert
+        alone would leave rows for topics the *previous* analyse produced and
+        this one did not: three rows against a two-topic checkpoint, two of
+        them ranked 1. Re-analysing is reachable from `start_at=ANALYSE`, and
+        those stale sub-scores feed the next run's rank delta.
         """
         payload = json.dumps([topic.model_dump(mode="json") for topic in topics])
         rows = flatten(run_id, list(topics), meme_potential_weight)
         with self._conn:
             self._insert_checkpoint(run_id, Stage.ANALYSE, payload)
+            self._conn.execute("DELETE FROM run_topics WHERE run_id = ?", (run_id,))
             self._insert_run_topics(rows)
+            self._conn.execute("DELETE FROM topic_scores WHERE run_id = ?", (run_id,))
+            self._insert_topic_scores(run_id, topics)
         return len(payload.encode("utf-8"))
 
     def read_checkpoint[T: BaseModel](

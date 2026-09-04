@@ -29,9 +29,19 @@ class Stage(StrEnum):
 
 ORDER = [Stage.INGEST, Stage.ANALYSE, Stage.EVALUATE, Stage.GENERATE]
 
-# `interrupted` is set on startup for a run left `running` by a process that
-# died. Phase 3 does the reconciling; the value exists here so the schema and
-# the model agree from the start.
+# Several of these values have no writer in this phase, deliberately.
+# `run_pipeline` records only what a *successful* run does: it has no
+# try/except, and the dev harness lets a traceback escape, so today a crash
+# leaves the row `running` forever.
+#
+# Phase 3's run execution service is what writes the rest — it catches the
+# exception and calls `Store.fail_run` (`failed`), reconciles rows left
+# `running` by a dead process on startup (`interrupted`), honours the stop
+# button (`aborted`), and moves a stage through `queued` and `running` as the
+# worker reaches it. Building half of that here would mean a failure path with
+# no queue, no worker and no reconciler to make it coherent, so this phase
+# builds the accessors and the vocabulary that service will call and stops
+# there. An unwritten value below is future work, not a dead branch.
 RunStatus = Literal["running", "ok", "failed", "aborted", "interrupted"]
 StageStatus = Literal["queued", "running", "ok", "failed", "skipped"]
 
