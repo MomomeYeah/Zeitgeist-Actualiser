@@ -475,3 +475,94 @@ def test_the_prompt_lists_only_the_named_templates(tmp_path):
     )
     assert f"id={TEMPLATE_B}" in brief_prompt
     assert f"id={TEMPLATE_A}" not in brief_prompt
+
+
+def test_every_stage_is_recorded_with_a_duration(tmp_path):
+    store = _store(tmp_path)
+    run_id = run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence()]),
+        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+        store=store,
+        run_id="r1",
+    )
+
+    stages = store.stages_for_run(run_id)
+
+    assert [s.stage for s in stages] == [
+        Stage.INGEST,
+        Stage.ANALYSE,
+        Stage.EVALUATE,
+        Stage.GENERATE,
+    ]
+    assert all(s.status == "ok" for s in stages)
+    assert all(s.started_at is not None and s.finished_at is not None for s in stages)
+
+
+def test_a_skipped_stage_is_recorded_as_skipped(tmp_path):
+    """Resuming from generate leaves three stages that did not run this time.
+    The cards show them as skipped, not as never having existed."""
+    store = _store(tmp_path)
+    settings = _settings(tmp_path)
+    run_id = run_pipeline(
+        settings=settings,
+        source=_FakeTrendSource([_evidence()]),
+        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+        store=store,
+        run_id="r1",
+    )
+
+    run_pipeline(
+        settings=settings,
+        source=_FakeTrendSource([]),
+        provider=FakeLLMProvider(responses=[_choice()]),
+        store=store,
+        run_id=run_id,
+        start_at=Stage.GENERATE,
+    )
+
+    stages = {s.stage: s.status for s in store.stages_for_run(run_id)}
+
+    assert stages[Stage.INGEST] == "skipped"
+    assert stages[Stage.GENERATE] == "ok"
+
+
+def test_stage_summaries_report_what_each_stage_did(tmp_path):
+    """The stage cards render this line verbatim, and nothing else asserts
+    it - a stage handed another stage's summary, or a miscounted one, would
+    show as plausible-looking noise on every run."""
+    store = _store(tmp_path)
+    run_id = run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence()]),
+        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+        store=store,
+        run_id="r1",
+    )
+
+    summaries = {s.stage: s.summary for s in store.stages_for_run(run_id)}
+
+    assert summaries[Stage.INGEST] == "1 trend, 1 post"
+    assert summaries[Stage.ANALYSE] == "1 topic distilled"
+    assert summaries[Stage.EVALUATE] == "1 of 1 kept"
+    assert summaries[Stage.GENERATE] == "1 of 1 rendered"
+
+
+def test_run_topics_covers_every_topic_not_just_the_kept_ones(tmp_path):
+    """The ranking screen draws below-the-cut rows, so they need rows."""
+    store = _store(tmp_path)
+    # _settings defaults to topic_count=1, so the second topic falls below the
+    # cut and appears in run_topics but not in the evaluate checkpoint.
+    run_id = run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence("A trend"), _evidence("B trend")]),
+        provider=FakeLLMProvider(responses=[_draft(), _draft(), _choice()]),
+        store=store,
+        run_id="r1",
+    )
+
+    assert len(store.read_checkpoint(run_id, Stage.EVALUATE, ScoredTopic)) == 1
+    assert len(store.run_topics(run_id)) == 2
+    # Two trends, so this run is also the plural branch of _count.
+    summaries = {s.stage: s.summary for s in store.stages_for_run(run_id)}
+    assert summaries[Stage.INGEST] == "2 trends, 2 posts"

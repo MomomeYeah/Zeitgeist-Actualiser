@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from zeitgeist.analysis.slug import slugify
 from zeitgeist.models import Topic
-from zeitgeist.projection import TopicRow
+from zeitgeist.projection import TopicRow, flatten
 from zeitgeist.records import (
     ORDER,
     RenderRecord,
@@ -188,6 +188,10 @@ class Store:
         return previous
 
     def write_run_topics(self, rows: Sequence[TopicRow]) -> None:
+        with self._conn:
+            self._insert_run_topics(rows)
+
+    def _insert_run_topics(self, rows: Sequence[TopicRow]) -> None:
         self._conn.executemany(
             "INSERT OR REPLACE INTO run_topics (run_id, topic_id, label, "
             "label_slug, trend_status, event_sentiment, conversation_register, "
@@ -214,7 +218,6 @@ class Store:
                 for row in rows
             ],
         )
-        self._conn.commit()
 
     def run_topics(self, run_id: str) -> list[TopicRow]:
         rows = self._conn.execute(
@@ -254,12 +257,31 @@ class Store:
         a list[BaseModel] and every call site would be rejected.
         """
         payload = json.dumps([model.model_dump(mode="json") for model in models])
+        with self._conn:
+            self._insert_checkpoint(run_id, stage, payload)
+        return len(payload.encode("utf-8"))
+
+    def _insert_checkpoint(self, run_id: str, stage: Stage, payload: str) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO checkpoints "
             "(run_id, stage, payload, written_at) VALUES (?, ?, ?, ?)",
             (run_id, stage.value, payload, _now()),
         )
-        self._conn.commit()
+
+    def write_analyse_checkpoint(
+        self, run_id: str, topics: Sequence[Topic], meme_potential_weight: float
+    ) -> int:
+        """Write the analyse payload and its flattened rows in one transaction.
+
+        Together, or not at all. `run_topics` is derived from this payload,
+        and the claim that the two cannot disagree only holds if a crash
+        between them leaves neither.
+        """
+        payload = json.dumps([topic.model_dump(mode="json") for topic in topics])
+        rows = flatten(run_id, list(topics), meme_potential_weight)
+        with self._conn:
+            self._insert_checkpoint(run_id, Stage.ANALYSE, payload)
+            self._insert_run_topics(rows)
         return len(payload.encode("utf-8"))
 
     def read_checkpoint[T: BaseModel](

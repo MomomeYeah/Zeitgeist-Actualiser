@@ -19,8 +19,14 @@ from zeitgeist.media.brief import generate_briefs
 from zeitgeist.media.render import RenderError, render_meme, write_thumbnail
 from zeitgeist.media.templates import TemplateManifest, load_templates, select_templates
 from zeitgeist.models import Item, MediaBrief, ScoredTopic, Topic, TrendEvidence
-from zeitgeist.projection import flatten
-from zeitgeist.records import ORDER, AutoOrigin, RenderRecord, RunConfig, Stage
+from zeitgeist.records import (
+    ORDER,
+    AutoOrigin,
+    RenderRecord,
+    RunConfig,
+    Stage,
+    StageRecord,
+)
 from zeitgeist.sources.base import TrendSource
 from zeitgeist.store import Store
 
@@ -29,6 +35,45 @@ log = logging.getLogger(__name__)
 
 def new_run_id() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+def _stage(
+    store: Store,
+    run_id: str,
+    stage: Stage,
+    started: datetime,
+    summary: str,
+    size: int | None,
+) -> None:
+    store.record_stage(
+        run_id,
+        StageRecord(
+            stage=stage,
+            status="ok",
+            started_at=started,
+            finished_at=datetime.now(UTC),
+            payload_bytes=size,
+            summary=summary,
+        ),
+    )
+
+
+def _skip(store: Store, run_id: str, stage: Stage) -> None:
+    store.record_stage(
+        run_id,
+        StageRecord(
+            stage=stage,
+            status="skipped",
+            started_at=None,
+            finished_at=None,
+            payload_bytes=None,
+            summary="skipped",
+        ),
+    )
 
 
 def run_pipeline(
@@ -55,38 +100,81 @@ def run_pipeline(
     resuming = ORDER.index(start_at)
     store.start_run(run_id, RunConfig.freeze(settings, template_ids))
 
+    items: list[Item]
     if resuming <= ORDER.index(Stage.INGEST):
+        started = datetime.now(UTC)
         evidence = source.fetch_evidence(settings)
         log.info("Fetched %d trends", len(evidence))
-        store.write_checkpoint(run_id, Stage.INGEST, evidence)
+        size = store.write_checkpoint(run_id, Stage.INGEST, evidence)
+        items = [post.item for entry in evidence for post in entry.posts]
+        _stage(
+            store,
+            run_id,
+            Stage.INGEST,
+            started,
+            f"{_count(len(evidence), 'trend')}, {_count(len(items), 'post')}",
+            size,
+        )
     else:
         evidence = store.read_checkpoint(run_id, Stage.INGEST, TrendEvidence)
-
-    items: list[Item] = [post.item for entry in evidence for post in entry.posts]
+        items = [post.item for entry in evidence for post in entry.posts]
+        _skip(store, run_id, Stage.INGEST)
 
     if resuming <= ORDER.index(Stage.ANALYSE):
+        started = datetime.now(UTC)
         topics = distil_topics(evidence, provider, settings)
         topics = score_topics(
             topics, items, datetime.now(UTC), store.previous_sub_scores(run_id)
         )
         log.info("Distilled %d topics", len(topics))
         store.record_topics(run_id, topics)
-        store.write_checkpoint(run_id, Stage.ANALYSE, topics)
-        store.write_run_topics(flatten(run_id, topics, settings.meme_potential_weight))
+        size = store.write_analyse_checkpoint(
+            run_id, topics, settings.meme_potential_weight
+        )
+        _stage(
+            store,
+            run_id,
+            Stage.ANALYSE,
+            started,
+            f"{_count(len(topics), 'topic')} distilled",
+            size,
+        )
+    else:
+        _skip(store, run_id, Stage.ANALYSE)
 
     if resuming <= ORDER.index(Stage.EVALUATE):
+        started = datetime.now(UTC)
         topics = store.read_checkpoint(run_id, Stage.ANALYSE, Topic)
         ranked = select(topics, settings.topic_count, settings.meme_potential_weight)
         log.info("Selected %d topics", len(ranked))
-        store.write_checkpoint(run_id, Stage.EVALUATE, ranked)
+        size = store.write_checkpoint(run_id, Stage.EVALUATE, ranked)
+        _stage(
+            store,
+            run_id,
+            Stage.EVALUATE,
+            started,
+            f"{len(ranked)} of {len(topics)} kept",
+            size,
+        )
+    else:
+        _skip(store, run_id, Stage.EVALUATE)
 
     ranked = store.read_checkpoint(run_id, Stage.EVALUATE, ScoredTopic)
+    started = datetime.now(UTC)
     briefs = generate_briefs(ranked, templates, provider)
-    store.write_checkpoint(run_id, Stage.GENERATE, briefs)
+    size = store.write_checkpoint(run_id, Stage.GENERATE, briefs)
 
     run_dir = Path(settings.output_dir) / run_id
     rendered = _render_all(briefs, templates, settings, run_dir, run_id, store)
     log.info("Rendered %d memes into %s", rendered, run_dir)
+    _stage(
+        store,
+        run_id,
+        Stage.GENERATE,
+        started,
+        f"{rendered} of {len(briefs)} rendered",
+        size,
+    )
 
     store.finish_run(
         run_id,

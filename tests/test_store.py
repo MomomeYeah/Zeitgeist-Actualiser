@@ -550,6 +550,36 @@ def test_run_topics_round_trip_through_the_store(tmp_path):
     assert stored[0].label_slug == "airport-cat"
 
 
+def test_the_analyse_checkpoint_and_its_rows_commit_together(tmp_path):
+    store = _store(tmp_path)
+
+    store.write_analyse_checkpoint(
+        "r1", [make_topic("airport-cat")], meme_potential_weight=0.3
+    )
+
+    assert len(store.read_checkpoint("r1", Stage.ANALYSE, Topic)) == 1
+    assert len(store.run_topics("r1")) == 1
+
+
+def test_a_failure_partway_leaves_neither_the_payload_nor_the_rows(
+    tmp_path, monkeypatch
+):
+    """The whole 'they cannot disagree' claim rests on one transaction. Two
+    separate commits would leave a window where a crash strands one."""
+    store = _store(tmp_path)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("interrupted")
+
+    monkeypatch.setattr(store, "_insert_run_topics", boom)
+
+    with pytest.raises(RuntimeError):
+        store.write_analyse_checkpoint("r1", [make_topic()], meme_potential_weight=0.3)
+
+    assert store._conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
+    assert store._conn.execute("SELECT COUNT(*) FROM run_topics").fetchone()[0] == 0
+
+
 def test_a_render_round_trips_with_its_origin_intact(tmp_path):
     store = _store(tmp_path)
     record = make_render_record("rnd1", origin=AutoOrigin(rationale="it fits"))
