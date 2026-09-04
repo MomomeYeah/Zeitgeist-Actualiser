@@ -24,6 +24,7 @@ from zeitgeist.models import (
     TrendInfo,
 )
 from zeitgeist.pipeline import Stage, run_pipeline
+from zeitgeist.records import AutoOrigin
 from zeitgeist.store import MissingCheckpoint, Store
 
 NOW = datetime(2026, 8, 26, tzinfo=UTC)
@@ -243,15 +244,76 @@ def test_item_count_reflects_the_posts_under_every_trend(tmp_path):
 
 
 def test_produces_a_png(tmp_path):
-    settings = _settings(tmp_path)
+    store = _store(tmp_path)
     run_id = run_pipeline(
-        settings=settings,
+        settings=_settings(tmp_path),
         source=_FakeTrendSource([_evidence()]),
         provider=FakeLLMProvider(responses=[_draft(), _choice()]),
-        store=_store(tmp_path),
+        store=store,
         run_id="r1",
     )
-    assert list((settings.output_dir / run_id).glob("*.png"))
+
+    assert list((tmp_path / "output" / run_id / "renders").glob("*.png"))
+
+
+def test_a_render_lands_in_the_renders_subdirectory_with_a_thumbnail(tmp_path):
+    store = _store(tmp_path)
+    run_id = run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence()]),
+        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+        store=store,
+        run_id="r1",
+    )
+
+    [record] = store.renders_for_run(run_id)
+    renders = tmp_path / "output" / run_id / "renders"
+
+    assert (renders / f"{record.id}.png").is_file()
+    assert (renders / f"{record.id}.thumb.png").is_file()
+
+
+def test_a_render_record_carries_the_brief_that_produced_it(tmp_path):
+    """The full-size view shows the slot text and the rationale, so they have
+    to be on the record rather than only in the generate checkpoint."""
+    store = _store(tmp_path)
+    run_id = run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence()]),
+        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+        store=store,
+        run_id="r1",
+    )
+
+    [record] = store.renders_for_run(run_id)
+
+    assert record.template_id == TEMPLATE_A
+    assert record.caption_slots == {"rejected": "Dogs", "preferred": "Cats"}
+    assert isinstance(record.origin, AutoOrigin)
+    assert record.origin.rationale == "Fits."
+
+
+def test_a_render_that_fails_keeps_a_row_with_its_error(tmp_path):
+    """The renderer fails per meme, so three of five is a real outcome. A
+    failure that left no row would show as a meme that never existed."""
+    store = _store(tmp_path)
+    # 400 characters cannot fit a 180x80 box even at the 12px floor, which is
+    # the one RenderError the renderer raises for a caption rather than a
+    # missing file.
+    unrenderable = _choice(caption_slots={"rejected": "x" * 400, "preferred": "y"})
+    run_id = run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence()]),
+        provider=FakeLLMProvider(responses=[_draft(), unrenderable]),
+        store=store,
+        run_id="r1",
+    )
+
+    [record] = store.renders_for_run(run_id)
+
+    assert record.status == "failed"
+    assert record.error is not None
+    assert not (tmp_path / "output" / run_id / "renders" / f"{record.id}.png").exists()
 
 
 def test_records_the_run_and_its_topics_in_the_store(tmp_path):
@@ -336,7 +398,9 @@ def test_a_failing_stage_degrades_rather_than_killing_the_run(tmp_path):
 
     briefs = store.read_checkpoint(run_id, Stage.GENERATE, MediaBrief)
     assert [brief.topic_id for brief in briefs] == ["second"]
-    assert len(list((settings.output_dir / run_id).glob("*.png"))) == 1
+    [record] = store.renders_for_run(run_id)
+    assert record.status == "ready"
+    assert (settings.output_dir / run_id / "renders" / f"{record.id}.png").is_file()
 
 
 def test_an_unknown_template_id_fails_before_anything_is_fetched(tmp_path):
