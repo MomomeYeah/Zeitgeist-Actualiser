@@ -86,6 +86,10 @@ def consolidate(
                 label=entry.label,
                 summary=entry.summary,
                 item_ids=item_ids,
+                # This reduce stage has no TrendInfo to read a real status
+                # from — it is superseded by distil_topics, which does.
+                # Kept only for this module's own test coverage.
+                trend_status="trending",
             )
         )
 

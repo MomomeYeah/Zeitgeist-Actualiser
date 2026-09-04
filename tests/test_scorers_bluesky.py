@@ -275,7 +275,13 @@ def test_a_bluesky_only_topic_survives_the_content_bearing_filter():
         for n in range(2)
     ]
     topics = [
-        Topic(id=f"t{n}", label=f"T{n}", summary="", item_ids=[items[n].source_id])
+        Topic(
+            id=f"t{n}",
+            label=f"T{n}",
+            summary="",
+            item_ids=[items[n].source_id],
+            trend_status="trending",
+        )
         for n in range(2)
     ]
 

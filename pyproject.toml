@@ -11,9 +11,6 @@ dependencies = [
     "pillow>=11.3",
 ]
 
-[project.scripts]
-zeitgeist = "zeitgeist.cli:main"
-
 [dependency-groups]
 # ty is pre-1.0 and its rule defaults shift between releases; the upper bound
 # plus uv.lock makes a version change a deliberate, reviewable act rather

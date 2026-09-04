@@ -4,7 +4,14 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    NoDecode,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+from zeitgeist.settings_source import SettingsTableSource
 
 PACKAGE_ROOT = Path(__file__).parent
 
@@ -115,3 +122,24 @@ class Settings(BaseSettings):
             raise ValueError(f"Unknown source: {name!r}. Valid: {valid}")
 
         return self
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Slot the settings table between the environment and `.env`.
+
+        Order is precedence, highest first.
+        """
+        return (
+            init_settings,
+            env_settings,
+            SettingsTableSource(settings_cls),
+            dotenv_settings,
+            file_secret_settings,
+        )

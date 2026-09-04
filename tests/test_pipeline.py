@@ -1,4 +1,3 @@
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,15 +13,19 @@ from zeitgeist.media.templates import TemplateError
 from zeitgeist.models import (
     BlueskyMetrics,
     Item,
+    MediaBrief,
     PostEvidence,
     Register,
     Reply,
+    ScoredTopic,
     Sentiment,
+    Topic,
     TrendEvidence,
     TrendInfo,
 )
 from zeitgeist.pipeline import Stage, run_pipeline
-from zeitgeist.store import Store
+from zeitgeist.records import AutoOrigin
+from zeitgeist.store import MissingCheckpoint, Store
 
 NOW = datetime(2026, 8, 26, tzinfo=UTC)
 
@@ -152,53 +155,54 @@ def _choice(**overrides: Any) -> BriefChoice:
 
 
 def test_ingest_writes_evidence_and_analyse_reads_it(tmp_path):
-    """The checkpoint boundary the whole design turns on: everything
-    expensive lands before topics.json, so brief tuning re-runs in seconds.
-    """
-    settings = _settings(tmp_path)
-    run_dir = run_pipeline(
-        settings=settings,
-        source=_FakeTrendSource([_evidence()]),
-        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
-        store=_store(tmp_path),
-        run_id="r1",
-    )
-    payload = json.loads((run_dir / "evidence.json").read_text(encoding="utf-8"))
-    assert payload[0]["trend"]["display_name"] == "A trend"
-    assert payload[0]["posts"][0]["replies"][0]["text"] == "what a mess"
-
-
-def test_topics_json_carries_the_dossier(tmp_path):
-    run_dir = run_pipeline(
+    """The expensive fetch lands before the analyse checkpoint, so brief
+    tuning re-runs in seconds."""
+    store = _store(tmp_path)
+    run_id = run_pipeline(
         settings=_settings(tmp_path),
         source=_FakeTrendSource([_evidence()]),
         provider=FakeLLMProvider(responses=[_draft(), _choice()]),
-        store=_store(tmp_path),
+        store=store,
         run_id="r1",
     )
-    [topic] = json.loads((run_dir / "topics.json").read_text(encoding="utf-8"))
-    assert topic["dossier"]["conversation_register"] == "dunking"
-    assert topic["summary"] == "Canada imposed tariffs on $30B of US goods."
+
+    evidence = store.read_checkpoint(run_id, Stage.INGEST, TrendEvidence)
+
+    assert evidence[0].trend.display_name == "A trend"
+    assert evidence[0].posts[0].replies[0].text == "what a mess"
 
 
-def test_ranked_json_carries_the_selected_topic_and_its_dossier(tmp_path):
-    """ranked.json is what --resume-from generate reads back, so a break in
-    its serialisation (the wrong field written, final_rank mis-numbered)
-    would only surface as a confusing failure two stages later. Parsed as
-    raw JSON rather than through ScoredTopic.model_validate, so a
-    serialisation-level break is visible here rather than papered over by
-    the schema filling in a default.
-    """
-    run_dir = run_pipeline(
+def test_the_analyse_checkpoint_carries_the_dossier(tmp_path):
+    store = _store(tmp_path)
+    run_id = run_pipeline(
         settings=_settings(tmp_path),
         source=_FakeTrendSource([_evidence()]),
         provider=FakeLLMProvider(responses=[_draft(), _choice()]),
-        store=_store(tmp_path),
+        store=store,
         run_id="r1",
     )
-    [topic] = json.loads((run_dir / "ranked.json").read_text(encoding="utf-8"))
-    assert topic["final_rank"] == 1
-    assert topic["dossier"]["conversation_register"] == "dunking"
+
+    [topic] = store.read_checkpoint(run_id, Stage.ANALYSE, Topic)
+
+    assert topic.dossier is not None
+    assert topic.dossier.event_sentiment is Sentiment.SCHADENFREUDE
+
+
+def test_the_evaluate_checkpoint_is_what_resume_reads_back(tmp_path):
+    """A break in this round trip breaks resuming silently."""
+    store = _store(tmp_path)
+    run_id = run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence()]),
+        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+        store=store,
+        run_id="r1",
+    )
+
+    [topic] = store.read_checkpoint(run_id, Stage.EVALUATE, ScoredTopic)
+
+    assert topic.dossier is not None
+    assert topic.final_rank == 1
 
 
 def test_resuming_from_analyse_does_not_refetch(tmp_path):
@@ -233,47 +237,77 @@ def test_item_count_reflects_the_posts_under_every_trend(tmp_path):
         store=store,
         run_id="r1",
     )
-    assert (store.run_summary("r1") or {})["item_count"] == 3
+
+    record = store.get_run("r1")
+    assert record is not None
+    assert record.item_count == 3
 
 
-def test_the_ingest_checkpoint_round_trips_through_trend_evidence(tmp_path):
-    """Checkpoint JSON must deserialise back to the concrete metrics class
-    with its values intact, or --resume-from silently produces
-    differently-shaped evidence than the run that wrote them.
-    """
-    run_dir = run_pipeline(
+def test_a_render_lands_in_the_renders_subdirectory_with_a_thumbnail(tmp_path):
+    store = _store(tmp_path)
+    run_id = run_pipeline(
         settings=_settings(tmp_path),
         source=_FakeTrendSource([_evidence()]),
         provider=FakeLLMProvider(responses=[_draft(), _choice()]),
-        store=_store(tmp_path),
+        store=store,
         run_id="r1",
     )
 
-    raw = json.loads((run_dir / "evidence.json").read_text(encoding="utf-8"))
-    restored = [TrendEvidence.model_validate(entry) for entry in raw]
+    [record] = store.renders_for_run(run_id)
+    renders = tmp_path / "output" / run_id / "renders"
 
-    metrics = restored[0].posts[0].item.metrics
-    assert isinstance(metrics, BlueskyMetrics)
-    assert metrics.trend == "A trend"
-    assert metrics.like_count == 10
+    assert (renders / f"{record.id}.png").is_file()
+    assert (renders / f"{record.id}.thumb.png").is_file()
 
 
-def test_produces_a_png(tmp_path):
-    run_dir = run_pipeline(
+def test_a_render_record_carries_the_brief_that_produced_it(tmp_path):
+    """The full-size view shows the slot text and the rationale, so they have
+    to be on the record rather than only in the generate checkpoint."""
+    store = _store(tmp_path)
+    run_id = run_pipeline(
         settings=_settings(tmp_path),
         source=_FakeTrendSource([_evidence()]),
         provider=FakeLLMProvider(responses=[_draft(), _choice()]),
-        store=_store(tmp_path),
+        store=store,
         run_id="r1",
     )
-    assert list(run_dir.glob("*.png"))
+
+    [record] = store.renders_for_run(run_id)
+
+    assert record.template_id == TEMPLATE_A
+    assert record.caption_slots == {"rejected": "Dogs", "preferred": "Cats"}
+    assert isinstance(record.origin, AutoOrigin)
+    assert record.origin.rationale == "Fits."
 
 
-def test_records_the_run_in_the_store(tmp_path):
-    """Guards both that the run row is recorded (start_run/finish_run) and
-    that the pipeline's topics are persisted (record_topics). A single topic
-    can't be min-max normalised (score.py's MIN_TOPICS_TO_RANK), so it earns
-    no topic_scores row -- the topics table is the one to check.
+def test_a_render_that_fails_keeps_a_row_with_its_error(tmp_path):
+    """The renderer fails per meme, so three of five is a real outcome. A
+    failure that left no row would show as a meme that never existed."""
+    store = _store(tmp_path)
+    # 400 characters cannot fit a 180x80 box even at the 12px floor, which is
+    # the one RenderError the renderer raises for a caption rather than a
+    # missing file.
+    unrenderable = _choice(caption_slots={"rejected": "x" * 400, "preferred": "y"})
+    run_id = run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence()]),
+        provider=FakeLLMProvider(responses=[_draft(), unrenderable]),
+        store=store,
+        run_id="r1",
+    )
+
+    [record] = store.renders_for_run(run_id)
+
+    assert record.status == "failed"
+    assert record.error is not None
+    assert not (tmp_path / "output" / run_id / "renders" / f"{record.id}.png").exists()
+
+
+def test_records_the_run_and_its_topics_in_the_store(tmp_path):
+    """Guards both that the run row is recorded and that the pipeline's
+    topics are persisted. A single topic cannot be min-max normalised
+    (score.py's MIN_TOPICS_TO_RANK), so it earns no topic_scores row --
+    run_topics is the one to check.
     """
     store = _store(tmp_path)
     run_pipeline(
@@ -284,14 +318,10 @@ def test_records_the_run_in_the_store(tmp_path):
         run_id="r1",
     )
 
-    summary = store.run_summary("r1")
-    assert summary is not None
-    assert summary["status"] == "ok"
-
-    rows = store._conn.execute(
-        "SELECT label FROM topics WHERE run_id = ?", ("r1",)
-    ).fetchall()
-    assert rows == [("a-trend",)]
+    record = store.get_run("r1")
+    assert record is not None
+    assert record.status == "ok"
+    assert [row.label_slug for row in store.run_topics("r1")] == ["a-trend"]
 
 
 def test_resume_from_generate_reuses_ranked_topics(tmp_path):
@@ -317,15 +347,19 @@ def test_resume_from_generate_reuses_ranked_topics(tmp_path):
     assert source.calls == 1
 
 
-def test_resume_without_checkpoint_raises(tmp_path):
-    with pytest.raises(FileNotFoundError):
+def test_resuming_without_a_checkpoint_raises(tmp_path):
+    """Resuming from a stage whose predecessor never ran must say so, not
+    behave like a run with no topics."""
+    store = _store(tmp_path)
+
+    with pytest.raises(MissingCheckpoint):
         run_pipeline(
             settings=_settings(tmp_path),
-            source=_FakeTrendSource([_evidence()]),
-            provider=FakeLLMProvider(),
-            store=_store(tmp_path),
+            source=_FakeTrendSource([]),
+            provider=FakeLLMProvider(responses=[]),
+            store=store,
             run_id="never-ran",
-            start_at=Stage.ANALYSE,
+            start_at=Stage.GENERATE,
         )
 
 
@@ -339,17 +373,21 @@ def test_a_failing_stage_degrades_rather_than_killing_the_run(tmp_path):
     provider = FakeLLMProvider(
         responses=[_draft(), _draft(), LLMError("brief call failed"), _choice()]
     )
-    run_dir = run_pipeline(
-        settings=_settings(tmp_path, topic_count=2),
+    settings = _settings(tmp_path, topic_count=2)
+    store = _store(tmp_path)
+    run_id = run_pipeline(
+        settings=settings,
         source=_FakeTrendSource(evidence),
         provider=provider,
-        store=_store(tmp_path),
+        store=store,
         run_id="r1",
     )
 
-    briefs = json.loads((run_dir / "briefs.json").read_text(encoding="utf-8"))
-    assert [entry["topic_id"] for entry in briefs] == ["second"]
-    assert len(list(run_dir.glob("*.png"))) == 1
+    briefs = store.read_checkpoint(run_id, Stage.GENERATE, MediaBrief)
+    assert [brief.topic_id for brief in briefs] == ["second"]
+    [record] = store.renders_for_run(run_id)
+    assert record.status == "ready"
+    assert (settings.output_dir / run_id / "renders" / f"{record.id}.png").is_file()
 
 
 def test_an_unknown_template_id_fails_before_anything_is_fetched(tmp_path):
@@ -371,18 +409,22 @@ def test_an_unknown_template_id_fails_before_anything_is_fetched(tmp_path):
     assert source.calls == 0
 
 
-def test_an_unknown_template_id_leaves_no_run_directory_behind(tmp_path):
-    settings = _settings(tmp_path)
+def test_an_unknown_template_id_writes_no_run_record(tmp_path):
+    """Template ids are validated before the run row is inserted, so a typo
+    leaves nothing behind rather than a run stuck in 'running'."""
+    store = _store(tmp_path)
+
     with pytest.raises(TemplateError):
         run_pipeline(
-            settings=settings,
+            settings=_settings(tmp_path),
             source=_FakeTrendSource([_evidence()]),
-            provider=FakeLLMProvider(responses=[_draft(), _choice()]),
-            store=_store(tmp_path),
+            provider=FakeLLMProvider(responses=[]),
+            store=store,
             run_id="r1",
-            template_ids=["no_such_template"],
+            template_ids=["nope"],
         )
-    assert not (settings.output_dir / "r1").exists()
+
+    assert store.get_run("r1") is None
 
 
 def test_filtering_confines_the_brief_to_the_named_templates(tmp_path):
@@ -390,18 +432,19 @@ def test_filtering_confines_the_brief_to_the_named_templates(tmp_path):
     an excluded template is rejected by the existing validator and the run
     ends with no meme rather than silently rendering the wrong template.
     """
-    run_dir = run_pipeline(
+    store = _store(tmp_path)
+    run_id = run_pipeline(
         settings=_settings(tmp_path),
         source=_FakeTrendSource([_evidence()]),
         # Two choices queued: both name the excluded template, so both
         # attempts are rejected by the validator rather than by an
         # exhausted queue.
         provider=FakeLLMProvider(responses=[_draft(), _choice(), _choice()]),
-        store=_store(tmp_path),
+        store=store,
         run_id="r1",
         template_ids=[TEMPLATE_B],
     )
-    assert json.loads((run_dir / "briefs.json").read_text(encoding="utf-8")) == []
+    assert store.read_checkpoint(run_id, Stage.GENERATE, MediaBrief) == []
 
 
 def test_the_prompt_lists_only_the_named_templates(tmp_path):
@@ -419,3 +462,94 @@ def test_the_prompt_lists_only_the_named_templates(tmp_path):
     )
     assert f"id={TEMPLATE_B}" in brief_prompt
     assert f"id={TEMPLATE_A}" not in brief_prompt
+
+
+def test_every_stage_is_recorded_with_a_duration(tmp_path):
+    store = _store(tmp_path)
+    run_id = run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence()]),
+        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+        store=store,
+        run_id="r1",
+    )
+
+    stages = store.stages_for_run(run_id)
+
+    assert [s.stage for s in stages] == [
+        Stage.INGEST,
+        Stage.ANALYSE,
+        Stage.EVALUATE,
+        Stage.GENERATE,
+    ]
+    assert all(s.status == "ok" for s in stages)
+    assert all(s.started_at is not None and s.finished_at is not None for s in stages)
+
+
+def test_a_skipped_stage_is_recorded_as_skipped(tmp_path):
+    """Resuming from generate leaves three stages that did not run this time.
+    The cards show them as skipped, not as never having existed."""
+    store = _store(tmp_path)
+    settings = _settings(tmp_path)
+    run_id = run_pipeline(
+        settings=settings,
+        source=_FakeTrendSource([_evidence()]),
+        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+        store=store,
+        run_id="r1",
+    )
+
+    run_pipeline(
+        settings=settings,
+        source=_FakeTrendSource([]),
+        provider=FakeLLMProvider(responses=[_choice()]),
+        store=store,
+        run_id=run_id,
+        start_at=Stage.GENERATE,
+    )
+
+    stages = {s.stage: s.status for s in store.stages_for_run(run_id)}
+
+    assert stages[Stage.INGEST] == "skipped"
+    assert stages[Stage.GENERATE] == "ok"
+
+
+def test_stage_summaries_report_what_each_stage_did(tmp_path):
+    """The stage cards render this line verbatim, and nothing else asserts
+    it - a stage handed another stage's summary, or a miscounted one, would
+    show as plausible-looking noise on every run."""
+    store = _store(tmp_path)
+    run_id = run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence()]),
+        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+        store=store,
+        run_id="r1",
+    )
+
+    summaries = {s.stage: s.summary for s in store.stages_for_run(run_id)}
+
+    assert summaries[Stage.INGEST] == "1 trend, 1 post"
+    assert summaries[Stage.ANALYSE] == "1 topic distilled"
+    assert summaries[Stage.EVALUATE] == "1 of 1 kept"
+    assert summaries[Stage.GENERATE] == "1 of 1 rendered"
+
+
+def test_run_topics_covers_every_topic_not_just_the_kept_ones(tmp_path):
+    """The ranking screen draws below-the-cut rows, so they need rows."""
+    store = _store(tmp_path)
+    # _settings defaults to topic_count=1, so the second topic falls below the
+    # cut and appears in run_topics but not in the evaluate checkpoint.
+    run_id = run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence("A trend"), _evidence("B trend")]),
+        provider=FakeLLMProvider(responses=[_draft(), _draft(), _choice()]),
+        store=store,
+        run_id="r1",
+    )
+
+    assert len(store.read_checkpoint(run_id, Stage.EVALUATE, ScoredTopic)) == 1
+    assert len(store.run_topics(run_id)) == 2
+    # Two trends, so this run is also the plural branch of _count.
+    summaries = {s.stage: s.summary for s in store.stages_for_run(run_id)}
+    assert summaries[Stage.INGEST] == "2 trends, 2 posts"

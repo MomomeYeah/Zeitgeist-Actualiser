@@ -51,6 +51,7 @@ def _scored_topic(
         label="Cats",
         summary="About cats.",
         item_ids=["p1"],
+        trend_status="trending",
         trend_score=0.8,
         dossier=Dossier(
             what_happened="Canada imposed tariffs on $30B of US goods.",
@@ -263,6 +264,7 @@ def test_a_topic_without_a_dossier_falls_back_to_its_summary():
         label="A trend",
         summary="Cats knocked something over.",
         item_ids=["i"],
+        trend_status="trending",
     )
     provider = FakeLLMProvider(responses=[_choice()])
     brief = generate_brief(topic, _templates(), provider)

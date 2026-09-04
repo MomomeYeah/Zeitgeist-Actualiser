@@ -126,3 +126,24 @@ def _wrap(
         if all(draw.textlength(line, font=font) <= width for line in lines):
             return lines
     return textwrap.wrap(text, width=6) or [text]
+
+
+# The Runs list draws renders at 34px and topic detail at 42. 96 covers both
+# on a 2x display without shipping 800KB per tile.
+THUMBNAIL_PX = 96
+
+
+def write_thumbnail(source: Path, out_path: Path) -> Path:
+    """Write a bounded-box copy of `source` beside the render.
+
+    `Image.thumbnail` preserves aspect ratio and never upscales, which is
+    what we want on both counts: a stretched meme looks broken, and a 34px
+    tile gains nothing from an enlarged small source.
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with Image.open(source) as image:
+        copy = image.convert("RGB")
+        copy.thumbnail((THUMBNAIL_PX, THUMBNAIL_PX))
+        copy.save(out_path, format="PNG")
+    return out_path

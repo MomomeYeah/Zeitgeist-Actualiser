@@ -3,7 +3,12 @@ from PIL import Image, ImageChops, ImageStat
 
 from tests.template_factory import make_manifest, make_slot, write_library
 from zeitgeist.config import PACKAGE_ROOT
-from zeitgeist.media.render import RenderError, render_meme
+from zeitgeist.media.render import (
+    THUMBNAIL_PX,
+    RenderError,
+    render_meme,
+    write_thumbnail,
+)
 from zeitgeist.models import MediaBrief
 
 FONT = None  # Pillow's bundled scalable font; see resolve_font
@@ -148,3 +153,37 @@ def test_matches_the_golden_image(tmp_path, template_dir):
             rendered.convert("RGB"), expected.convert("RGB")
         )
         assert ImageStat.Stat(difference).mean[0] < 2.0
+
+
+def test_a_thumbnail_fits_inside_the_box_and_keeps_its_aspect(tmp_path):
+    source = tmp_path / "meme.png"
+    Image.new("RGB", (1180, 590), "white").save(source)
+
+    out = write_thumbnail(source, tmp_path / "meme.thumb.png")
+
+    with Image.open(out) as image:
+        # Derived from the constant rather than pinned at 96, so raising
+        # THUMBNAIL_PX stays a decision rather than a test failure. What is
+        # asserted is the 2:1 source keeping its shape.
+        assert image.size == (THUMBNAIL_PX, THUMBNAIL_PX // 2)
+
+
+def test_a_thumbnail_of_a_tall_image_is_bounded_by_its_height(tmp_path):
+    source = tmp_path / "tall.png"
+    Image.new("RGB", (300, 1200), "white").save(source)
+
+    out = write_thumbnail(source, tmp_path / "tall.thumb.png")
+
+    with Image.open(out) as image:
+        assert image.size == (THUMBNAIL_PX // 4, THUMBNAIL_PX)
+
+
+def test_a_thumbnail_is_never_larger_than_its_source(tmp_path):
+    """A 34px tile has nothing to gain from an upscaled 40px meme."""
+    source = tmp_path / "small.png"
+    Image.new("RGB", (40, 20), "white").save(source)
+
+    out = write_thumbnail(source, tmp_path / "small.thumb.png")
+
+    with Image.open(out) as image:
+        assert image.size == (40, 20)

@@ -1,8 +1,27 @@
+import sqlite3
+from datetime import UTC, datetime
+
 import pytest
 
+from tests.run_factory import (
+    make_render_record,
+    make_run_config,
+    make_stage_record,
+    make_topic,
+)
 from zeitgeist.analysis.slug import slugify
-from zeitgeist.models import Topic
-from zeitgeist.store import SCHEMA_VERSION, Store, StoreSchemaError
+from zeitgeist.models import (
+    BlueskyMetrics,
+    Item,
+    MediaBrief,
+    PostEvidence,
+    Topic,
+    TrendEvidence,
+    TrendInfo,
+)
+from zeitgeist.projection import flatten
+from zeitgeist.records import AutoOrigin, ManualOrigin, RunError, Stage
+from zeitgeist.store import SCHEMA_VERSION, MissingCheckpoint, Store, StoreSchemaError
 
 
 def _topic(label: str, components: dict[str, float]) -> Topic:
@@ -11,7 +30,35 @@ def _topic(label: str, components: dict[str, float]) -> Topic:
         label=label,
         summary=f"About {label}.",
         item_ids=["x"],
+        trend_status="trending",
         score_components=components,
+    )
+
+
+def _trend_evidence() -> TrendEvidence:
+    metrics = BlueskyMetrics(
+        like_count=12,
+        reply_count=3,
+        repost_count=4,
+        trend="airport cat",
+        status="trending",
+        created_at=datetime(2026, 9, 1, tzinfo=UTC),
+    )
+    item = Item(
+        source_id="at://post/1",
+        title="A cat got into an airport.",
+        permalink="https://bsky.app/post/1",
+        fetched_at=datetime(2026, 9, 1, tzinfo=UTC),
+        metrics=metrics,
+    )
+    return TrendEvidence(
+        trend=TrendInfo(
+            topic_id="airport-cat",
+            display_name="Airport Cat",
+            started_at=datetime(2026, 9, 1, tzinfo=UTC),
+            status="trending",
+        ),
+        posts=[PostEvidence(item=item)],
     )
 
 
@@ -21,13 +68,217 @@ def _store(tmp_path) -> Store:
     return store
 
 
+def _analyse(store: Store, run_id: str, topics: list[Topic]) -> None:
+    """Persist a run's topics the one way production does.
+
+    `topic_scores` has no writer of its own: it is filled inside the analyse
+    checkpoint's transaction. Building the table by hand in the history tests
+    below would let that transaction stop writing it without a single failure
+    here.
+
+    `start_run` runs first because `previous_sub_scores` joins `topic_scores`
+    to `run_records` to order by `started_at`: a run with no `run_records`
+    row is invisible to that join, however faithfully its checkpoint was
+    written. Production always calls `store.start_run` before analyse, so
+    skipping it here would test a state that never occurs.
+    """
+    store.start_run(run_id, make_run_config())
+    store.write_analyse_checkpoint(run_id, topics, meme_potential_weight=0.3)
+
+
+def test_schema_creates_every_table_the_ui_reads(tmp_path):
+    store = Store(tmp_path / "z.db")
+    store.init_schema()
+
+    names = {
+        row[0]
+        for row in store._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+
+    assert {
+        "checkpoints",
+        "run_records",
+        "run_stages",
+        "run_topics",
+        "renders",
+        "log_lines",
+        "settings",
+        "topic_scores",
+    } <= names
+
+
+def test_a_reader_is_not_blocked_by_an_open_write(tmp_path):
+    """The worker writes while the API reads. Without WAL the reader waits
+    for the writer and the in-flight poll hitches every time a stage
+    checkpoints; with it the reader sees the last committed snapshot.
+
+    Asserts the behaviour rather than `PRAGMA journal_mode`, which would
+    fail only if someone changed the setting on purpose.
+    """
+    path = tmp_path / "z.db"
+    writer = Store(path)
+    writer.init_schema()
+    writer.start_run("r1", make_run_config())
+
+    writer._conn.execute("BEGIN IMMEDIATE")
+    writer._conn.execute(
+        "INSERT INTO checkpoints (run_id, stage, payload, written_at) "
+        "VALUES ('r2', 'ingest', '[]', '2026-09-01T00:00:00+00:00')"
+    )
+
+    # timeout=0.1 so a rollback-journal database fails fast rather than
+    # hanging for sqlite3's five-second default.
+    reader = sqlite3.connect(path, timeout=0.1)
+    try:
+        [(count,)] = reader.execute("SELECT COUNT(*) FROM run_records").fetchall()
+    finally:
+        reader.close()
+        writer._conn.rollback()
+        writer.close()
+
+    assert count == 1
+
+
+def test_a_database_from_an_older_schema_is_refused(tmp_path):
+    path = tmp_path / "z.db"
+    store = Store(path)
+    store.init_schema()
+    store._conn.execute("PRAGMA user_version = 2")
+    store._conn.commit()
+    store.close()
+
+    with pytest.raises(StoreSchemaError, match="version 2"):
+        Store(path).init_schema()
+
+
+def test_a_real_older_database_is_refused_rather_than_adopted(tmp_path):
+    """Schema 2's tables were `runs` and `topics`; schema 3 declares neither.
+    Probing for a table only the *current* schema names therefore reads a
+    genuine v2 file as fresh, runs the IF NOT EXISTS DDL beside its tables and
+    stamps it 3 — no error, and the surviving topic_scores history stranded
+    behind a join to a run_records that has no rows for it. This builds the
+    file the real transition produces rather than stamping a v3 file with an
+    older number, which is the case the two tests above already cover.
+    """
+    path = tmp_path / "z.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, started_at TEXT)")
+    old.execute("CREATE TABLE topics (run_id TEXT, label_slug TEXT)")
+    old.execute("PRAGMA user_version = 2")
+    old.commit()
+    old.close()
+
+    with pytest.raises(StoreSchemaError, match=r"version 2.*expects 3"):
+        Store(path).init_schema()
+
+
+def test_resuming_a_run_keeps_the_time_it_actually_began(tmp_path):
+    """The Runs list orders by started_at and renders a duration from it. A
+    resume that reset it would move the run to the top of the list and report
+    the resume as its start; the counts and the error, which describe the
+    attempt being redone, must still be cleared.
+    """
+    store = _store(tmp_path)
+    store.start_run("r1", make_run_config())
+    # Backdated rather than compared against the first call's own timestamp:
+    # two start_run calls a microsecond apart can share a clock reading on
+    # Windows, and this test must fail on a store that rewrites the column.
+    began = datetime(2026, 8, 1, 9, 30, tzinfo=UTC)
+    store._conn.execute("UPDATE run_records SET started_at = ?", (began.isoformat(),))
+    store._conn.commit()
+    store.finish_run(
+        "r1", status="ok", item_count=9, trends_found=2, topics_kept=1, phrases_found=0
+    )
+
+    store.start_run("r1", make_run_config(top_count=42))
+
+    resumed = store.get_run("r1")
+    assert resumed is not None
+    assert resumed.started_at == began
+    assert resumed.status == "running"
+    assert resumed.finished_at is None
+    assert resumed.item_count is None
+    # The config is still replaced: a resume can narrow the template library.
+    assert resumed.config.top_count == 42
+
+
+def test_a_started_run_records_the_config_it_froze(tmp_path):
+    """Run detail's config line and Re-run config both need what the run
+    used, which a since-edited .env cannot supply."""
+    store = _store(tmp_path)
+    config = make_run_config(top_count=9, llm_model="qwen3.5")
+
+    store.start_run("r1", config)
+
+    record = store.get_run("r1")
+    assert record is not None
+    assert record.status == "running"
+    assert record.config.top_count == 9
+    assert record.config.llm_model == "qwen3.5"
+    assert record.finished_at is None
+
+
+def test_finishing_a_run_records_the_counts_the_runs_list_shows(tmp_path):
+    store = _store(tmp_path)
+    store.start_run("r1", make_run_config())
+
+    store.finish_run(
+        "r1",
+        status="ok",
+        item_count=214,
+        trends_found=25,
+        topics_kept=5,
+        phrases_found=31,
+    )
+
+    record = store.get_run("r1")
+    assert record is not None
+    assert record.status == "ok"
+    # All four, not a sample: they are four ints bound positionally in one
+    # UPDATE, which is exactly the shape a swap hides in.
+    assert (
+        record.item_count,
+        record.trends_found,
+        record.topics_kept,
+        record.phrases_found,
+    ) == (214, 25, 5, 31)
+    assert record.finished_at is not None
+
+
+def test_a_failed_run_records_the_error_and_the_stage(tmp_path):
+    """Today a failure leaves a NULL status and the reason is only printed.
+    The Runs screen renders the class, the stage and the message."""
+    store = _store(tmp_path)
+    store.start_run("r1", make_run_config())
+
+    store.fail_run(
+        "r1",
+        RunError(kind="SourceError", message="no trends returned", stage=Stage.INGEST),
+    )
+
+    record = store.get_run("r1")
+    assert record is not None
+    assert record.status == "failed"
+    assert record.error is not None
+    assert record.error.kind == "SourceError"
+    assert record.error.stage is Stage.INGEST
+
+
+def test_get_run_returns_none_for_a_run_that_does_not_exist(tmp_path):
+    assert _store(tmp_path).get_run("nope") is None
+
+
 def test_previous_sub_scores_are_keyed_by_platform_then_label_slug(tmp_path):
     store = Store(tmp_path / "z.db")
     store.init_schema()
-    store.start_run("r1")
-    store.record_topics("r1", [_topic("Shelter Dog Adoption", {"lemmy": 0.7})])
-    store.finish_run("r1", status="ok", item_count=1)
-    store.start_run("r2")
+    store.start_run("r1", make_run_config())
+    _analyse(store, "r1", [_topic("Shelter Dog Adoption", {"lemmy": 0.7})])
+    store.finish_run(
+        "r1", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
+    )
+    store.start_run("r2", make_run_config())
 
     previous = store.previous_sub_scores("r2")
 
@@ -39,10 +290,12 @@ def test_sub_scores_from_different_platforms_do_not_collide(tmp_path):
     A schema keyed only on (run_id, label) would silently lose one."""
     store = Store(tmp_path / "z.db")
     store.init_schema()
-    store.start_run("r1")
-    store.record_topics("r1", [_topic("Cats", {"lemmy": 0.4, "wikipedia": 0.9})])
-    store.finish_run("r1", status="ok", item_count=1)
-    store.start_run("r2")
+    store.start_run("r1", make_run_config())
+    _analyse(store, "r1", [_topic("Cats", {"lemmy": 0.4, "wikipedia": 0.9})])
+    store.finish_run(
+        "r1", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
+    )
+    store.start_run("r2", make_run_config())
 
     previous = store.previous_sub_scores("r2")
 
@@ -56,10 +309,12 @@ def test_corroboration_is_not_persisted_as_a_platform(tmp_path):
     rank-delta compare a score against a multiplier."""
     store = Store(tmp_path / "z.db")
     store.init_schema()
-    store.start_run("r1")
-    store.record_topics("r1", [_topic("Cats", {"lemmy": 0.4, "corroboration": 1.25})])
-    store.finish_run("r1", status="ok", item_count=1)
-    store.start_run("r2")
+    store.start_run("r1", make_run_config())
+    _analyse(store, "r1", [_topic("Cats", {"lemmy": 0.4, "corroboration": 1.25})])
+    store.finish_run(
+        "r1", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
+    )
+    store.start_run("r2", make_run_config())
 
     previous = store.previous_sub_scores("r2")
 
@@ -70,20 +325,18 @@ def test_a_stale_database_is_rejected_with_an_actionable_message(tmp_path):
     """CREATE TABLE IF NOT EXISTS accepts an old schema silently and fails
     later with something cryptic. This turns it into a startup failure."""
     path = tmp_path / "z.db"
-    import sqlite3
-
-    conn = sqlite3.connect(path)
-    conn.executescript("CREATE TABLE runs (run_id TEXT PRIMARY KEY);")
-    conn.execute("PRAGMA user_version = 1")
-    conn.commit()
-    conn.close()
+    store = Store(path)
+    store.init_schema()
+    store._conn.execute("PRAGMA user_version = 1")
+    store._conn.commit()
+    store.close()
 
     # Matches the variable part — which file, and which versions — rather
     # than the fixed prose, following the same pattern as
     # tests/test_config.py's match="mastodon". Rewording the instruction is
     # a decision; failing to name the file the user must delete is a bug,
     # because the message is the only place that path appears.
-    with pytest.raises(StoreSchemaError, match=r"z\.db.*version 1.*expects 2"):
+    with pytest.raises(StoreSchemaError, match=r"z\.db.*version 1.*expects 3"):
         Store(path).init_schema()
 
 
@@ -110,9 +363,16 @@ def test_the_most_recent_prior_run_wins(tmp_path):
     store = Store(tmp_path / "z.db")
     store.init_schema()
     for run_id, sub_score in [("r1", 0.2), ("r2", 0.5), ("r3", 0.9)]:
-        store.start_run(run_id)
-        store.record_topics(run_id, [_topic("Cats", {"lemmy": sub_score})])
-        store.finish_run(run_id, status="ok", item_count=1)
+        store.start_run(run_id, make_run_config())
+        _analyse(store, run_id, [_topic("Cats", {"lemmy": sub_score})])
+        store.finish_run(
+            run_id,
+            status="ok",
+            item_count=1,
+            trends_found=1,
+            topics_kept=1,
+            phrases_found=0,
+        )
 
     assert store.previous_sub_scores("r4") == {"lemmy": {"cats": 0.9}}
 
@@ -124,19 +384,24 @@ def test_each_label_and_platform_tracks_its_own_history(tmp_path):
     """
     store = Store(tmp_path / "z.db")
     store.init_schema()
-    store.start_run("r1")
-    store.record_topics(
+    store.start_run("r1", make_run_config())
+    _analyse(
+        store,
         "r1",
         [
             _topic("Cats", {"lemmy": 0.2, "wikipedia": 0.6}),
             _topic("Dogs", {"lemmy": 0.9}),
         ],
     )
-    store.finish_run("r1", status="ok", item_count=2)
+    store.finish_run(
+        "r1", status="ok", item_count=2, trends_found=2, topics_kept=2, phrases_found=0
+    )
 
-    store.start_run("r2")
-    store.record_topics("r2", [_topic("Cats", {"lemmy": 0.7})])
-    store.finish_run("r2", status="ok", item_count=1)
+    store.start_run("r2", make_run_config())
+    _analyse(store, "r2", [_topic("Cats", {"lemmy": 0.7})])
+    store.finish_run(
+        "r2", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
+    )
 
     assert store.previous_sub_scores("r3") == {
         "lemmy": {"cats": 0.7, "dogs": 0.9},
@@ -153,8 +418,8 @@ def test_the_current_run_is_excluded_from_its_own_history(tmp_path):
     """
     store = Store(tmp_path / "z.db")
     store.init_schema()
-    store.start_run("r1")
-    store.record_topics("r1", [_topic("Cats", {"lemmy": 0.8})])
+    store.start_run("r1", make_run_config())
+    _analyse(store, "r1", [_topic("Cats", {"lemmy": 0.8})])
 
     assert store.previous_sub_scores("r1") == {}
 
@@ -167,13 +432,17 @@ def test_the_excluded_runs_own_rows_do_not_hide_the_older_run(tmp_path):
     """
     store = Store(tmp_path / "z.db")
     store.init_schema()
-    store.start_run("r1")
-    store.record_topics("r1", [_topic("Cats", {"lemmy": 0.2})])
-    store.finish_run("r1", status="ok", item_count=1)
+    store.start_run("r1", make_run_config())
+    _analyse(store, "r1", [_topic("Cats", {"lemmy": 0.2})])
+    store.finish_run(
+        "r1", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
+    )
 
-    store.start_run("r2")
-    store.record_topics("r2", [_topic("Cats", {"lemmy": 0.99})])
-    store.finish_run("r2", status="ok", item_count=1)
+    store.start_run("r2", make_run_config())
+    _analyse(store, "r2", [_topic("Cats", {"lemmy": 0.99})])
+    store.finish_run(
+        "r2", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
+    )
 
     assert store.previous_sub_scores("r2") == {"lemmy": {"cats": 0.2}}
 
@@ -188,36 +457,14 @@ def test_relabelled_topic_is_still_matched_across_runs(tmp_path):
     """
     store = Store(tmp_path / "z.db")
     store.init_schema()
-    store.start_run("r1")
-    store.record_topics("r1", [_topic("Shelter Dog Adoption", {"lemmy": 0.8})])
-    store.finish_run("r1", status="ok", item_count=1)
+    store.start_run("r1", make_run_config())
+    _analyse(store, "r1", [_topic("Shelter Dog Adoption", {"lemmy": 0.8})])
+    store.finish_run(
+        "r1", status="ok", item_count=1, trends_found=1, topics_kept=1, phrases_found=0
+    )
 
     previous = store.previous_sub_scores("r2")
     assert previous["lemmy"].get(slugify("shelter dog adoption")) == 0.8
-
-
-def test_finish_run_records_the_outcome_and_item_count(tmp_path):
-    """Without this, deleting the body of finish_run breaks no test, and the
-    CLI's closing summary silently reports nothing.
-    """
-    store = _store(tmp_path)
-    store.start_run("run1")
-    assert store.run_summary("run1") == {
-        "status": None,
-        "item_count": None,
-        "finished_at": None,
-    }
-
-    store.finish_run("run1", status="ok", item_count=42)
-    summary = store.run_summary("run1")
-    assert summary is not None
-    assert summary["status"] == "ok"
-    assert summary["item_count"] == 42
-    assert summary["finished_at"] is not None
-
-
-def test_run_summary_is_none_for_an_unknown_run(tmp_path):
-    assert _store(tmp_path).run_summary("never-happened") is None
 
 
 def test_init_schema_is_idempotent(tmp_path):
@@ -235,3 +482,262 @@ def test_creates_parent_directory(tmp_path):
     store = Store(tmp_path / "nested" / "dir" / "test.db")
     store.init_schema()
     assert (tmp_path / "nested" / "dir" / "test.db").exists()
+
+
+def test_a_checkpoint_round_trips_through_its_model(tmp_path):
+    """This is what resuming a run depends on. A payload that does not round
+    trip breaks resume silently rather than loudly."""
+    store = _store(tmp_path)
+    topics = [make_topic("airport-cat"), make_topic("stadium-rat")]
+
+    store.write_checkpoint("r1", Stage.ANALYSE, topics)
+    restored = store.read_checkpoint("r1", Stage.ANALYSE, Topic)
+
+    assert restored == topics
+
+
+def test_a_checkpoint_round_trips_a_discriminated_union(tmp_path):
+    """Metrics is discriminated on platform. A payload that deserialises to
+    the wrong union member would score the topic with the wrong scorer."""
+    store = _store(tmp_path)
+    evidence = [_trend_evidence()]
+
+    store.write_checkpoint("r1", Stage.INGEST, evidence)
+    [restored] = store.read_checkpoint("r1", Stage.INGEST, TrendEvidence)
+
+    assert isinstance(restored.posts[0].item.metrics, BlueskyMetrics)
+
+
+def test_writing_a_checkpoint_twice_replaces_it(tmp_path):
+    """Resuming rewrites the stages it re-runs."""
+    store = _store(tmp_path)
+    store.write_checkpoint("r1", Stage.ANALYSE, [make_topic("first")])
+
+    store.write_checkpoint("r1", Stage.ANALYSE, [make_topic("second")])
+
+    [topic] = store.read_checkpoint("r1", Stage.ANALYSE, Topic)
+    assert topic.id == "second"
+
+
+def test_write_checkpoint_reports_the_payload_size(tmp_path):
+    """The stage card shows this number, so it has to be the size of what
+    was actually written - not merely some positive number. Returning
+    len(models) would satisfy `> 0` and be wrong by three orders."""
+    store = _store(tmp_path)
+
+    size = store.write_checkpoint("r1", Stage.ANALYSE, [make_topic()])
+
+    [(stored_bytes,)] = store._conn.execute(
+        "SELECT LENGTH(CAST(payload AS BLOB)) FROM checkpoints "
+        "WHERE run_id = ? AND stage = ?",
+        ("r1", Stage.ANALYSE.value),
+    ).fetchall()
+    assert size == stored_bytes
+
+
+def test_reading_a_checkpoint_that_was_never_written_raises(tmp_path):
+    """Resuming from a stage whose predecessor never ran must say so, not
+    return an empty list that looks like a run with no topics."""
+    store = _store(tmp_path)
+
+    with pytest.raises(MissingCheckpoint, match="analyse"):
+        store.read_checkpoint("r1", Stage.ANALYSE, Topic)
+
+
+def test_an_empty_checkpoint_is_not_a_missing_one(tmp_path):
+    """A generate stage that briefed nothing wrote an empty list. That is a
+    result, and resuming past it must not raise."""
+    store = _store(tmp_path)
+    store.write_checkpoint("r1", Stage.GENERATE, [])
+
+    assert store.read_checkpoint("r1", Stage.GENERATE, MediaBrief) == []
+
+
+def test_stages_come_back_in_pipeline_order(tmp_path):
+    """The four stage cards are drawn left to right in the order they run,
+    not the order rows happened to be written."""
+    store = _store(tmp_path)
+    store.record_stage("r1", make_stage_record(Stage.GENERATE))
+    store.record_stage("r1", make_stage_record(Stage.INGEST))
+    store.record_stage("r1", make_stage_record(Stage.EVALUATE))
+    store.record_stage("r1", make_stage_record(Stage.ANALYSE))
+
+    stages = store.stages_for_run("r1")
+
+    assert [s.stage for s in stages] == [
+        Stage.INGEST,
+        Stage.ANALYSE,
+        Stage.EVALUATE,
+        Stage.GENERATE,
+    ]
+
+
+def test_recording_a_stage_twice_replaces_it(tmp_path):
+    """A stage moves queued to running to ok, rewriting its row each time."""
+    store = _store(tmp_path)
+    store.record_stage(
+        "r1", make_stage_record(Stage.INGEST, status="running", finished_at=None)
+    )
+
+    store.record_stage("r1", make_stage_record(Stage.INGEST, status="ok"))
+
+    [stage] = store.stages_for_run("r1")
+    assert stage.status == "ok"
+    assert stage.finished_at is not None
+
+
+def test_a_queued_stage_round_trips_its_absent_timings(tmp_path):
+    store = _store(tmp_path)
+    store.record_stage(
+        "r1",
+        make_stage_record(
+            Stage.GENERATE,
+            status="queued",
+            started_at=None,
+            finished_at=None,
+            payload_bytes=None,
+            summary="queued",
+        ),
+    )
+
+    [stage] = store.stages_for_run("r1")
+
+    assert (stage.started_at, stage.finished_at, stage.payload_bytes) == (
+        None,
+        None,
+        None,
+    )
+
+
+def test_run_topics_round_trip_through_the_store(tmp_path):
+    store = _store(tmp_path)
+    rows = flatten("r1", [make_topic("airport-cat")], meme_potential_weight=0.3)
+
+    store.write_run_topics(rows)
+
+    stored = store.run_topics("r1")
+    assert [row.topic_id for row in stored] == ["airport-cat"]
+    assert stored[0].label_slug == "airport-cat"
+
+
+def test_the_analyse_checkpoint_and_its_rows_commit_together(tmp_path):
+    store = _store(tmp_path)
+
+    store.write_analyse_checkpoint(
+        "r1", [make_topic("airport-cat")], meme_potential_weight=0.3
+    )
+
+    assert len(store.read_checkpoint("r1", Stage.ANALYSE, Topic)) == 1
+    assert len(store.run_topics("r1")) == 1
+
+
+def test_the_analyse_checkpoint_also_writes_the_cross_run_sub_scores(tmp_path):
+    """topic_scores is derived from the same payload and has no other writer.
+    Committing it separately, before the checkpoint, left a window where a
+    crash stranded sub-scores for a run whose analyse never landed — and
+    previous_sub_scores feeds those into the next run's rank delta."""
+    store = _store(tmp_path)
+
+    _analyse(store, "r1", [_topic("Cats", {"lemmy": 0.4})])
+
+    assert store.previous_sub_scores("r2") == {"lemmy": {"cats": 0.4}}
+
+
+def test_re_analysing_a_run_leaves_only_the_new_topics(tmp_path):
+    """Reachable from start_at=ANALYSE. Keyed on (run_id, topic_id), an upsert
+    with no clear leaves every topic the previous analyse produced: three rows
+    against a checkpoint holding two, two of them ranked 1, and stale sub-
+    scores feeding the next run's rank delta under labels this run dropped.
+    """
+    store = _store(tmp_path)
+    _analyse(store, "r1", [_topic("Aardvarks", {"lemmy": 0.9}), _topic("Bees", {})])
+
+    _analyse(store, "r1", [_topic("Cats", {"lemmy": 0.1})])
+
+    rows = store.run_topics("r1")
+    assert [row.topic_id for row in rows] == ["cats"]
+    assert [row.final_rank for row in rows] == [1]
+    assert store.previous_sub_scores("r2") == {"lemmy": {"cats": 0.1}}
+
+
+def test_a_failure_partway_leaves_none_of_the_three(tmp_path, monkeypatch):
+    """The whole 'they cannot disagree' claim rests on one transaction.
+    Separate commits would leave a window where a crash strands one.
+
+    Fails the *last* insert, so the checkpoint and run_topics rows are already
+    written inside the transaction and have to be rolled back — a test that
+    failed the first would pass against three independent commits.
+    """
+    store = _store(tmp_path)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("interrupted")
+
+    monkeypatch.setattr(store, "_insert_topic_scores", boom)
+
+    with pytest.raises(RuntimeError):
+        store.write_analyse_checkpoint(
+            "r1", [_topic("Cats", {"lemmy": 0.4})], meme_potential_weight=0.3
+        )
+
+    counts = [
+        store._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in ("checkpoints", "run_topics", "topic_scores")
+    ]
+    assert counts == [0, 0, 0]
+
+
+def test_a_render_round_trips_with_its_origin_intact(tmp_path):
+    store = _store(tmp_path)
+    record = make_render_record("rnd1", origin=AutoOrigin(rationale="it fits"))
+
+    store.add_render(record)
+
+    restored = store.get_render("rnd1")
+    assert restored == record
+    assert isinstance(restored.origin, AutoOrigin)
+
+
+def test_a_hand_written_render_comes_back_manual(tmp_path):
+    """The union is what makes 'was this written by a person' a type check
+    rather than a string comparison."""
+    store = _store(tmp_path)
+    store.add_render(make_render_record("rnd2", origin=ManualOrigin()))
+
+    restored = store.get_render("rnd2")
+
+    assert restored is not None
+    assert isinstance(restored.origin, ManualOrigin)
+
+
+def test_a_failed_render_keeps_its_error(tmp_path):
+    """The renderer fails per meme, so a partial failure is real. The tile
+    shows the message rather than vanishing."""
+    store = _store(tmp_path)
+    store.add_render(
+        make_render_record("rnd3", status="failed", error="caption does not fit")
+    )
+
+    restored = store.get_render("rnd3")
+
+    assert restored is not None
+    assert restored.status == "failed"
+    assert restored.error == "caption does not fit"
+
+
+def test_renders_for_a_run_come_back_oldest_first(tmp_path):
+    store = _store(tmp_path)
+    store.add_render(
+        make_render_record("second", created_at=datetime(2026, 9, 1, 13, tzinfo=UTC))
+    )
+    store.add_render(
+        make_render_record("first", created_at=datetime(2026, 9, 1, 12, tzinfo=UTC))
+    )
+
+    ids = [r.id for r in store.renders_for_run("20260901T120000Z")]
+
+    assert ids == ["first", "second"]
+
+
+def test_get_render_returns_none_for_an_unknown_id(tmp_path):
+    assert _store(tmp_path).get_render("nope") is None

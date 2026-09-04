@@ -13,6 +13,7 @@ from zeitgeist.models import (
     Register,
     ScoredTopic,
     Sentiment,
+    Topic,
     WikipediaMetrics,
 )
 
@@ -165,3 +166,24 @@ def test_no_definition_survives_its_member_being_removed(definitions, enum):
     longer exists would be rendered into the prompt as a phantom option.
     """
     assert set(definitions) == set(enum)
+
+
+def test_topic_requires_a_trend_status():
+    """Every TrendEvidence carries a status, so a topic without one is a bug
+    rather than a state. A default would let one through silently."""
+    with pytest.raises(ValidationError):
+        # model_validate rather than the constructor: the omission is the
+        # point, and the constructor's own keyword signature would make ty
+        # flag it statically rather than letting pydantic reject it at
+        # runtime.
+        Topic.model_validate(
+            {"id": "t", "label": "T", "summary": "s", "item_ids": ["x"]}
+        )
+
+
+def test_topic_keeps_the_trend_status_it_was_given():
+    topic = Topic(
+        id="t", label="T", summary="s", item_ids=["x"], trend_status="saturating"
+    )
+
+    assert topic.trend_status == "saturating"
