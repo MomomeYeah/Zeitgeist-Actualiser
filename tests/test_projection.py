@@ -1,4 +1,4 @@
-from tests.run_factory import make_dossier, make_topic
+from tests.run_factory import make_dossier, make_scored_topic, make_topic
 from zeitgeist.models import Register, Sentiment
 from zeitgeist.projection import flatten
 
@@ -92,3 +92,19 @@ def test_post_count_is_the_number_of_items_behind_the_topic():
     )
 
     assert row.post_count == 3
+
+
+def test_the_two_topic_builders_agree_on_their_defaults():
+    """make_scored_topic forwards to make_topic, so a divergence between
+    their defaults is silent: a ScoredTopic with no dossier ranks on trend
+    score alone and carries no sentiment, register or meme potential, so a
+    test built on one quietly stops exercising most of what it looks like
+    it exercises."""
+    assert (make_topic().dossier is None) == (make_scored_topic().dossier is None)
+    assert make_scored_topic().dossier is not None
+
+
+def test_an_explicit_none_dossier_survives_both_builders():
+    """The distinction the _Unset sentinel exists to preserve."""
+    assert make_topic(dossier=None).dossier is None
+    assert make_scored_topic(dossier=None).dossier is None

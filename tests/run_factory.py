@@ -182,7 +182,7 @@ def make_scored_topic(
     trend_status: TrendStatus = "trending",
     trend_score: float = 0.91,
     item_ids: list[str] | None = None,
-    dossier: Dossier | None = None,
+    dossier: Dossier | None | _Unset = _UNSET,
     score_components: dict[str, float] | None = None,
 ) -> ScoredTopic:
     """A ScoredTopic with the same defaults as `make_topic`, plus a rank."""
