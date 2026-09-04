@@ -729,7 +729,7 @@ All the tables at once, in their own module. `runs` and `topics` are absorbed ra
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `tests/test_store.py`:
+Add `import sqlite3` to `tests/test_store.py`, then add:
 
 ```python
 def test_schema_creates_every_table_the_ui_reads(tmp_path):
@@ -755,33 +755,36 @@ def test_schema_creates_every_table_the_ui_reads(tmp_path):
     } <= names
 
 
-def test_the_absorbed_tables_are_gone(tmp_path):
-    """runs is a strict subset of run_records and topics of run_topics.
-    Keeping either pair would mean two tables to write and keep agreeing."""
-    store = Store(tmp_path / "z.db")
-    store.init_schema()
+def test_a_reader_is_not_blocked_by_an_open_write(tmp_path):
+    """The worker writes while the API reads. Without WAL the reader waits
+    for the writer and the in-flight poll hitches every time a stage
+    checkpoints; with it the reader sees the last committed snapshot.
 
-    names = {
-        row[0]
-        for row in store._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )
-    }
+    Asserts the behaviour rather than `PRAGMA journal_mode`, which would
+    fail only if someone changed the setting on purpose.
+    """
+    path = tmp_path / "z.db"
+    writer = Store(path)
+    writer.init_schema()
+    writer.start_run("r1", make_run_config())
 
-    assert "runs" not in names
-    assert "topics" not in names
+    writer._conn.execute("BEGIN IMMEDIATE")
+    writer._conn.execute(
+        "INSERT INTO checkpoints (run_id, stage, payload, written_at) "
+        "VALUES ('r2', 'ingest', '[]', '2026-09-01T00:00:00+00:00')"
+    )
 
+    # timeout=0.1 so a rollback-journal database fails fast rather than
+    # hanging for sqlite3's five-second default.
+    reader = sqlite3.connect(path, timeout=0.1)
+    try:
+        [(count,)] = reader.execute("SELECT COUNT(*) FROM run_records").fetchall()
+    finally:
+        reader.close()
+        writer._conn.rollback()
+        writer.close()
 
-def test_the_connection_is_in_wal_mode(tmp_path):
-    """The worker writes while the API reads. Without WAL those reads block
-    behind the writes, which surfaces as the in-flight poll hitching every
-    time a stage checkpoints."""
-    store = Store(tmp_path / "z.db")
-    store.init_schema()
-
-    [(mode,)] = store._conn.execute("PRAGMA journal_mode").fetchall()
-
-    assert mode.lower() == "wal"
+    assert count == 1
 
 
 def test_a_database_from_an_older_schema_is_refused(tmp_path):
@@ -800,7 +803,9 @@ def test_a_database_from_an_older_schema_is_refused(tmp_path):
 
 Run: `uv run pytest tests/test_store.py -k "schema or absorbed or wal or older" -v`
 
-Expected: FAIL — the new tables do not exist, `runs` and `topics` do, and the journal mode is `delete`.
+Expected: FAIL — the new tables do not exist and a concurrent reader is locked out.
+
+There is deliberately no test asserting `runs` and `topics` are *absent*. "Asserts a removed symbol stays removed" is a named warning sign in `writing-good-tests.md`: after this phase, the only change that could fail such a test is someone deliberately re-adding a table, which is a decision rather than a bug. What protects the absorption is that `previous_sub_scores` and the pipeline's own tests read the new tables and would fail against the old ones.
 
 - [ ] **Step 3: Write the schema module**
 
@@ -1167,27 +1172,70 @@ Add the imports at the top of `store.py`:
 from zeitgeist.records import RunConfig, RunError, RunRecordRow, RunStatus
 ```
 
-- [ ] **Step 5: Rejoin `previous_sub_scores` to `run_records`**
+- [ ] **Step 5: Rewrite the two existing tests that call `run_summary`**
+
+`run_summary` is superseded by `get_run` and goes with `runs`. Two tests in `tests/test_pipeline.py` call it and neither is mentioned anywhere else in this plan, so they would fail in Task 12 with no guidance attached. Rewrite both now:
+
+```python
+def test_item_count_reflects_the_posts_under_every_trend(tmp_path):
+    store = _store(tmp_path)
+    run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence(posts=3)]),
+        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+        store=store,
+        run_id="r1",
+    )
+
+    record = store.get_run("r1")
+    assert record is not None
+    assert record.item_count == 3
+
+
+def test_records_the_run_and_its_topics_in_the_store(tmp_path):
+    """Guards both that the run row is recorded and that the pipeline's
+    topics are persisted. A single topic cannot be min-max normalised
+    (score.py's MIN_TOPICS_TO_RANK), so it earns no topic_scores row --
+    run_topics is the one to check.
+    """
+    store = _store(tmp_path)
+    run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence()]),
+        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+        store=store,
+        run_id="r1",
+    )
+
+    record = store.get_run("r1")
+    assert record is not None
+    assert record.status == "ok"
+    assert [row.label_slug for row in store.run_topics("r1")] == ["a-trend"]
+```
+
+The second replaces `test_records_the_run_in_the_store`, which read `SELECT label FROM topics` — a table this task removes.
+
+- [ ] **Step 6: Rejoin `previous_sub_scores` to `run_records`**
 
 In `previous_sub_scores`, the two `JOIN runs r ON r.run_id = s.run_id` clauses become `JOIN run_records r ON r.run_id = s.run_id`, and `run_records r2` likewise. `r.started_at` is unchanged — the column has the same name.
 
-- [ ] **Step 6: Point `record_topics` at `topic_scores` only**
+- [ ] **Step 7: Point `record_topics` at `topic_scores` only**
 
 `record_topics` currently writes both `topics` and `topic_scores`. Delete the first `executemany` (the one inserting into `topics`); `run_topics` replaces it and is written by Task 8. Keep the second, and keep the docstring's explanation of why the key is `slugify(label)`.
 
-- [ ] **Step 7: Run the tests**
+- [ ] **Step 8: Run the tests**
 
 Run: `uv run pytest tests/test_store.py -v`
 
 Expected: PASS.
 
-- [ ] **Step 8: Run the full gate**
+- [ ] **Step 9: Run the full gate**
 
 Run: `uv run ruff check . && uv run ruff format --check . && uv run ty check && uv run pytest`
 
 Expected: `pytest` still fails in `tests/test_pipeline.py`, which calls `store.finish_run` with the old signature. That is Task 14's job. Everything else passes.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add -A
@@ -2579,6 +2627,8 @@ def test_resuming_without_a_checkpoint_raises(tmp_path):
         )
 ```
 
+Delete `test_the_ingest_checkpoint_round_trips_through_trend_evidence`. Task 6's `test_a_checkpoint_round_trips_a_discriminated_union` asserts the same thing — that a payload deserialises back to the concrete `BlueskyMetrics` rather than to whichever union member validates — against the store directly, which is where the round trip now happens. Keeping both would leave two tests for one break.
+
 Delete `test_an_unknown_template_id_leaves_no_run_directory_behind` — the run directory is now created lazily by the renderer, so the behaviour it asserted no longer has a mechanism. Replace it with:
 
 ```python
@@ -2866,7 +2916,23 @@ Add `from uuid import uuid4`, `from zeitgeist.media.render import RenderError, r
 
 Run: `uv run pytest tests/test_pipeline.py -v`
 
-Expected: PASS. Any surviving test asserting `run_dir.glob("*.png")` must be updated to look in `renders/`.
+Expected: PASS.
+
+One existing test needs moving with them: `test_produces_a_png` asserts `run_dir.glob("*.png")`, which now matches nothing because renders live a directory deeper.
+
+```python
+def test_produces_a_png(tmp_path):
+    store = _store(tmp_path)
+    run_id = run_pipeline(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence()]),
+        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+        store=store,
+        run_id="r1",
+    )
+
+    assert list((tmp_path / "output" / run_id / "renders").glob("*.png"))
+```
 
 - [ ] **Step 5: Run the full gate**
 
