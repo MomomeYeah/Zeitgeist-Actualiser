@@ -122,3 +122,27 @@ def test_an_ambient_database_cannot_leak_into_settings(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     assert Settings(_env_file=None).bluesky_trend_limit == 25
+
+
+def test_overrides_come_from_the_database_dotenv_names(tmp_path, monkeypatch):
+    """`Settings.db_path` honours `DB_PATH` from `.env`, so this source has to
+    as well. Reading only the environment would point it at the default
+    database while the rest of the app used the one `.env` named, and every
+    stored override would silently vanish.
+
+    Two databases are deliberately in play: the one `.env` names holds the
+    override, and the one conftest points `DB_PATH` at holds nothing. Only a
+    source that reads `.env` finds the 11.
+    """
+    named = tmp_path / "named.db"
+    store = Store(named)
+    store.init_schema()
+    store.set_setting("bluesky_trend_limit", "11")
+    store.close()
+
+    monkeypatch.delenv("DB_PATH")
+    env_file = tmp_path / ".env"
+    env_file.write_text("DB_PATH=named.db\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert Settings(_env_file=env_file).bluesky_trend_limit == 11
