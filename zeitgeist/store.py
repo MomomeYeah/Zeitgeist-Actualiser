@@ -13,6 +13,7 @@ from zeitgeist.models import Topic
 from zeitgeist.projection import TopicRow, flatten
 from zeitgeist.records import (
     ORDER,
+    LogLine,
     RenderRecord,
     RunConfig,
     RunError,
@@ -215,6 +216,34 @@ class Store:
         count, earliest = row
         first_seen = earliest.split("|", 1)[1] if earliest else None
         return count, first_seen
+
+    # DEBUG is captured always and filtered here, so the UI's verbose toggle
+    # works retroactively on lines already recorded rather than showing
+    # nothing until the next line arrives.
+    _QUIET_LEVELS = ("INFO", "WARNING", "ERROR", "CRITICAL")
+
+    def log_lines(self, run_id: str, *, verbose: bool) -> list[LogLine]:
+        sql = (
+            "SELECT seq, logged_at, level, logger, message FROM log_lines "
+            "WHERE run_id = ? "
+        )
+        params: tuple[object, ...] = (run_id,)
+        if not verbose:
+            placeholders = ", ".join("?" for _ in self._QUIET_LEVELS)
+            sql += f"AND level IN ({placeholders}) "
+            params = (run_id, *self._QUIET_LEVELS)
+        sql += "ORDER BY seq"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [
+            LogLine(
+                seq=seq,
+                logged_at=datetime.fromisoformat(logged_at),
+                level=level,
+                logger=logger,
+                message=message,
+            )
+            for seq, logged_at, level, logger, message in rows
+        ]
 
     def _insert_topic_scores(self, run_id: str, topics: Sequence[Topic]) -> None:
         # Keyed on slugify(label), not the raw label: labels are free text

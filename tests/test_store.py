@@ -863,3 +863,66 @@ def test_topic_recurrence_counts_runs_and_names_the_earliest(tmp_path):
 
 def test_topic_recurrence_of_an_unseen_slug_is_zero(tmp_path):
     assert _store(tmp_path).topic_recurrence("nope") == (0, None)
+
+
+def _log(store, run_id: str, seq: int, level: str, message: str) -> None:
+    """Seed a log line directly.
+
+    The only hand-written SQL in these tests: phase 3 owns the writer, and
+    the reader has to be testable before it exists.
+    """
+    store._conn.execute(
+        "INSERT INTO log_lines (run_id, seq, logged_at, level, logger, message) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            run_id,
+            seq,
+            "2026-09-01T12:00:00+00:00",
+            level,
+            "zeitgeist.pipeline",
+            message,
+        ),
+    )
+    store._conn.commit()
+
+
+def test_log_lines_come_back_in_sequence(tmp_path):
+    store = _store(tmp_path)
+    _log(store, "r1", 2, "INFO", "second")
+    _log(store, "r1", 1, "INFO", "first")
+
+    assert [line.message for line in store.log_lines("r1", verbose=True)] == [
+        "first",
+        "second",
+    ]
+
+
+def test_a_quiet_log_omits_debug_lines(tmp_path):
+    """The toggle filters what was already captured, so flipping it works
+    retroactively rather than showing nothing until the next line."""
+    store = _store(tmp_path)
+    _log(store, "r1", 1, "DEBUG", "noisy")
+    _log(store, "r1", 2, "INFO", "useful")
+    _log(store, "r1", 3, "WARNING", "important")
+
+    quiet = [line.message for line in store.log_lines("r1", verbose=False)]
+
+    assert quiet == ["useful", "important"]
+
+
+def test_a_verbose_log_keeps_everything(tmp_path):
+    store = _store(tmp_path)
+    _log(store, "r1", 1, "DEBUG", "noisy")
+    _log(store, "r1", 2, "INFO", "useful")
+
+    loud = [line.message for line in store.log_lines("r1", verbose=True)]
+
+    assert loud == ["noisy", "useful"]
+
+
+def test_log_lines_are_scoped_to_the_run(tmp_path):
+    store = _store(tmp_path)
+    _log(store, "r1", 1, "INFO", "mine")
+    _log(store, "r2", 1, "INFO", "theirs")
+
+    assert [line.message for line in store.log_lines("r1", verbose=True)] == ["mine"]

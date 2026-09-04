@@ -15,7 +15,7 @@ from zeitgeist.api.schemas import (
     TopicRecurrence,
 )
 from zeitgeist.models import Topic, TrendEvidence
-from zeitgeist.records import ORDER, Stage
+from zeitgeist.records import ORDER, LogLine, Stage
 from zeitgeist.store import MissingCheckpoint, Store
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
@@ -152,3 +152,12 @@ def read_topic(
         ],
         recurrence=TopicRecurrence(run_count=count, first_seen_run_id=first_seen),
     )
+
+
+@router.get("/{run_id}/log", response_model=list[LogLine])
+def read_log(
+    run_id: str, verbose: bool = False, store: Store = Depends(get_store)
+) -> list[LogLine]:
+    if store.get_run(run_id) is None:
+        raise HTTPException(status_code=404, detail=f"No such run: {run_id}")
+    return store.log_lines(run_id, verbose=verbose)

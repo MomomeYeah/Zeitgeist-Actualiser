@@ -484,3 +484,49 @@ def test_an_unknown_topic_is_a_404(tmp_path):
     client = seeded_client(tmp_path, runs=[SeededRun(topics=[make_topic("cats")])])
 
     assert client.get("/api/runs/20260901T120000Z/topics/nope").status_code == 404
+
+
+def test_the_log_of_a_run_with_no_lines_is_empty(tmp_path):
+    """Nothing writes log lines until phase 3 adds capture. The endpoint
+    exists now because it is part of the contract phase 5 builds against."""
+    client = seeded_client(tmp_path, runs=[SeededRun()])
+
+    body = client.get("/api/runs/20260901T120000Z/log").json()
+
+    assert body == []
+
+
+def test_the_log_endpoint_filters_on_verbose(tmp_path):
+    from tests.api_factory import api_settings
+    from zeitgeist.store import Store
+
+    client = seeded_client(tmp_path, runs=[SeededRun()])
+    store = Store(api_settings(tmp_path).db_path)
+    store._conn.execute(
+        "INSERT INTO log_lines (run_id, seq, logged_at, level, logger, message) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            "20260901T120000Z",
+            1,
+            "2026-09-01T12:00:00+00:00",
+            "DEBUG",
+            "zeitgeist.pipeline",
+            "noisy",
+        ),
+    )
+    store._conn.commit()
+    store.close()
+
+    quiet = client.get("/api/runs/20260901T120000Z/log").json()
+    loud = client.get(
+        "/api/runs/20260901T120000Z/log", params={"verbose": "true"}
+    ).json()
+
+    assert quiet == []
+    assert [line["message"] for line in loud] == ["noisy"]
+
+
+def test_the_log_of_an_unknown_run_is_a_404(tmp_path):
+    client = seeded_client(tmp_path)
+
+    assert client.get("/api/runs/nope/log").status_code == 404
