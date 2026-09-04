@@ -13,6 +13,7 @@ from zeitgeist.models import Topic
 from zeitgeist.projection import TopicRow
 from zeitgeist.records import (
     ORDER,
+    RenderRecord,
     RunConfig,
     RunError,
     RunRecordRow,
@@ -311,9 +312,65 @@ class Store:
         ]
         return sorted(records, key=lambda record: ORDER.index(record.stage))
 
+    def add_render(self, record: RenderRecord) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO renders (id, run_id, topic_id, template_id, "
+            "caption_slots, origin, status, error, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                record.id,
+                record.run_id,
+                record.topic_id,
+                record.template_id,
+                json.dumps(record.caption_slots),
+                record.origin.model_dump_json(),
+                record.status,
+                record.error,
+                record.created_at.isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    def get_render(self, render_id: str) -> RenderRecord | None:
+        row = self._conn.execute(
+            "SELECT id, run_id, topic_id, template_id, caption_slots, origin, "
+            "status, error, created_at FROM renders WHERE id = ?",
+            (render_id,),
+        ).fetchone()
+        return None if row is None else _render(row)
+
+    def renders_for_run(self, run_id: str) -> list[RenderRecord]:
+        rows = self._conn.execute(
+            "SELECT id, run_id, topic_id, template_id, caption_slots, origin, "
+            "status, error, created_at FROM renders WHERE run_id = ? "
+            "ORDER BY created_at, id",
+            (run_id,),
+        ).fetchall()
+        return [_render(row) for row in rows]
+
     def close(self) -> None:
         self._conn.close()
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _render(row: tuple) -> RenderRecord:
+    """Rebuild a RenderRecord from a row.
+
+    `origin` goes back through the model rather than being reconstructed by
+    hand, so the discriminator picks the concrete class and a manual render
+    cannot come back carrying a rationale.
+    """
+    return RenderRecord(
+        id=row[0],
+        run_id=row[1],
+        topic_id=row[2],
+        template_id=row[3],
+        caption_slots=json.loads(row[4]),
+        origin=json.loads(row[5]),
+        status=row[6],
+        error=row[7],
+        created_at=datetime.fromisoformat(row[8]),
+    )

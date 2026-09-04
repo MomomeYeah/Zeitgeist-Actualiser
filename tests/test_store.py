@@ -3,7 +3,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from tests.run_factory import make_run_config, make_stage_record, make_topic
+from tests.run_factory import (
+    make_render_record,
+    make_run_config,
+    make_stage_record,
+    make_topic,
+)
 from zeitgeist.analysis.slug import slugify
 from zeitgeist.models import (
     BlueskyMetrics,
@@ -15,7 +20,7 @@ from zeitgeist.models import (
     TrendInfo,
 )
 from zeitgeist.projection import flatten
-from zeitgeist.records import RunError, Stage
+from zeitgeist.records import AutoOrigin, ManualOrigin, RunError, Stage
 from zeitgeist.store import SCHEMA_VERSION, MissingCheckpoint, Store, StoreSchemaError
 
 
@@ -543,3 +548,59 @@ def test_run_topics_round_trip_through_the_store(tmp_path):
     stored = store.run_topics("r1")
     assert [row.topic_id for row in stored] == ["airport-cat"]
     assert stored[0].label_slug == "airport-cat"
+
+
+def test_a_render_round_trips_with_its_origin_intact(tmp_path):
+    store = _store(tmp_path)
+    record = make_render_record("rnd1", origin=AutoOrigin(rationale="it fits"))
+
+    store.add_render(record)
+
+    restored = store.get_render("rnd1")
+    assert restored == record
+    assert isinstance(restored.origin, AutoOrigin)
+
+
+def test_a_hand_written_render_comes_back_manual(tmp_path):
+    """The union is what makes 'was this written by a person' a type check
+    rather than a string comparison."""
+    store = _store(tmp_path)
+    store.add_render(make_render_record("rnd2", origin=ManualOrigin()))
+
+    restored = store.get_render("rnd2")
+
+    assert restored is not None
+    assert isinstance(restored.origin, ManualOrigin)
+
+
+def test_a_failed_render_keeps_its_error(tmp_path):
+    """The renderer fails per meme, so a partial failure is real. The tile
+    shows the message rather than vanishing."""
+    store = _store(tmp_path)
+    store.add_render(
+        make_render_record("rnd3", status="failed", error="caption does not fit")
+    )
+
+    restored = store.get_render("rnd3")
+
+    assert restored is not None
+    assert restored.status == "failed"
+    assert restored.error == "caption does not fit"
+
+
+def test_renders_for_a_run_come_back_oldest_first(tmp_path):
+    store = _store(tmp_path)
+    store.add_render(
+        make_render_record("second", created_at=datetime(2026, 9, 1, 13, tzinfo=UTC))
+    )
+    store.add_render(
+        make_render_record("first", created_at=datetime(2026, 9, 1, 12, tzinfo=UTC))
+    )
+
+    ids = [r.id for r in store.renders_for_run("20260901T120000Z")]
+
+    assert ids == ["first", "second"]
+
+
+def test_get_render_returns_none_for_an_unknown_id(tmp_path):
+    assert _store(tmp_path).get_render("nope") is None
