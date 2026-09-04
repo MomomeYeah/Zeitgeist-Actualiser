@@ -8,6 +8,7 @@ and the endpoints would be serving a table layout nothing produces.
 test's renders and database are its own.
 """
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,9 +37,21 @@ class SeededRun:
 
 
 def api_settings(tmp_path: Path) -> Settings:
+    # SettingsTableSource resolves where the settings table lives from
+    # DB_PATH (environment, then .env) rather than from this call's own
+    # db_path= argument: that argument becomes Settings.db_path, the object
+    # being constructed, and asking it where its own table is would be
+    # circular (see settings_source.SettingsTableSource's docstring). So
+    # DB_PATH is set here too, to the same file, the way
+    # tests/test_settings_source.py always does with monkeypatch.setenv —
+    # without it, a store.set_setting() written to this db_path is invisible
+    # to every Settings() this factory builds, because the table source goes
+    # looking in conftest's no-ambient-database.db instead.
+    db_path = tmp_path / "data" / "z.db"
+    os.environ["DB_PATH"] = str(db_path)
     return Settings(
         _env_file=None,
-        db_path=tmp_path / "data" / "z.db",
+        db_path=db_path,
         output_dir=tmp_path / "output",
     )
 
