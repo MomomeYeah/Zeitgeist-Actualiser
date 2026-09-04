@@ -47,7 +47,16 @@ class Store:
     def __init__(self, path: Path) -> None:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._path)
+        # check_same_thread=False: the API app opens one Store for its whole
+        # lifetime (see zeitgeist/api/app.py), but FastAPI's lifespan and its
+        # sync dependencies can each run on a different thread than the one
+        # that constructed the app — ASGI servers dispatch sync code through
+        # a thread pool, and TestClient runs startup/shutdown on its own
+        # portal thread. Access here is still effectively serial (one event
+        # loop, no concurrent statement execution), so this only lifts
+        # sqlite3's same-thread guard rather than papering over real
+        # concurrent use.
+        self._conn = sqlite3.connect(self._path, check_same_thread=False)
         # The worker thread writes while the API reads. Without WAL a reader
         # blocks behind every checkpoint write, which the UI feels as the
         # in-flight poll hitching.
