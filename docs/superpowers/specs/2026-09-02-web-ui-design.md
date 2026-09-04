@@ -282,6 +282,21 @@ Dossier prose, entities, the full phrase list and replies are not projected.
 Topic detail reads the `analyse` and `ingest` payloads for the one topic being
 viewed.
 
+### Re-running generate appends, it does not replace
+
+The old CLI wrote renders to a deterministic `{position:02d}-{topic_id}.png`,
+so re-running it overwrote the previous attempt. `run_pipeline` mints a fresh
+`uuid4` per brief instead, so resuming a run with `start_at=Stage.GENERATE` —
+the tuning loop this design documents under "The tuning loop" — inserts a new
+`renders` row and a new pair of files alongside the old ones rather than
+replacing them. Three tuning passes over one topic leave three renders behind
+it, and the meme count this spec derives as `COUNT(*) FROM renders` reads 3,
+not 1. This is not fixed here: a correct fix needs a render-deletion path —
+the row, the PNG and the thumbnail — and render deletion is a later phase's
+work (see `DELETE /api/renders/{id}` above). When that phase lands, it must
+decide whether a re-run first clears the run's prior `auto` renders for the
+topic, and it must leave `manual` renders untouched regardless.
+
 ### Models
 
 `RunConfig` is the frozen settings subset that run detail's config line and
