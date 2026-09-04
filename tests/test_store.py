@@ -926,3 +926,35 @@ def test_log_lines_are_scoped_to_the_run(tmp_path):
     _log(store, "r2", 1, "INFO", "theirs")
 
     assert [line.message for line in store.log_lines("r1", verbose=True)] == ["mine"]
+
+
+def test_recent_run_ids_are_newest_first(tmp_path):
+    store = _store(tmp_path)
+    # Chronological insertion: `started_at` is wall-clock at insert time,
+    # not derived from the run id.
+    for run_id in ("20260901T100000Z", "20260901T110000Z", "20260901T120000Z"):
+        store.start_run(run_id, make_run_config())
+
+    assert store.recent_run_ids(2) == [
+        "20260901T120000Z",
+        "20260901T110000Z",
+    ]
+
+
+def test_topics_for_runs_spans_every_run_named(tmp_path):
+    store = _store(tmp_path)
+    for run_id, topic in (("r1", "cats"), ("r2", "dogs")):
+        store.start_run(run_id, make_run_config())
+        store.write_analyse_checkpoint(
+            run_id, [make_topic(topic)], meme_potential_weight=0.3
+        )
+
+    rows = store.topics_for_runs(["r1", "r2"])
+
+    assert {row.topic_id for row in rows} == {"cats", "dogs"}
+
+
+def test_topics_for_no_runs_is_empty(tmp_path):
+    """An empty window must not become `WHERE run_id IN ()`, which is a
+    syntax error in SQLite."""
+    assert _store(tmp_path).topics_for_runs([]) == []

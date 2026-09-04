@@ -126,3 +126,34 @@ class TopicDetail(BaseModel):
     replies: list[ReplyOut]
     renders: list[RenderRecord]
     recurrence: TopicRecurrence
+
+
+class IndexedTopic(BaseModel):
+    """One card in the topics index.
+
+    `run_count` is how many runs in the window carried this topic, keyed on
+    its label slug — `SEEN IN 3 RUNS` on the card, or `NEW THIS RUN` at one.
+    """
+
+    model_config = STRICT
+
+    topic: TopicRow
+    run_count: int
+    render_count: int
+
+
+class TopicIndex(BaseModel):
+    """The topics index and the aggregates drawn beside it.
+
+    `status_totals` counts the whole window rather than the filtered list,
+    because the filter chips show every bucket's total while one of them is
+    active. `previous_sentiment_totals` is the run before the window, which
+    is what the mood line's "versus the previous run" compares against.
+    """
+
+    model_config = STRICT
+
+    topics: list[IndexedTopic]
+    status_totals: dict[str, int]
+    sentiment_totals: dict[str, int]
+    previous_sentiment_totals: dict[str, int]

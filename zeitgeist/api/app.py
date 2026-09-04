@@ -60,9 +60,11 @@ def create_app(settings: Settings) -> FastAPI:
     from zeitgeist.api import renders as renders_router
     from zeitgeist.api import runs as runs_router
     from zeitgeist.api import settings as settings_router
+    from zeitgeist.api import topics as topics_router
 
     app.include_router(settings_router.router)
     app.include_router(runs_router.router)
     app.include_router(renders_router.router)
+    app.include_router(topics_router.router)
 
     return app

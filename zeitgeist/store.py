@@ -198,6 +198,34 @@ class Store:
         ).fetchall()
         return {topic_id: count for topic_id, count in rows}
 
+    def recent_run_ids(self, limit: int) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT run_id FROM run_records ORDER BY started_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [run_id for (run_id,) in rows]
+
+    def topics_for_runs(self, run_ids: Sequence[str]) -> list[TopicRow]:
+        """Every topic across the named runs, newest run first.
+
+        An empty `run_ids` short-circuits: `WHERE run_id IN ()` is a syntax
+        error in SQLite, not an empty result.
+        """
+        if not run_ids:
+            return []
+        placeholders = ", ".join("?" for _ in run_ids)
+        rows = self._conn.execute(
+            "SELECT t.run_id, t.topic_id, t.label, t.label_slug, "
+            "t.trend_status, t.event_sentiment, t.conversation_register, "
+            "t.meme_potential, t.trend_score, t.final_score, t.final_rank, "
+            "t.post_count, t.top_phrase, t.top_phrase_authors "
+            "FROM run_topics t JOIN run_records r ON r.run_id = t.run_id "
+            f"WHERE t.run_id IN ({placeholders}) "
+            "ORDER BY r.started_at DESC, t.final_rank",
+            tuple(run_ids),
+        ).fetchall()
+        return [_topic_row(row) for row in rows]
+
     def topic_recurrence(self, label_slug: str) -> tuple[int, str | None]:
         """How many runs this topic appeared in, and the earliest.
 
@@ -332,25 +360,7 @@ class Store:
             "FROM run_topics WHERE run_id = ? ORDER BY final_rank",
             (run_id,),
         ).fetchall()
-        return [
-            TopicRow(
-                run_id=row[0],
-                topic_id=row[1],
-                label=row[2],
-                label_slug=row[3],
-                trend_status=row[4],
-                event_sentiment=row[5],
-                conversation_register=row[6],
-                meme_potential=row[7],
-                trend_score=row[8],
-                final_score=row[9],
-                final_rank=row[10],
-                post_count=row[11],
-                top_phrase=row[12],
-                top_phrase_authors=row[13],
-            )
-            for row in rows
-        ]
+        return [_topic_row(row) for row in rows]
 
     def write_checkpoint(
         self, run_id: str, stage: Stage, models: Sequence[BaseModel]
@@ -541,6 +551,29 @@ def _run_record(row: tuple) -> RunRecordRow:
         trends_found=row[7],
         topics_kept=row[8],
         phrases_found=row[9],
+    )
+
+
+def _topic_row(row: tuple) -> TopicRow:
+    """Rebuild a `TopicRow` from a row. Shared by `run_topics` and
+    `topics_for_runs`, whose column list and parsing are identical — two
+    copies would drift.
+    """
+    return TopicRow(
+        run_id=row[0],
+        topic_id=row[1],
+        label=row[2],
+        label_slug=row[3],
+        trend_status=row[4],
+        event_sentiment=row[5],
+        conversation_register=row[6],
+        meme_potential=row[7],
+        trend_score=row[8],
+        final_score=row[9],
+        final_rank=row[10],
+        post_count=row[11],
+        top_phrase=row[12],
+        top_phrase_authors=row[13],
     )
 
 
