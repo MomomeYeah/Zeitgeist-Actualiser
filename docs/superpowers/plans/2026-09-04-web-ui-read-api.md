@@ -103,6 +103,9 @@ zeitgeist = "zeitgeist.serve:main"
 Create `tests/test_api_app.py`:
 
 ```python
+import sqlite3
+
+import pytest
 from fastapi.testclient import TestClient
 
 from zeitgeist.api import create_app
@@ -125,7 +128,7 @@ def test_the_app_serves_its_openapi_schema(tmp_path):
     response = client.get("/openapi.json")
 
     assert response.status_code == 200
-    assert response.json()["info"]["title"] == "Zeitgeist"
+    assert "paths" in response.json()
 
 
 def test_the_app_opens_the_database_it_was_given(tmp_path):
@@ -138,11 +141,23 @@ def test_the_app_opens_the_database_it_was_given(tmp_path):
     assert (tmp_path / "data" / "z.db").is_file()
 
 
+def test_the_app_closes_its_store_when_it_shuts_down(tmp_path):
+    """The lifespan's only job is to close the store, and no other test
+    runs it: two build no client and the third never enters the context
+    manager. Deleting the `finally: store.close()` would pass all of them.
+    """
+    app = create_app(_settings(tmp_path))
+
+    with TestClient(app) as client:
+        client.get("/openapi.json")
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        app.state.store._conn.execute("SELECT 1")
+
+
 def test_the_app_creates_its_schema_on_startup(tmp_path):
     """A fresh install serves an empty database rather than 500ing on the
     first query."""
-    import sqlite3
-
     create_app(_settings(tmp_path))
 
     conn = sqlite3.connect(tmp_path / "data" / "z.db")
@@ -508,7 +523,14 @@ def test_a_stored_override_reports_itself_as_set_here(tmp_path):
     assert body["bluesky_trend_limit"]["source"] == "settings"
 
 
-def test_an_untouched_field_reports_the_default(tmp_path):
+def test_an_untouched_field_reports_the_default(tmp_path, monkeypatch):
+    """`chdir` because `_dotenv_value` reads `Path(".env")` relative to the
+    process, not the `_env_file` `api_settings` passes. Without it this
+    test's answer depends on whether the checked-out repo's own `.env`
+    happens to set this key — the ambient-file hazard `conftest` already
+    guards against for `DB_PATH`.
+    """
+    monkeypatch.chdir(tmp_path)
     client = seeded_client(tmp_path)
 
     body = {field["key"]: field for field in client.get("/api/settings").json()}
@@ -528,6 +550,24 @@ def test_a_shell_variable_is_reported_as_environment(tmp_path, monkeypatch):
 
     assert body["phrase_min_authors"]["value"] == 7
     assert body["phrase_min_authors"]["source"] == "environment"
+
+
+def test_a_shell_variable_beats_a_stored_override(tmp_path, monkeypatch):
+    """Both layers set the same key here, which no other test does. Every
+    other case leaves the layer it is not testing empty, so swapping the
+    first two branches of `_source` would pass all of them."""
+    settings = api_settings(tmp_path)
+    store = Store(settings.db_path)
+    store.init_schema()
+    store.set_setting("bluesky_trend_limit", "11")
+    store.close()
+    monkeypatch.setenv("BLUESKY_TREND_LIMIT", "9")
+    client = seeded_client(tmp_path)
+
+    body = {field["key"]: field for field in client.get("/api/settings").json()}
+
+    assert body["bluesky_trend_limit"]["value"] == 9
+    assert body["bluesky_trend_limit"]["source"] == "environment"
 
 
 def test_the_api_key_is_never_in_the_response(tmp_path, monkeypatch):
@@ -716,7 +756,10 @@ def test_runs_come_back_newest_first(tmp_path):
     """The Runs list is reverse-chronological and the in-flight run pins to
     the top, so ordering is the endpoint's whole job."""
     store = _store(tmp_path)
-    for run_id in ("20260901T100000Z", "20260901T120000Z", "20260901T110000Z"):
+    # Insert in chronological order. `started_at` is stamped by `_now()` at
+    # insert time and has nothing to do with the run id, so the order rows
+    # go in *is* the order they come back.
+    for run_id in ("20260901T100000Z", "20260901T110000Z", "20260901T120000Z"):
         store.start_run(run_id, make_run_config())
 
     ids = [row.run_id for row in store.list_runs(limit=10)]
@@ -1671,6 +1714,21 @@ def test_topic_detail_survives_a_run_whose_evidence_was_pruned(tmp_path):
     assert body["dossier"] is not None
 
 
+def test_topic_detail_reports_no_dossier_for_a_dormant_topic(tmp_path):
+    """A topic can be ranked with no dossier at all — the dormant path never
+    built one — with the analyse checkpoint present and intact. That is a
+    different state from the pruned-checkpoint case above, and nothing else
+    exercises it."""
+    client = seeded_client(
+        tmp_path, runs=[SeededRun(topics=[make_topic("cats", dossier=None)])]
+    )
+
+    body = client.get("/api/runs/20260901T120000Z/topics/cats").json()
+
+    assert body["dossier"] is None
+    assert body["topic"]["topic_id"] == "cats"
+
+
 def test_an_unknown_topic_is_a_404(tmp_path):
     client = seeded_client(tmp_path, runs=[SeededRun(topics=[make_topic("cats")])])
 
@@ -1717,7 +1775,9 @@ Add a store test:
 ```python
 def test_topic_recurrence_counts_runs_and_names_the_earliest(tmp_path):
     store = _store(tmp_path)
-    for run_id in ("20260901T120000Z", "20260901T100000Z"):
+    # Earliest first, because `MIN(started_at ...)` picks the row inserted
+    # first — `started_at` is wall-clock, not parsed from the run id.
+    for run_id in ("20260901T100000Z", "20260901T120000Z"):
         store.start_run(run_id, make_run_config())
         store.write_analyse_checkpoint(
             run_id, [make_topic("cats")], meme_potential_weight=0.3
@@ -2226,9 +2286,10 @@ def test_the_full_image_is_served(tmp_path):
     assert response.headers["content-type"] == "image/png"
 
 
-def test_the_thumbnail_is_a_different_file(tmp_path):
-    """The Runs list draws these at 34px. Serving the full PNG there would
-    ship 800KB per tile."""
+def test_the_requested_size_maps_to_the_matching_file(tmp_path):
+    """The Runs list draws these at 34px, so serving the full PNG there
+    would ship 800KB per tile. Asserting the two merely differ would pass a
+    swapped suffix mapping, which is the mistake actually available here."""
     client = seeded_client(
         tmp_path, runs=[SeededRun(renders=[make_render_record("rnd1")])]
     )
@@ -2239,7 +2300,8 @@ def test_the_thumbnail_is_a_different_file(tmp_path):
     full = client.get("/api/renders/rnd1/image", params={"size": "full"})
     thumb = client.get("/api/renders/rnd1/image", params={"size": "thumb"})
 
-    assert full.content != thumb.content
+    assert full.content == (directory / "rnd1.png").read_bytes()
+    assert thumb.content == (directory / "rnd1.thumb.png").read_bytes()
 
 
 def test_a_render_whose_file_is_gone_is_a_404(tmp_path):
@@ -2415,7 +2477,9 @@ Add to `tests/test_store.py`:
 ```python
 def test_recent_run_ids_are_newest_first(tmp_path):
     store = _store(tmp_path)
-    for run_id in ("20260901T100000Z", "20260901T120000Z", "20260901T110000Z"):
+    # Chronological insertion: `started_at` is wall-clock at insert time,
+    # not derived from the run id.
+    for run_id in ("20260901T100000Z", "20260901T110000Z", "20260901T120000Z"):
         store.start_run(run_id, make_run_config())
 
     assert store.recent_run_ids(2) == [
@@ -2493,7 +2557,7 @@ Create `tests/test_api_topics.py`:
 from zeitgeist.models import Sentiment
 
 from tests.api_factory import SeededRun, seeded_client
-from tests.run_factory import make_dossier, make_topic
+from tests.run_factory import make_dossier, make_render_record, make_topic
 
 
 def test_a_topic_seen_in_several_runs_appears_once(tmp_path):
@@ -2644,6 +2708,29 @@ def test_the_previous_run_distribution_is_reported_separately(tmp_path):
 
     assert body["sentiment_totals"] == {"funny": 1}
     assert body["previous_sentiment_totals"] == {"sad": 1}
+
+
+def test_each_indexed_topic_carries_its_render_count(tmp_path):
+    """The card's meme score sits beside a count that comes from the
+    topic's own run — the newest occurrence — the same way `run_count`
+    does. Nothing else in this module reads it, so a lookup keyed by topic
+    id alone, colliding across runs, would pass every other test."""
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                topics=[make_topic("cats")],
+                renders=[
+                    make_render_record("a", topic_id="cats"),
+                    make_render_record("b", topic_id="cats"),
+                ],
+            )
+        ],
+    )
+
+    body = client.get("/api/topics").json()
+
+    assert body["topics"][0]["render_count"] == 2
 
 
 def test_an_empty_database_returns_an_empty_index(tmp_path):
