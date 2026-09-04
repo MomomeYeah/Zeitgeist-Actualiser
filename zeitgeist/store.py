@@ -161,20 +161,41 @@ class Store:
             "FROM run_records WHERE run_id = ?",
             (run_id,),
         ).fetchone()
-        if row is None:
-            return None
-        return RunRecordRow(
-            run_id=row[0],
-            status=row[1],
-            started_at=datetime.fromisoformat(row[2]),
-            finished_at=datetime.fromisoformat(row[3]) if row[3] else None,
-            config=RunConfig.model_validate_json(row[4]),
-            error=RunError.model_validate_json(row[5]) if row[5] else None,
-            item_count=row[6],
-            trends_found=row[7],
-            topics_kept=row[8],
-            phrases_found=row[9],
+        return None if row is None else _run_record(row)
+
+    def list_runs(self, limit: int, cursor: str | None = None) -> list[RunRecordRow]:
+        """Runs newest first, one page at a time.
+
+        `cursor` is the `started_at` of the last row of the previous page.
+        Keyset rather than OFFSET: a run started between two requests would
+        shift an offset-paginated page and duplicate a row across the seam.
+        """
+        sql = (
+            "SELECT run_id, status, started_at, finished_at, config, error, "
+            "item_count, trends_found, topics_kept, phrases_found "
+            "FROM run_records "
         )
+        params: tuple[object, ...] = ()
+        if cursor is not None:
+            sql += "WHERE started_at < ? "
+            params = (cursor,)
+        sql += "ORDER BY started_at DESC LIMIT ?"
+        rows = self._conn.execute(sql, (*params, limit)).fetchall()
+        return [_run_record(row) for row in rows]
+
+    def render_counts(self, run_id: str) -> dict[str, int]:
+        """Renders per topic for one run.
+
+        A COUNT at query time rather than a column on `run_topics`: a
+        denormalised count would have to be kept correct on every render
+        insert, failure and delete, including from phase 4's separate
+        executor.
+        """
+        rows = self._conn.execute(
+            "SELECT topic_id, COUNT(*) FROM renders WHERE run_id = ? GROUP BY topic_id",
+            (run_id,),
+        ).fetchall()
+        return {topic_id: count for topic_id, count in rows}
 
     def _insert_topic_scores(self, run_id: str, topics: Sequence[Topic]) -> None:
         # Keyed on slugify(label), not the raw label: labels are free text
@@ -443,6 +464,25 @@ class Store:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _run_record(row: tuple) -> RunRecordRow:
+    """Rebuild a `RunRecordRow` from a row. Shared by `get_run` and
+    `list_runs`, whose column list and parsing are identical — two copies
+    would drift.
+    """
+    return RunRecordRow(
+        run_id=row[0],
+        status=row[1],
+        started_at=datetime.fromisoformat(row[2]),
+        finished_at=datetime.fromisoformat(row[3]) if row[3] else None,
+        config=RunConfig.model_validate_json(row[4]),
+        error=RunError.model_validate_json(row[5]) if row[5] else None,
+        item_count=row[6],
+        trends_found=row[7],
+        topics_kept=row[8],
+        phrases_found=row[9],
+    )
 
 
 def _render(row: tuple) -> RenderRecord:

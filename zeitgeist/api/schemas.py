@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from zeitgeist.models import STRICT
+from zeitgeist.records import RunRecordRow
 
 # Four layers, though the settings screen draws three chips. A shell
 # variable outranks the settings table, so `environment` is a real answer
@@ -26,3 +27,27 @@ class SettingField(BaseModel):
     key: str
     value: float | int
     source: SettingSource
+
+
+class RunSummary(BaseModel):
+    """One row of the Runs list.
+
+    `topic_labels` and `render_ids` are joins the row needs and the run
+    record does not carry: column two is the titles, column four the
+    thumbnails.
+    """
+
+    model_config = STRICT
+
+    run: RunRecordRow
+    topic_labels: list[str]
+    render_ids: list[str]
+
+
+class RunPage(BaseModel):
+    """One page of runs. `next_cursor` is None on the last page."""
+
+    model_config = STRICT
+
+    runs: list[RunSummary]
+    next_cursor: str | None

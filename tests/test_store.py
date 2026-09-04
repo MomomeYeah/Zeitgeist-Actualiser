@@ -785,3 +785,56 @@ def test_renders_for_a_run_come_back_oldest_first(tmp_path):
 
 def test_get_render_returns_none_for_an_unknown_id(tmp_path):
     assert _store(tmp_path).get_render("nope") is None
+
+
+def test_runs_come_back_newest_first(tmp_path):
+    """The Runs list is reverse-chronological and the in-flight run pins to
+    the top, so ordering is the endpoint's whole job."""
+    store = _store(tmp_path)
+    # Insert in chronological order. `started_at` is stamped by `_now()` at
+    # insert time and has nothing to do with the run id, so the order rows
+    # go in *is* the order they come back.
+    for run_id in ("20260901T100000Z", "20260901T110000Z", "20260901T120000Z"):
+        store.start_run(run_id, make_run_config())
+
+    ids = [row.run_id for row in store.list_runs(limit=10)]
+
+    assert ids == [
+        "20260901T120000Z",
+        "20260901T110000Z",
+        "20260901T100000Z",
+    ]
+
+
+def test_the_cursor_resumes_after_the_last_row_of_the_previous_page(tmp_path):
+    store = _store(tmp_path)
+    for run_id in ("20260901T100000Z", "20260901T110000Z", "20260901T120000Z"):
+        store.start_run(run_id, make_run_config())
+
+    first = store.list_runs(limit=2)
+    second = store.list_runs(limit=2, cursor=first[-1].started_at.isoformat())
+
+    assert [row.run_id for row in first] == [
+        "20260901T120000Z",
+        "20260901T110000Z",
+    ]
+    assert [row.run_id for row in second] == ["20260901T100000Z"]
+
+
+def test_render_counts_are_keyed_by_topic(tmp_path):
+    """Meme counts are a COUNT(*) at query time rather than a column, so
+    this is the only thing standing between the UI and a wrong number."""
+    store = _store(tmp_path)
+    store.add_render(make_render_record("a", topic_id="cats"))
+    store.add_render(make_render_record("b", topic_id="cats"))
+    store.add_render(make_render_record("c", topic_id="dogs"))
+
+    assert store.render_counts("20260901T120000Z") == {"cats": 2, "dogs": 1}
+
+
+def test_render_counts_are_scoped_to_the_run(tmp_path):
+    store = _store(tmp_path)
+    store.add_render(make_render_record("a", run_id="r1", topic_id="cats"))
+    store.add_render(make_render_record("b", run_id="r2", topic_id="cats"))
+
+    assert store.render_counts("r1") == {"cats": 1}
