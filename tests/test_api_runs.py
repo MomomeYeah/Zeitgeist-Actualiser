@@ -1,9 +1,22 @@
+from datetime import UTC, datetime
+
 from tests.api_factory import SeededRun, api_settings, seeded_client
 from tests.run_factory import (
+    make_dossier,
     make_render_record,
     make_run_config,
     make_stage_record,
     make_topic,
+)
+from zeitgeist.api.runs import MAX_REPLIES
+from zeitgeist.models import (
+    BlueskyMetrics,
+    Item,
+    PostEvidence,
+    Reply,
+    Sentiment,
+    TrendEvidence,
+    TrendInfo,
 )
 from zeitgeist.records import Stage
 from zeitgeist.store import Store
@@ -275,3 +288,199 @@ def test_the_ranking_of_an_unknown_run_is_a_404(tmp_path):
     client = seeded_client(tmp_path)
 
     assert client.get("/api/runs/nope/topics").status_code == 404
+
+
+def _evidence_for(source_ids: list[str], replies: list[Reply]) -> TrendEvidence:
+    now = datetime(2026, 9, 1, tzinfo=UTC)
+    return TrendEvidence(
+        trend=TrendInfo(
+            topic_id="t",
+            display_name="Cats",
+            started_at=now,
+            status="trending",
+        ),
+        posts=[
+            PostEvidence(
+                item=Item(
+                    source_id=source_id,
+                    title="a post",
+                    permalink=f"https://bsky.app/{source_id}",
+                    fetched_at=now,
+                    metrics=BlueskyMetrics(
+                        like_count=1,
+                        reply_count=1,
+                        repost_count=0,
+                        trend="Cats",
+                        status="trending",
+                        created_at=now,
+                    ),
+                ),
+                replies=replies,
+            )
+            for source_id in source_ids
+        ],
+    )
+
+
+def _reply(text: str, likes: int) -> Reply:
+    return Reply(
+        text=text,
+        like_count=likes,
+        created_at=datetime(2026, 9, 1, tzinfo=UTC),
+        author_key="a",
+    )
+
+
+def test_topic_detail_carries_the_dossier(tmp_path):
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                topics=[
+                    make_topic(
+                        "cats",
+                        dossier=make_dossier(event_sentiment=Sentiment.CUTE),
+                    )
+                ]
+            )
+        ],
+    )
+
+    body = client.get("/api/runs/20260901T120000Z/topics/cats").json()
+
+    assert body["dossier"]["event_sentiment"] == "cute"
+    assert body["dossier"]["what_happened"]
+
+
+def test_topic_detail_carries_the_replies_most_liked_first(tmp_path):
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                topics=[make_topic("cats", item_ids=["p1"])],
+                evidence=[
+                    _evidence_for(["p1"], [_reply("quiet", 1), _reply("loud", 99)])
+                ],
+            )
+        ],
+    )
+
+    body = client.get("/api/runs/20260901T120000Z/topics/cats").json()
+
+    assert [r["text"] for r in body["replies"]] == ["loud", "quiet"]
+
+
+def test_replies_come_only_from_this_topics_own_posts(tmp_path):
+    """item_ids is what ties a topic to its evidence. Returning every reply
+    in the run would put another topic's conversation on this dossier."""
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                topics=[make_topic("cats", item_ids=["p1"])],
+                evidence=[
+                    _evidence_for(["p1"], [_reply("mine", 1)]),
+                    _evidence_for(["p2"], [_reply("theirs", 1)]),
+                ],
+            )
+        ],
+    )
+
+    body = client.get("/api/runs/20260901T120000Z/topics/cats").json()
+
+    assert [r["text"] for r in body["replies"]] == ["mine"]
+
+
+def test_a_reply_never_carries_an_author_key(tmp_path):
+    """author_key exists to count distinct accounts behind a phrase. The
+    project stores no personal data and an API returning it would undo
+    that."""
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                topics=[make_topic("cats", item_ids=["p1"])],
+                evidence=[_evidence_for(["p1"], [_reply("hello", 1)])],
+            )
+        ],
+    )
+
+    raw = client.get("/api/runs/20260901T120000Z/topics/cats").text
+
+    assert "author_key" not in raw
+
+
+def test_replies_are_capped_after_sorting_not_before(tmp_path):
+    """A topic can carry hundreds of replies and the card list is not
+    paginated. Nothing else here supplies more than a handful, so removing
+    the slice entirely would pass every other reply test — and capping
+    before the sort rather than after would keep an arbitrary twenty
+    instead of the twenty people actually engaged with."""
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                topics=[make_topic("cats", item_ids=["p1"])],
+                evidence=[
+                    _evidence_for(["p1"], [_reply(f"reply {i}", i) for i in range(50)])
+                ],
+            )
+        ],
+    )
+
+    body = client.get("/api/runs/20260901T120000Z/topics/cats").json()
+
+    assert len(body["replies"]) == MAX_REPLIES
+    assert body["replies"][0]["text"] == "reply 49"
+
+
+def test_topic_detail_reports_how_many_runs_the_topic_appeared_in(tmp_path):
+    """`SEEN IN 3 RUNS` on the card. Keyed on the label slug, which is the
+    only cross-run identity the store has."""
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(run_id="20260901T100000Z", topics=[make_topic("cats")]),
+            SeededRun(run_id="20260901T120000Z", topics=[make_topic("cats")]),
+        ],
+    )
+
+    body = client.get("/api/runs/20260901T120000Z/topics/cats").json()
+
+    assert body["recurrence"]["run_count"] == 2
+    assert body["recurrence"]["first_seen_run_id"] == "20260901T100000Z"
+
+
+def test_topic_detail_survives_a_run_whose_evidence_was_pruned(tmp_path):
+    """The ingest checkpoint is the biggest thing in the database and a
+    later phase may prune it. A dossier without replies is still a dossier;
+    a 500 is not."""
+    client = seeded_client(
+        tmp_path, runs=[SeededRun(topics=[make_topic("cats")], evidence=[])]
+    )
+
+    body = client.get("/api/runs/20260901T120000Z/topics/cats").json()
+
+    assert body["replies"] == []
+    assert body["dossier"] is not None
+
+
+def test_topic_detail_reports_no_dossier_for_a_dormant_topic(tmp_path):
+    """A topic can be ranked with no dossier at all — the dormant path never
+    built one — with the analyse checkpoint present and intact. That is a
+    different state from the pruned-checkpoint case above, and nothing else
+    exercises it."""
+    client = seeded_client(
+        tmp_path, runs=[SeededRun(topics=[make_topic("cats", dossier=None)])]
+    )
+
+    body = client.get("/api/runs/20260901T120000Z/topics/cats").json()
+
+    assert body["dossier"] is None
+    assert body["topic"]["topic_id"] == "cats"
+
+
+def test_an_unknown_topic_is_a_404(tmp_path):
+    client = seeded_client(tmp_path, runs=[SeededRun(topics=[make_topic("cats")])])
+
+    assert client.get("/api/runs/20260901T120000Z/topics/nope").status_code == 404

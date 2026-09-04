@@ -846,3 +846,20 @@ def test_render_counts_are_scoped_to_the_run(tmp_path):
     store.add_render(make_render_record("b", run_id="r2", topic_id="cats"))
 
     assert store.render_counts("r1") == {"cats": 1}
+
+
+def test_topic_recurrence_counts_runs_and_names_the_earliest(tmp_path):
+    store = _store(tmp_path)
+    # Earliest first, because `MIN(started_at ...)` picks the row inserted
+    # first — `started_at` is wall-clock, not parsed from the run id.
+    for run_id in ("20260901T100000Z", "20260901T120000Z"):
+        store.start_run(run_id, make_run_config())
+        store.write_analyse_checkpoint(
+            run_id, [make_topic("cats")], meme_potential_weight=0.3
+        )
+
+    assert store.topic_recurrence("cats") == (2, "20260901T100000Z")
+
+
+def test_topic_recurrence_of_an_unseen_slug_is_zero(tmp_path):
+    assert _store(tmp_path).topic_recurrence("nope") == (0, None)

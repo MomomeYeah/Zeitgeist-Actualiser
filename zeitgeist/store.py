@@ -197,6 +197,25 @@ class Store:
         ).fetchall()
         return {topic_id: count for topic_id, count in rows}
 
+    def topic_recurrence(self, label_slug: str) -> tuple[int, str | None]:
+        """How many runs this topic appeared in, and the earliest.
+
+        Keyed on `label_slug` because that is the only cross-run identity
+        the store has: labels are model-generated every run, and the slug
+        fixes case and punctuation drift but not wording drift. A topic
+        relabelled "Rescue Dog Adoptions" from "Shelter Dog Adoption" reads
+        as new, so the count is a floor rather than a total.
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(DISTINCT t.run_id), MIN(r.started_at || '|' || t.run_id) "
+            "FROM run_topics t JOIN run_records r ON r.run_id = t.run_id "
+            "WHERE t.label_slug = ?",
+            (label_slug,),
+        ).fetchone()
+        count, earliest = row
+        first_seen = earliest.split("|", 1)[1] if earliest else None
+        return count, first_seen
+
     def _insert_topic_scores(self, run_id: str, topics: Sequence[Topic]) -> None:
         # Keyed on slugify(label), not the raw label: labels are free text
         # the model regenerates every run, so "Shelter Dog Adoption" and

@@ -5,13 +5,14 @@ Storage models are returned directly wherever they suffice — `TopicRow`,
 exist only where an endpoint joins several sources into one body.
 """
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel
 
-from zeitgeist.models import STRICT
+from zeitgeist.models import STRICT, Dossier
 from zeitgeist.projection import TopicRow
-from zeitgeist.records import RunRecordRow, Stage, StageRecord
+from zeitgeist.records import RenderRecord, RunRecordRow, Stage, StageRecord
 
 # Four layers, though the settings screen draws three chips. A shell
 # variable outranks the settings table, so `environment` is a real answer
@@ -81,3 +82,47 @@ class RankedTopic(BaseModel):
     topic: TopicRow
     render_count: int
     above_cut: bool
+
+
+class ReplyOut(BaseModel):
+    """One reply, as the dossier shows it.
+
+    No author, handle or avatar. `Reply.author_key` exists only to count the
+    distinct accounts behind a repeated phrase; the project stores no
+    personal data and an API that returned it would undo that.
+    """
+
+    model_config = STRICT
+
+    text: str
+    like_count: int
+    created_at: datetime
+
+
+class TopicRecurrence(BaseModel):
+    """How often this topic has been seen, keyed on its label slug.
+
+    A floor rather than a total: the slug fixes case and punctuation drift
+    across runs but not wording drift, so a relabelled topic reads as new.
+    """
+
+    model_config = STRICT
+
+    run_count: int
+    first_seen_run_id: str | None
+
+
+class TopicDetail(BaseModel):
+    """One topic's dossier: the row, the prose, what people said, and what
+    was rendered from it.
+    """
+
+    model_config = STRICT
+
+    topic: TopicRow
+    # None on the dormant path and on a stale checkpoint. The topic was
+    # still ranked, so the row still exists.
+    dossier: Dossier | None
+    replies: list[ReplyOut]
+    renders: list[RenderRecord]
+    recurrence: TopicRecurrence

@@ -5,9 +5,18 @@ topic's dossier, and the log.
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from zeitgeist.api.app import get_store
-from zeitgeist.api.schemas import RankedTopic, RunDetail, RunPage, RunSummary
+from zeitgeist.api.schemas import (
+    RankedTopic,
+    ReplyOut,
+    RunDetail,
+    RunPage,
+    RunSummary,
+    TopicDetail,
+    TopicRecurrence,
+)
+from zeitgeist.models import Topic, TrendEvidence
 from zeitgeist.records import ORDER, Stage
-from zeitgeist.store import Store
+from zeitgeist.store import MissingCheckpoint, Store
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -79,3 +88,67 @@ def read_ranking(run_id: str, store: Store = Depends(get_store)) -> list[RankedT
         # its own: rank_score is the single place the blend is defined.
         for row in store.run_topics(run_id)
     ]
+
+
+# A topic can carry hundreds of replies and the card list is not paginated.
+# Most-liked first: the design shows the conversation, not all of it.
+MAX_REPLIES = 20
+
+
+def _replies_for(store: Store, run_id: str, item_ids: set[str]) -> list[ReplyOut]:
+    """Replies under this topic's own posts, most-liked first.
+
+    A missing ingest checkpoint is not an error: it is the biggest payload
+    in the database and a later phase may prune it. A dossier without
+    replies is still a dossier.
+    """
+    try:
+        evidence = store.read_checkpoint(run_id, Stage.INGEST, TrendEvidence)
+    except MissingCheckpoint:
+        return []
+    replies = [
+        reply
+        for entry in evidence
+        for post in entry.posts
+        if post.item.source_id in item_ids
+        for reply in post.replies
+    ]
+    replies.sort(key=lambda reply: reply.like_count, reverse=True)
+    return [
+        ReplyOut(
+            text=reply.text,
+            like_count=reply.like_count,
+            created_at=reply.created_at,
+        )
+        for reply in replies[:MAX_REPLIES]
+    ]
+
+
+@router.get("/{run_id}/topics/{topic_id}", response_model=TopicDetail)
+def read_topic(
+    run_id: str, topic_id: str, store: Store = Depends(get_store)
+) -> TopicDetail:
+    row = next((r for r in store.run_topics(run_id) if r.topic_id == topic_id), None)
+    if row is None:
+        raise HTTPException(
+            status_code=404, detail=f"No such topic in {run_id}: {topic_id}"
+        )
+
+    try:
+        topics = store.read_checkpoint(run_id, Stage.ANALYSE, Topic)
+    except MissingCheckpoint:
+        topics = []
+    topic = next((t for t in topics if t.id == topic_id), None)
+
+    count, first_seen = store.topic_recurrence(row.label_slug)
+    return TopicDetail(
+        topic=row,
+        dossier=None if topic is None else topic.dossier,
+        replies=_replies_for(store, run_id, set(topic.item_ids) if topic else set()),
+        renders=[
+            render
+            for render in store.renders_for_run(run_id)
+            if render.topic_id == topic_id
+        ],
+        recurrence=TopicRecurrence(run_count=count, first_seen_run_id=first_seen),
+    )
