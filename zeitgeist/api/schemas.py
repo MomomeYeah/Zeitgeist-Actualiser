@@ -10,7 +10,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from zeitgeist.models import STRICT
-from zeitgeist.records import RunRecordRow
+from zeitgeist.records import RunRecordRow, Stage, StageRecord
 
 # Four layers, though the settings screen draws three chips. A shell
 # variable outranks the settings table, so `environment` is a real answer
@@ -51,3 +51,17 @@ class RunPage(BaseModel):
 
     runs: list[RunSummary]
     next_cursor: str | None
+
+
+class RunDetail(BaseModel):
+    """One run's header: what it was configured with, how its stages went,
+    and where a resume would start.
+    """
+
+    model_config = STRICT
+
+    run: RunRecordRow
+    stages: list[StageRecord]
+    # None when nothing was written at all, which is what a source outage
+    # looks like. The UI must not offer a resume it cannot honour.
+    resume_stage: Stage | None

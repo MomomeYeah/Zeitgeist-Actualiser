@@ -363,6 +363,17 @@ class Store:
             raise MissingCheckpoint(f"Run {run_id!r} has no {stage.value} checkpoint")
         return [schema.model_validate(entry) for entry in json.loads(row[0])]
 
+    def written_stages(self, run_id: str) -> set[Stage]:
+        """Which stages have a checkpoint, without reading the payloads.
+
+        `read_checkpoint` would deserialise a run's whole evidence to answer
+        a question about row existence.
+        """
+        rows = self._conn.execute(
+            "SELECT stage FROM checkpoints WHERE run_id = ?", (run_id,)
+        ).fetchall()
+        return {Stage(stage) for (stage,) in rows}
+
     def record_stage(self, run_id: str, record: StageRecord) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO run_stages (run_id, stage, status, "

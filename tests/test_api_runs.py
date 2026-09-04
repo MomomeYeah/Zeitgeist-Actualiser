@@ -1,5 +1,12 @@
-from tests.api_factory import SeededRun, seeded_client
-from tests.run_factory import make_render_record, make_run_config, make_topic
+from tests.api_factory import SeededRun, api_settings, seeded_client
+from tests.run_factory import (
+    make_render_record,
+    make_run_config,
+    make_stage_record,
+    make_topic,
+)
+from zeitgeist.records import Stage
+from zeitgeist.store import Store
 
 
 def test_the_runs_list_is_newest_first(tmp_path):
@@ -104,3 +111,88 @@ def test_an_empty_database_returns_an_empty_page(tmp_path):
     body = client.get("/api/runs").json()
 
     assert body == {"runs": [], "next_cursor": None}
+
+
+def test_run_detail_carries_the_frozen_config(tmp_path):
+    """The config line shows what the run used, which a since-edited .env
+    cannot supply."""
+    client = seeded_client(
+        tmp_path,
+        runs=[SeededRun(config=make_run_config(top_count=9, llm_model="qwen3.5"))],
+    )
+
+    body = client.get("/api/runs/20260901T120000Z").json()
+
+    assert body["run"]["config"]["top_count"] == 9
+    assert body["run"]["config"]["llm_model"] == "qwen3.5"
+
+
+def test_run_detail_carries_its_stages_in_pipeline_order(tmp_path):
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                stages=[
+                    make_stage_record(Stage.GENERATE),
+                    make_stage_record(Stage.INGEST),
+                ]
+            )
+        ],
+    )
+
+    body = client.get("/api/runs/20260901T120000Z").json()
+
+    assert [s["stage"] for s in body["stages"]] == ["ingest", "generate"]
+
+
+def test_a_run_with_every_checkpoint_resumes_from_generate(tmp_path):
+    """Re-rendering a frozen ranking is always available - it is the
+    template-tuning loop."""
+    client = seeded_client(tmp_path, runs=[SeededRun()])
+    # SeededRun writes the analyse checkpoint; write the other three directly
+    # so all four exist. Empty payloads are enough - resume_stage asks which
+    # stages have a row, not what is in it.
+    store = Store(api_settings(tmp_path).db_path)
+    store.write_checkpoint(
+        "20260901T120000Z",
+        Stage.INGEST,
+        [],
+    )
+    store.write_checkpoint(
+        "20260901T120000Z",
+        Stage.EVALUATE,
+        [],
+    )
+    store.write_checkpoint("20260901T120000Z", Stage.GENERATE, [])
+    store.close()
+
+    body = client.get("/api/runs/20260901T120000Z").json()
+
+    assert body["resume_stage"] == "generate"
+
+
+def test_a_run_that_failed_at_evaluate_resumes_from_evaluate(tmp_path):
+    client = seeded_client(tmp_path, runs=[SeededRun()])
+    store = Store(api_settings(tmp_path).db_path)
+    store.write_checkpoint("20260901T120000Z", Stage.INGEST, [])
+    store.close()
+
+    body = client.get("/api/runs/20260901T120000Z").json()
+
+    assert body["resume_stage"] == "evaluate"
+
+
+def test_a_run_with_no_checkpoints_cannot_be_resumed(tmp_path):
+    """A source outage writes nothing, so there is nothing to resume from
+    and the UI must not offer an action it cannot honour."""
+    client = seeded_client(tmp_path, runs=[SeededRun(topics=[], status="failed")])
+
+    body = client.get("/api/runs/20260901T120000Z").json()
+
+    assert body["resume_stage"] is None
+
+
+def test_an_unknown_run_is_a_404(tmp_path):
+    client = seeded_client(tmp_path)
+
+    assert client.get("/api/runs/nope").status_code == 404

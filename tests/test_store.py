@@ -597,6 +597,14 @@ def test_an_empty_checkpoint_is_not_a_missing_one(tmp_path):
     assert store.read_checkpoint("r1", Stage.GENERATE, MediaBrief) == []
 
 
+def test_written_stages_reports_only_what_was_checkpointed(tmp_path):
+    store = _store(tmp_path)
+    store.write_checkpoint("r1", Stage.INGEST, [make_topic()])
+    store.write_checkpoint("r1", Stage.EVALUATE, [])
+
+    assert store.written_stages("r1") == {Stage.INGEST, Stage.EVALUATE}
+
+
 def test_stages_come_back_in_pipeline_order(tmp_path):
     """The four stage cards are drawn left to right in the order they run,
     not the order rows happened to be written."""

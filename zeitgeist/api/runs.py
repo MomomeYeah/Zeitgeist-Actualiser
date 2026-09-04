@@ -2,10 +2,11 @@
 topic's dossier, and the log.
 """
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from zeitgeist.api.app import get_store
-from zeitgeist.api.schemas import RunPage, RunSummary
+from zeitgeist.api.schemas import RunDetail, RunPage, RunSummary
+from zeitgeist.records import ORDER, Stage
 from zeitgeist.store import Store
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
@@ -33,3 +34,30 @@ def list_runs(
     # client one more request that always comes back empty.
     next_cursor = rows[-1].started_at.isoformat() if len(rows) == limit else None
     return RunPage(runs=summaries, next_cursor=next_cursor)
+
+
+def resume_stage(store: Store, run_id: str) -> Stage | None:
+    """The first stage with no checkpoint, or None if that is ingest.
+
+    Nothing written at all means the run has to start over rather than
+    resume, which is what a source outage looks like. Every checkpoint
+    present means generate: re-rendering a frozen ranking is always
+    available, and is the template-tuning loop.
+    """
+    written = store.written_stages(run_id)
+    for stage in ORDER:
+        if stage not in written:
+            return None if stage is Stage.INGEST else stage
+    return Stage.GENERATE
+
+
+@router.get("/{run_id}", response_model=RunDetail)
+def read_run(run_id: str, store: Store = Depends(get_store)) -> RunDetail:
+    run = store.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"No such run: {run_id}")
+    return RunDetail(
+        run=run,
+        stages=store.stages_for_run(run_id),
+        resume_stage=resume_stage(store, run_id),
+    )
