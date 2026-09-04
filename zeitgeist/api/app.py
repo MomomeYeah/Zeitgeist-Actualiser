@@ -56,4 +56,9 @@ def create_app(settings: Settings) -> FastAPI:
     app = FastAPI(title="Zeitgeist", lifespan=lifespan)
     app.state.store = store
     app.state.settings = settings
+
+    from zeitgeist.api import settings as settings_router
+
+    app.include_router(settings_router.router)
+
     return app

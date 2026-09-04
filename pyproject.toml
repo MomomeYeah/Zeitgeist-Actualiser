@@ -47,6 +47,12 @@ exclude = ["docs"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.flake8-bugbear]
+# B008 otherwise flags FastAPI's own idiom for declaring a dependency: the
+# call in the default position is how FastAPI recognises it, not a mutable
+# default evaluated once. This is ruff's own documented fix for it.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]
+
 [tool.ty.rules]
 # ty ships this rule disabled by default, citing false-positive volume.
 # Enabling it adds zero findings to this codebase and closes the one gap
