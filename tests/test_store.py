@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from datetime import UTC, datetime
 
 import pytest
@@ -484,6 +485,49 @@ def test_creates_parent_directory(tmp_path):
     assert (tmp_path / "nested" / "dir" / "test.db").exists()
 
 
+def _query_from_another_thread(store: Store) -> BaseException | None:
+    """Run a trivial query against `store` on a fresh thread and hand back
+    whatever it raised, or None if it didn't.
+    """
+    caught: list[BaseException | None] = [None]
+
+    def target() -> None:
+        try:
+            store._conn.execute("SELECT 1")
+        except BaseException as exc:  # noqa: BLE001 - relaying, not handling
+            caught[0] = exc
+
+    thread = threading.Thread(target=target)
+    thread.start()
+    thread.join()
+    return caught[0]
+
+
+def test_a_default_store_refuses_cross_thread_use(tmp_path):
+    """The safe default: a Store built for a single thread raises
+    immediately if another thread ever touches it by mistake, rather than
+    corrupting data silently. This is what the check_same_thread=False API
+    app passes stays opt-in for every other caller.
+    """
+    store = _store(tmp_path)
+
+    error = _query_from_another_thread(store)
+
+    assert isinstance(error, sqlite3.ProgrammingError)
+
+
+def test_check_same_thread_false_permits_cross_thread_use(tmp_path):
+    """The API app holds one Store across FastAPI's thread pool and
+    TestClient's portal thread, so it opts out of the guard above.
+    """
+    store = Store(tmp_path / "z.db", check_same_thread=False)
+    store.init_schema()
+
+    error = _query_from_another_thread(store)
+
+    assert error is None
+
+
 def test_a_checkpoint_round_trips_through_its_model(tmp_path):
     """This is what resuming a run depends on. A payload that does not round
     trip breaks resume silently rather than loudly."""
@@ -551,6 +595,14 @@ def test_an_empty_checkpoint_is_not_a_missing_one(tmp_path):
     store.write_checkpoint("r1", Stage.GENERATE, [])
 
     assert store.read_checkpoint("r1", Stage.GENERATE, MediaBrief) == []
+
+
+def test_written_stages_reports_only_what_was_checkpointed(tmp_path):
+    store = _store(tmp_path)
+    store.write_checkpoint("r1", Stage.INGEST, [make_topic()])
+    store.write_checkpoint("r1", Stage.EVALUATE, [])
+
+    assert store.written_stages("r1") == {Stage.INGEST, Stage.EVALUATE}
 
 
 def test_stages_come_back_in_pipeline_order(tmp_path):
@@ -741,3 +793,168 @@ def test_renders_for_a_run_come_back_oldest_first(tmp_path):
 
 def test_get_render_returns_none_for_an_unknown_id(tmp_path):
     assert _store(tmp_path).get_render("nope") is None
+
+
+def test_runs_come_back_newest_first(tmp_path):
+    """The Runs list is reverse-chronological and the in-flight run pins to
+    the top, so ordering is the endpoint's whole job."""
+    store = _store(tmp_path)
+    # Insert in chronological order. `started_at` is stamped by `_now()` at
+    # insert time and has nothing to do with the run id, so the order rows
+    # go in *is* the order they come back.
+    for run_id in ("20260901T100000Z", "20260901T110000Z", "20260901T120000Z"):
+        store.start_run(run_id, make_run_config())
+
+    ids = [row.run_id for row in store.list_runs(limit=10)]
+
+    assert ids == [
+        "20260901T120000Z",
+        "20260901T110000Z",
+        "20260901T100000Z",
+    ]
+
+
+def test_the_cursor_resumes_after_the_last_row_of_the_previous_page(tmp_path):
+    store = _store(tmp_path)
+    for run_id in ("20260901T100000Z", "20260901T110000Z", "20260901T120000Z"):
+        store.start_run(run_id, make_run_config())
+
+    first = store.list_runs(limit=2)
+    second = store.list_runs(limit=2, cursor=first[-1].started_at.isoformat())
+
+    assert [row.run_id for row in first] == [
+        "20260901T120000Z",
+        "20260901T110000Z",
+    ]
+    assert [row.run_id for row in second] == ["20260901T100000Z"]
+
+
+def test_render_counts_are_keyed_by_topic(tmp_path):
+    """Meme counts are a COUNT(*) at query time rather than a column, so
+    this is the only thing standing between the UI and a wrong number."""
+    store = _store(tmp_path)
+    store.add_render(make_render_record("a", topic_id="cats"))
+    store.add_render(make_render_record("b", topic_id="cats"))
+    store.add_render(make_render_record("c", topic_id="dogs"))
+
+    assert store.render_counts("20260901T120000Z") == {"cats": 2, "dogs": 1}
+
+
+def test_render_counts_are_scoped_to_the_run(tmp_path):
+    store = _store(tmp_path)
+    store.add_render(make_render_record("a", run_id="r1", topic_id="cats"))
+    store.add_render(make_render_record("b", run_id="r2", topic_id="cats"))
+
+    assert store.render_counts("r1") == {"cats": 1}
+
+
+def test_topic_recurrence_counts_runs_and_names_the_earliest(tmp_path):
+    store = _store(tmp_path)
+    # Earliest first, because `MIN(started_at ...)` picks the row inserted
+    # first — `started_at` is wall-clock, not parsed from the run id.
+    for run_id in ("20260901T100000Z", "20260901T120000Z"):
+        store.start_run(run_id, make_run_config())
+        store.write_analyse_checkpoint(
+            run_id, [make_topic("cats")], meme_potential_weight=0.3
+        )
+
+    assert store.topic_recurrence("cats") == (2, "20260901T100000Z")
+
+
+def test_topic_recurrence_of_an_unseen_slug_is_zero(tmp_path):
+    assert _store(tmp_path).topic_recurrence("nope") == (0, None)
+
+
+def _log(store, run_id: str, seq: int, level: str, message: str) -> None:
+    """Seed a log line directly.
+
+    The only hand-written SQL in these tests: phase 3 owns the writer, and
+    the reader has to be testable before it exists.
+    """
+    store._conn.execute(
+        "INSERT INTO log_lines (run_id, seq, logged_at, level, logger, message) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            run_id,
+            seq,
+            "2026-09-01T12:00:00+00:00",
+            level,
+            "zeitgeist.pipeline",
+            message,
+        ),
+    )
+    store._conn.commit()
+
+
+def test_log_lines_come_back_in_sequence(tmp_path):
+    store = _store(tmp_path)
+    _log(store, "r1", 2, "INFO", "second")
+    _log(store, "r1", 1, "INFO", "first")
+
+    assert [line.message for line in store.log_lines("r1", verbose=True)] == [
+        "first",
+        "second",
+    ]
+
+
+def test_a_quiet_log_omits_debug_lines(tmp_path):
+    """The toggle filters what was already captured, so flipping it works
+    retroactively rather than showing nothing until the next line."""
+    store = _store(tmp_path)
+    _log(store, "r1", 1, "DEBUG", "noisy")
+    _log(store, "r1", 2, "INFO", "useful")
+    _log(store, "r1", 3, "WARNING", "important")
+
+    quiet = [line.message for line in store.log_lines("r1", verbose=False)]
+
+    assert quiet == ["useful", "important"]
+
+
+def test_a_verbose_log_keeps_everything(tmp_path):
+    store = _store(tmp_path)
+    _log(store, "r1", 1, "DEBUG", "noisy")
+    _log(store, "r1", 2, "INFO", "useful")
+
+    loud = [line.message for line in store.log_lines("r1", verbose=True)]
+
+    assert loud == ["noisy", "useful"]
+
+
+def test_log_lines_are_scoped_to_the_run(tmp_path):
+    store = _store(tmp_path)
+    _log(store, "r1", 1, "INFO", "mine")
+    _log(store, "r2", 1, "INFO", "theirs")
+
+    assert [line.message for line in store.log_lines("r1", verbose=True)] == ["mine"]
+
+
+def test_recent_run_ids_are_newest_first(tmp_path):
+    store = _store(tmp_path)
+    # Chronological insertion: `started_at` is wall-clock at insert time,
+    # not derived from the run id.
+    for run_id in ("20260901T100000Z", "20260901T110000Z", "20260901T120000Z"):
+        store.start_run(run_id, make_run_config())
+
+    assert store.recent_run_ids(2) == [
+        "20260901T120000Z",
+        "20260901T110000Z",
+    ]
+
+
+def test_topics_for_runs_spans_every_run_named(tmp_path):
+    store = _store(tmp_path)
+    for run_id, topic in (("r1", "cats"), ("r2", "dogs")):
+        store.start_run(run_id, make_run_config())
+        store.write_analyse_checkpoint(
+            run_id, [make_topic(topic)], meme_potential_weight=0.3
+        )
+
+    rows = store.topics_for_runs(["r1", "r2"])
+
+    assert {row.topic_id for row in rows} == {"cats", "dogs"}
+
+
+def test_topics_for_no_runs_is_empty(tmp_path):
+    """An empty window must not become `WHERE run_id IN ()`, which is a
+    syntax error in SQLite."""
+    assert _store(tmp_path).topics_for_runs([]) == []

@@ -1073,9 +1073,21 @@ complete run entirely through the store, and `data/zeitgeist.db` and `output/`
 cleared of everything that came before.
 
 **2 — Read API.** The FastAPI app, every read endpoint including
-`GET /api/renders/{id}` and `GET /api/settings`, image serving, `zeitgeist`
-restored as a console entry point that starts the server, and the generated
-TypeScript types.
+`GET /api/renders/{id}` and `GET /api/settings`, image serving, and
+`zeitgeist` restored as a console entry point that starts the server.
+
+TypeScript type generation moves to phase 5, with the Vite scaffold. Phase 2
+exposes FastAPI's OpenAPI schema and documents the command to generate from
+it, but the checked-in `.ts` lands where a toolchain exists to lint and
+typecheck it — before that there is no `package.json` to run
+`openapi-typescript` from and no gate command covering the result. The
+contract is still fixed by the end of phase 4, which is what the
+backend-first ordering was for.
+
+`GET /api/runs/{id}/log` is built here even though `log_lines` stays empty
+until phase 3 adds log capture: the endpoint and its `verbose` filter are
+part of the contract phase 5 builds against, and phase 3 then adds only the
+writer. Its tests seed the table directly.
 Ends with a run produced by the harness served correctly over HTTP.
 
 **3 — Execution backend.** `RunObserver` and `CancelToken`; the DEBUG log
@@ -1088,11 +1100,12 @@ HTTP, with no UI.
 **4 — Generation backend.** The on-demand executor; briefing a topic that was
 never ranked, which is what the below-the-cut `generate ↗` needs; the
 model-written and hand-written render paths; `POST .../renders` and
-`DELETE /api/renders/{id}`. Ends with the API contract complete and the
-TypeScript types generated for the last time.
+`DELETE /api/renders/{id}`. Ends with the API contract complete — the last
+point at which a response model changes before a screen consumes it.
 
 **5 — Design system and read-only screens.** Vite scaffold, `tokens.css`, the
-shared primitives, the typed client, router, layout and sidebar; then the
+shared primitives, the TypeScript types generated from the now-complete
+OpenAPI schema, the typed client, router, layout and sidebar; then the
 merged Topics screen, Runs list, Run detail (completed and failed) and Topic
 detail; the full-size meme view; the empty states and the filter-matched-nothing
 line; the partial-failure and source-outage presentations. Ends with any run the

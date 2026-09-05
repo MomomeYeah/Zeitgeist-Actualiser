@@ -9,7 +9,12 @@ dependencies = [
     "anthropic>=0.40",
     "httpx>=0.28",
     "pillow>=11.3",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.52.4",
 ]
+
+[project.scripts]
+zeitgeist = "zeitgeist.serve:main"
 
 [dependency-groups]
 # ty is pre-1.0 and its rule defaults shift between releases; the upper bound
@@ -41,6 +46,12 @@ exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.flake8-bugbear]
+# B008 otherwise flags FastAPI's own idiom for declaring a dependency: the
+# call in the default position is how FastAPI recognises it, not a mutable
+# default evaluated once. This is ruff's own documented fix for it.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]
 
 [tool.ty.rules]
 # ty ships this rule disabled by default, citing false-positive volume.

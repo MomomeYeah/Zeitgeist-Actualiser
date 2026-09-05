@@ -13,6 +13,7 @@ from zeitgeist.models import Topic
 from zeitgeist.projection import TopicRow, flatten
 from zeitgeist.records import (
     ORDER,
+    LogLine,
     RenderRecord,
     RunConfig,
     RunError,
@@ -44,10 +45,32 @@ class MissingCheckpoint(Exception):
 
 
 class Store:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, check_same_thread: bool = True) -> None:
+        """`check_same_thread` defaults to sqlite3's own safe default: a
+        `Store` built for a single thread should leave it alone, and gets
+        an immediate `sqlite3.ProgrammingError` if it is ever touched from
+        another one.
+
+        The API app (`zeitgeist/api/app.py`) is the one caller that passes
+        `False`. It opens a single `Store` for the whole life of the FastAPI
+        app, but that connection is touched from more than one thread: ASGI
+        servers dispatch sync dependencies and sync path operations through
+        a thread pool, and `TestClient` runs the lifespan's startup and
+        shutdown on its own portal thread. Passing `False` there is safe
+        for what phase 2 actually does with it — concurrent reads — because
+        `sqlite3.threadsafety == 3` in this environment: the underlying
+        SQLite library is built in serialized mode, so a single connection
+        cannot be corrupted by two threads touching it at once. That is
+        narrower than safe for concurrent *writes*: a connection has one
+        transaction, so two threads each running a multi-statement write
+        through it can interleave, and one thread's commit can land midway
+        through another's. Phase 3's `PUT /api/settings` will write through
+        this same connection from the threadpool, and will need to reckon
+        with that — not assume this note already covers it.
+        """
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._path)
+        self._conn = sqlite3.connect(self._path, check_same_thread=check_same_thread)
         # The worker thread writes while the API reads. Without WAL a reader
         # blocks behind every checkpoint write, which the UI feels as the
         # in-flight poll hitching.
@@ -145,20 +168,116 @@ class Store:
             "FROM run_records WHERE run_id = ?",
             (run_id,),
         ).fetchone()
-        if row is None:
-            return None
-        return RunRecordRow(
-            run_id=row[0],
-            status=row[1],
-            started_at=datetime.fromisoformat(row[2]),
-            finished_at=datetime.fromisoformat(row[3]) if row[3] else None,
-            config=RunConfig.model_validate_json(row[4]),
-            error=RunError.model_validate_json(row[5]) if row[5] else None,
-            item_count=row[6],
-            trends_found=row[7],
-            topics_kept=row[8],
-            phrases_found=row[9],
+        return None if row is None else _run_record(row)
+
+    def list_runs(self, limit: int, cursor: str | None = None) -> list[RunRecordRow]:
+        """Runs newest first, one page at a time.
+
+        `cursor` is the `started_at` of the last row of the previous page.
+        Keyset rather than OFFSET: a run started between two requests would
+        shift an offset-paginated page and duplicate a row across the seam.
+        """
+        sql = (
+            "SELECT run_id, status, started_at, finished_at, config, error, "
+            "item_count, trends_found, topics_kept, phrases_found "
+            "FROM run_records "
         )
+        params: tuple[object, ...] = ()
+        if cursor is not None:
+            sql += "WHERE started_at < ? "
+            params = (cursor,)
+        sql += "ORDER BY started_at DESC LIMIT ?"
+        rows = self._conn.execute(sql, (*params, limit)).fetchall()
+        return [_run_record(row) for row in rows]
+
+    def render_counts(self, run_id: str) -> dict[str, int]:
+        """Renders per topic for one run.
+
+        A COUNT at query time rather than a column on `run_topics`: a
+        denormalised count would have to be kept correct on every render
+        insert, failure and delete, including from phase 4's separate
+        executor.
+        """
+        rows = self._conn.execute(
+            "SELECT topic_id, COUNT(*) FROM renders WHERE run_id = ? GROUP BY topic_id",
+            (run_id,),
+        ).fetchall()
+        return {topic_id: count for topic_id, count in rows}
+
+    def recent_run_ids(self, limit: int) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT run_id FROM run_records ORDER BY started_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [run_id for (run_id,) in rows]
+
+    def topics_for_runs(self, run_ids: Sequence[str]) -> list[TopicRow]:
+        """Every topic across the named runs, newest run first.
+
+        An empty `run_ids` short-circuits: `WHERE run_id IN ()` is a syntax
+        error in SQLite, not an empty result.
+        """
+        if not run_ids:
+            return []
+        placeholders = ", ".join("?" for _ in run_ids)
+        rows = self._conn.execute(
+            "SELECT t.run_id, t.topic_id, t.label, t.label_slug, "
+            "t.trend_status, t.event_sentiment, t.conversation_register, "
+            "t.meme_potential, t.trend_score, t.final_score, t.final_rank, "
+            "t.post_count, t.top_phrase, t.top_phrase_authors "
+            "FROM run_topics t JOIN run_records r ON r.run_id = t.run_id "
+            f"WHERE t.run_id IN ({placeholders}) "
+            "ORDER BY r.started_at DESC, t.final_rank",
+            tuple(run_ids),
+        ).fetchall()
+        return [_topic_row(row) for row in rows]
+
+    def topic_recurrence(self, label_slug: str) -> tuple[int, str | None]:
+        """How many runs this topic appeared in, and the earliest.
+
+        Keyed on `label_slug` because that is the only cross-run identity
+        the store has: labels are model-generated every run, and the slug
+        fixes case and punctuation drift but not wording drift. A topic
+        relabelled "Rescue Dog Adoptions" from "Shelter Dog Adoption" reads
+        as new, so the count is a floor rather than a total.
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(DISTINCT t.run_id), MIN(r.started_at || '|' || t.run_id) "
+            "FROM run_topics t JOIN run_records r ON r.run_id = t.run_id "
+            "WHERE t.label_slug = ?",
+            (label_slug,),
+        ).fetchone()
+        count, earliest = row
+        first_seen = earliest.split("|", 1)[1] if earliest else None
+        return count, first_seen
+
+    # DEBUG is captured always and filtered here, so the UI's verbose toggle
+    # works retroactively on lines already recorded rather than showing
+    # nothing until the next line arrives.
+    _QUIET_LEVELS = ("INFO", "WARNING", "ERROR", "CRITICAL")
+
+    def log_lines(self, run_id: str, *, verbose: bool) -> list[LogLine]:
+        sql = (
+            "SELECT seq, logged_at, level, logger, message FROM log_lines "
+            "WHERE run_id = ? "
+        )
+        params: tuple[object, ...] = (run_id,)
+        if not verbose:
+            placeholders = ", ".join("?" for _ in self._QUIET_LEVELS)
+            sql += f"AND level IN ({placeholders}) "
+            params = (run_id, *self._QUIET_LEVELS)
+        sql += "ORDER BY seq"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [
+            LogLine(
+                seq=seq,
+                logged_at=datetime.fromisoformat(logged_at),
+                level=level,
+                logger=logger,
+                message=message,
+            )
+            for seq, logged_at, level, logger, message in rows
+        ]
 
     def _insert_topic_scores(self, run_id: str, topics: Sequence[Topic]) -> None:
         # Keyed on slugify(label), not the raw label: labels are free text
@@ -247,25 +366,7 @@ class Store:
             "FROM run_topics WHERE run_id = ? ORDER BY final_rank",
             (run_id,),
         ).fetchall()
-        return [
-            TopicRow(
-                run_id=row[0],
-                topic_id=row[1],
-                label=row[2],
-                label_slug=row[3],
-                trend_status=row[4],
-                event_sentiment=row[5],
-                conversation_register=row[6],
-                meme_potential=row[7],
-                trend_score=row[8],
-                final_score=row[9],
-                final_rank=row[10],
-                post_count=row[11],
-                top_phrase=row[12],
-                top_phrase_authors=row[13],
-            )
-            for row in rows
-        ]
+        return [_topic_row(row) for row in rows]
 
     def write_checkpoint(
         self, run_id: str, stage: Stage, models: Sequence[BaseModel]
@@ -325,6 +426,17 @@ class Store:
         if row is None:
             raise MissingCheckpoint(f"Run {run_id!r} has no {stage.value} checkpoint")
         return [schema.model_validate(entry) for entry in json.loads(row[0])]
+
+    def written_stages(self, run_id: str) -> set[Stage]:
+        """Which stages have a checkpoint, without reading the payloads.
+
+        `read_checkpoint` would deserialise a run's whole evidence to answer
+        a question about row existence.
+        """
+        rows = self._conn.execute(
+            "SELECT stage FROM checkpoints WHERE run_id = ?", (run_id,)
+        ).fetchall()
+        return {Stage(stage) for (stage,) in rows}
 
     def record_stage(self, run_id: str, record: StageRecord) -> None:
         self._conn.execute(
@@ -427,6 +539,48 @@ class Store:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _run_record(row: tuple) -> RunRecordRow:
+    """Rebuild a `RunRecordRow` from a row. Shared by `get_run` and
+    `list_runs`, whose column list and parsing are identical — two copies
+    would drift.
+    """
+    return RunRecordRow(
+        run_id=row[0],
+        status=row[1],
+        started_at=datetime.fromisoformat(row[2]),
+        finished_at=datetime.fromisoformat(row[3]) if row[3] else None,
+        config=RunConfig.model_validate_json(row[4]),
+        error=RunError.model_validate_json(row[5]) if row[5] else None,
+        item_count=row[6],
+        trends_found=row[7],
+        topics_kept=row[8],
+        phrases_found=row[9],
+    )
+
+
+def _topic_row(row: tuple) -> TopicRow:
+    """Rebuild a `TopicRow` from a row. Shared by `run_topics` and
+    `topics_for_runs`, whose column list and parsing are identical — two
+    copies would drift.
+    """
+    return TopicRow(
+        run_id=row[0],
+        topic_id=row[1],
+        label=row[2],
+        label_slug=row[3],
+        trend_status=row[4],
+        event_sentiment=row[5],
+        conversation_register=row[6],
+        meme_potential=row[7],
+        trend_score=row[8],
+        final_score=row[9],
+        final_rank=row[10],
+        post_count=row[11],
+        top_phrase=row[12],
+        top_phrase_authors=row[13],
+    )
 
 
 def _render(row: tuple) -> RenderRecord:

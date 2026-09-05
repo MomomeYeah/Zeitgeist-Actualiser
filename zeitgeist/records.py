@@ -180,3 +180,20 @@ class RenderRecord(BaseModel):
     status: Literal["generating", "ready", "failed"]
     error: str | None
     created_at: datetime
+
+
+class LogLine(BaseModel):
+    """One line of a run's log.
+
+    `seq` orders lines within a run: two lines can share a timestamp at the
+    resolution the handler records, and the live log's ordering has to be
+    total.
+    """
+
+    model_config = STRICT
+
+    seq: int
+    logged_at: datetime
+    level: str
+    logger: str
+    message: str
