@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 
 from pydantic import BaseModel
 
@@ -42,6 +43,29 @@ class MissingCheckpoint(Exception):
     Distinct from an empty checkpoint, which is a result: a generate stage
     that briefed nothing wrote `[]`, and resuming past it is legitimate.
     """
+
+
+class _LogLineLike(Protocol):
+    """Structural bound for `write_log_lines`, satisfied by both the store's
+    own `LogLine` and `logcapture.CapturedLine` — kept as a Protocol rather
+    than the `LogLine` class itself so the store never imports `logcapture`,
+    which would invert the dependency.
+
+    Read-only accessors rather than plain attributes: a plain-attribute
+    Protocol member demands both a getter and a setter, and `CapturedLine`
+    is a frozen dataclass with neither.
+    """
+
+    @property
+    def seq(self) -> int: ...
+    @property
+    def logged_at(self) -> datetime: ...
+    @property
+    def level(self) -> str: ...
+    @property
+    def logger(self) -> str: ...
+    @property
+    def message(self) -> str: ...
 
 
 class Store:
@@ -278,6 +302,31 @@ class Store:
             )
             for seq, logged_at, level, logger, message in rows
         ]
+
+    def write_log_lines(self, run_id: str, lines: Sequence[_LogLineLike]) -> None:
+        """One transaction for the whole batch.
+
+        A DEBUG run emits several hundred lines and a transaction each would
+        be gratuitous. `executemany` handles the empty case, which is routine:
+        a run ending just after a batch boundary flushes nothing.
+        """
+        with self._conn:
+            self._conn.executemany(
+                "INSERT INTO log_lines "
+                "(run_id, seq, logged_at, level, logger, message) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        line.seq,
+                        line.logged_at.isoformat(),
+                        line.level,
+                        line.logger,
+                        line.message,
+                    )
+                    for line in lines
+                ],
+            )
 
     def _insert_topic_scores(self, run_id: str, topics: Sequence[Topic]) -> None:
         # Keyed on slugify(label), not the raw label: labels are free text

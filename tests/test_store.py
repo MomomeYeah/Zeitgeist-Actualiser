@@ -11,6 +11,7 @@ from tests.run_factory import (
     make_topic,
 )
 from zeitgeist.analysis.slug import slugify
+from zeitgeist.logcapture import CapturedLine
 from zeitgeist.models import (
     BlueskyMetrics,
     Item,
@@ -926,6 +927,57 @@ def test_log_lines_are_scoped_to_the_run(tmp_path):
     _log(store, "r2", 1, "INFO", "theirs")
 
     assert [line.message for line in store.log_lines("r1", verbose=True)] == ["mine"]
+
+
+def test_a_batch_of_log_lines_round_trips(tmp_path):
+    """The writer phase 2's reader was built against. `Store.log_lines`
+    already has tests, but they seed rows with hand-written SQL because no
+    writer existed — so nothing yet proves the two agree on column order,
+    and a mismatch would surface as levels appearing in the message column.
+    """
+    store = _store(tmp_path)
+    store.start_run("20260905T120000Z", make_run_config())
+
+    store.write_log_lines(
+        "20260905T120000Z",
+        [
+            CapturedLine(
+                seq=1,
+                logged_at=datetime(2026, 9, 5, 12, tzinfo=UTC),
+                level="INFO",
+                logger="zeitgeist.pipeline",
+                message="Fetched 3 trends",
+            ),
+            CapturedLine(
+                seq=2,
+                logged_at=datetime(2026, 9, 5, 12, tzinfo=UTC),
+                level="DEBUG",
+                logger="zeitgeist.media.render",
+                message="Slot top fitted at 48pt",
+            ),
+        ],
+    )
+
+    lines = store.log_lines("20260905T120000Z", verbose=True)
+    assert [(line.seq, line.level, line.logger) for line in lines] == [
+        (1, "INFO", "zeitgeist.pipeline"),
+        (2, "DEBUG", "zeitgeist.media.render"),
+    ]
+    assert lines[0].message == "Fetched 3 trends"
+
+
+def test_writing_no_lines_is_not_an_error(tmp_path):
+    """`detach` flushes whatever is pending, which is routinely nothing — a
+    run that ended right after a batch boundary. An empty `executemany` is
+    fine, but an implementation building a VALUES list by hand would produce
+    invalid SQL for the empty case and only fail on that timing.
+    """
+    store = _store(tmp_path)
+    store.start_run("20260905T120000Z", make_run_config())
+
+    store.write_log_lines("20260905T120000Z", [])
+
+    assert store.log_lines("20260905T120000Z", verbose=True) == []
 
 
 def test_recent_run_ids_are_newest_first(tmp_path):
