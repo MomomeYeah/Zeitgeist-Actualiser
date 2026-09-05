@@ -580,9 +580,6 @@ def test_the_log_of_a_run_with_no_lines_is_empty(tmp_path):
 
 
 def test_the_log_endpoint_filters_on_verbose(tmp_path):
-    from tests.api_factory import api_settings
-    from zeitgeist.store import Store
-
     client = seeded_client(tmp_path, runs=[SeededRun()])
     store = Store(api_settings(tmp_path).db_path)
     store._conn.execute(
