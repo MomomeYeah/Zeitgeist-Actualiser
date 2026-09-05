@@ -51,7 +51,11 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 # B008 otherwise flags FastAPI's own idiom for declaring a dependency: the
 # call in the default position is how FastAPI recognises it, not a mutable
 # default evaluated once. This is ruff's own documented fix for it.
-extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "zeitgeist.progress.NullObserver",
+]
 
 [tool.ty.rules]
 # ty ships this rule disabled by default, citing false-positive volume.
