@@ -20,7 +20,7 @@ from zeitgeist.logcapture import RunLogBuffer, capture_run_log
 from zeitgeist.models import STRICT
 from zeitgeist.pipeline import new_run_id, run_pipeline
 from zeitgeist.progress import Aborted, CancelToken, NullObserver, RunObserver
-from zeitgeist.records import RunError, Stage
+from zeitgeist.records import RunConfig, RunError, Stage
 from zeitgeist.settings_source import WRITABLE_KEYS
 from zeitgeist.sources import build_trend_source
 from zeitgeist.store import Store
@@ -146,6 +146,13 @@ class RunService:
         unknown = sorted(set(request.overrides) - RUN_OVERRIDE_KEYS)
         if unknown:
             raise ValueError(f"Not settable per run: {', '.join(unknown)}")
+        # Validate on the request thread, before a run_id is ever issued. A
+        # bad override (an unknown source, a non-numeric topic_count) raises
+        # ValueError here, which the endpoint turns into a 4xx. Left until
+        # the worker reaches it, the same failure lands after the client
+        # already holds a run_id from POST /api/runs, with no row to show
+        # for it — see _build_settings and _run_one.
+        self._build_settings(request.overrides)
 
         run_id = request.run_id or new_run_id()
         request = request.model_copy(update={"run_id": run_id})
@@ -156,6 +163,18 @@ class RunService:
             self._tokens[run_id] = CancelToken()
         self._queue.put(request)
         return QueuedRun(run_id=run_id, position=position)
+
+    def _build_settings(self, overrides: dict[str, str]) -> Settings:
+        """Build the per-run `Settings` by constructing a fresh instance
+        rather than `model_copy(update=...)`, which bypasses validation
+        entirely: `"9"` would stay the string `"9"` for `topic_count`, with
+        no error raised anywhere. Constructing instead runs the overrides
+        through pydantic as constructor arguments — the highest-precedence
+        layer, which is exactly what a per-run override should be — so they
+        arrive coerced to the right type, and an invalid one (an unknown
+        source, a non-numeric count) raises `ValueError` here.
+        """
+        return Settings(**(self._settings.model_dump() | dict(overrides)))
 
     def active(self) -> ActiveRuns:
         with self._lock:
@@ -200,9 +219,22 @@ class RunService:
             token = self._tokens[run_id]
 
         try:
-            settings = Settings(
-                **(self._settings.model_dump() | dict(request.overrides))
-            )
+            settings = self._build_settings(request.overrides)
+            # Opened before _execute, not inside it: build_trend_source and
+            # build_provider (called from the default _execute) can raise —
+            # a dormant/unknown source or a bad provider config — and
+            # everything before this line runs before any row exists.
+            # store.fail_run below is `UPDATE ... WHERE run_id = ?`, a
+            # silent no-op against a row that was never opened, so a run_id
+            # already handed to a client would 404 forever with no trace
+            # beyond the server log. run_pipeline calls start_run again with
+            # the same (run_id, config) pair; that is an upsert keyed on
+            # run_id (see Store.start_run), so the second call only refreshes
+            # `status`/`config` back to "running" and clears the previous
+            # attempt's outcome columns to NULL — started_at is untouched,
+            # and there is no previous outcome yet on a fresh run, so the
+            # result is identical to the row this call already wrote.
+            store.start_run(run_id, RunConfig.freeze(settings, request.template_ids))
             with capture_run_log(run_id, store) as buffer:
                 with self._lock:
                     self._buffers[run_id] = buffer

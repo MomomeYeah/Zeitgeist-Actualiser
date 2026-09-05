@@ -332,3 +332,32 @@ def test_an_allowlisted_override_reaches_the_run(tmp_path):
     service.shutdown(timeout=10)
 
     assert seen == [9]
+
+
+def test_a_run_that_fails_before_any_row_exists_still_leaves_a_failed_row(tmp_path):
+    """Building the trend source and the provider happens inside the real
+    executor, before `run_pipeline` reaches `store.start_run`. A failure in
+    that window used to mean `fail_run`'s `UPDATE ... WHERE run_id = ?`
+    matched no row at all: the client already held a run_id from
+    `POST /api/runs`, and the exception left the run existing only in the
+    server log — a run the UI would navigate to and 404 on forever. The
+    worker must open the row itself before ever calling out to the executor,
+    so this executor is written to raise immediately, before it does
+    anything a real one would use to open a row."""
+
+    def execute(settings, request, store, observer, token) -> None:
+        raise RuntimeError("boom before the executor did anything")
+
+    service = RunService(_settings(tmp_path), execute=execute)
+    service.start()
+    queued = service.enqueue(RunRequest())
+    service.shutdown(timeout=10)
+
+    store = Store(_settings(tmp_path).db_path)
+    store.init_schema()
+    record = store.get_run(queued.run_id)
+    store.close()
+    assert record is not None
+    assert record.status == "failed"
+    assert record.error is not None
+    assert record.error.kind == "RuntimeError"
