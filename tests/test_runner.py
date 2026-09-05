@@ -90,14 +90,23 @@ def test_a_second_run_waits_behind_the_first(tmp_path):
 
 def test_queued_runs_execute_in_the_order_they_were_posted(tmp_path):
     """FIFO. A queue drained in any other order would run the user's newest
-    request last, which is the opposite of what a queue notice promises."""
+    request last, which is the opposite of what a queue notice promises.
+
+    Explicit, distinct `run_id`s rather than three auto-generated ones:
+    `new_run_id()` has whole-second resolution, so three calls issued this
+    close together can collide on the same string. `_tokens` is keyed by
+    `run_id` and a completed run pops its own key (Finding 6), so a
+    collision would mean the first run's completion pops the token the
+    *third* enqueue just installed under the same key — a test artifact of
+    the id generator's granularity, not something this test is for.
+    """
     gate = _Gate()
     service = _service(tmp_path, gate)
     try:
-        first = service.enqueue(RunRequest())
+        first = service.enqueue(RunRequest(run_id="run-1"))
         assert gate.entered.wait(timeout=5)
-        second = service.enqueue(RunRequest())
-        third = service.enqueue(RunRequest())
+        second = service.enqueue(RunRequest(run_id="run-2"))
+        third = service.enqueue(RunRequest(run_id="run-3"))
         gate.release.set()
         service.shutdown(timeout=10)
     finally:
@@ -464,3 +473,20 @@ def test_a_run_failing_after_a_later_stage_is_recorded_with_that_stage(tmp_path)
     assert record.status == "failed"
     assert record.error is not None
     assert record.error.stage == Stage.GENERATE
+
+
+def test_aborting_a_completed_run_reports_that_it_did_nothing(tmp_path):
+    """A stale token for a run that finished hours ago must not trip and
+    report `True`: the endpoint turns `False` into a 404, and returning
+    `True` here would tell the user a finished run was aborting. The
+    existing "unknown run" test only covers a `run_id` never enqueued at
+    all, which passes trivially whether or not `_tokens` is ever cleaned
+    up — this one enqueues, lets the run finish, and only then aborts it."""
+    gate = _Gate()
+    service = _service(tmp_path, gate)
+    gate.release.set()
+    queued = service.enqueue(RunRequest())
+    service.shutdown(timeout=10)
+
+    assert service.abort(queued.run_id) is False
+    assert service.stop(queued.run_id) is False

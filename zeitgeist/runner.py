@@ -310,6 +310,7 @@ class RunService:
             with self._lock:
                 self._current = None
                 self._buffers.pop(run_id, None)
+                self._tokens.pop(run_id, None)
 
     def _aborted(self, store: Store, run_id: str) -> None:
         """Stop and abort share `aborted`: `RunStatus` has no separate
