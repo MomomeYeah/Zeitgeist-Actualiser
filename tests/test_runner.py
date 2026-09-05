@@ -361,3 +361,24 @@ def test_a_run_that_fails_before_any_row_exists_still_leaves_a_failed_row(tmp_pa
     assert record.status == "failed"
     assert record.error is not None
     assert record.error.kind == "RuntimeError"
+
+
+def test_enqueue_lists_every_queued_run_before_the_worker_catches_up(tmp_path):
+    """Between `enqueue`'s `put` and the worker's own lock acquisition in
+    `_run_one`, a request is in flight but was previously invisible to
+    `enqueue`'s own position math and to `active()`. Two POSTs landing in
+    that window would both see "nothing running, nothing waiting" and both
+    report position 0 — and neither would show up in `queued` until the
+    worker started it, which is what would let a user double-post.
+
+    Never starting the worker reproduces that window deterministically:
+    nothing ever dequeues either request, so both stay exactly as `enqueue`
+    left them for this assertion to inspect."""
+    service = RunService(_settings(tmp_path), execute=lambda *a: None)
+
+    first = service.enqueue(RunRequest())
+    second = service.enqueue(RunRequest())
+
+    assert first.position == 0
+    assert second.position == 1
+    assert service.active().queued == [first.run_id, second.run_id]

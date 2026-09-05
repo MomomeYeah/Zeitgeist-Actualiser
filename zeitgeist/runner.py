@@ -157,9 +157,15 @@ class RunService:
         run_id = request.run_id or new_run_id()
         request = request.model_copy(update={"run_id": run_id})
         with self._lock:
+            # Appended unconditionally, and *before* the worker can possibly
+            # have caught up to this request: between this put() and the
+            # worker's own lock acquisition in _run_one, the request is in
+            # flight but must still be visible to active()/enqueue's own
+            # position math, or two POSTs landing in that window both see
+            # "nothing running, nothing waiting" and both report position 0.
+            # _run_one removes this entry once it becomes _current.
             position = (0 if self._current is None else 1) + len(self._waiting)
-            if self._current is not None or self._waiting:
-                self._waiting.append(run_id)
+            self._waiting.append(run_id)
             self._tokens[run_id] = CancelToken()
         self._queue.put(request)
         return QueuedRun(run_id=run_id, position=position)
