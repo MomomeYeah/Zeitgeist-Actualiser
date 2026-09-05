@@ -15,13 +15,26 @@ from zeitgeist.api.schemas import (
     TopicRecurrence,
 )
 from zeitgeist.models import Topic, TrendEvidence
-from zeitgeist.records import ORDER, LogLine, Stage
+from zeitgeist.records import ORDER, LogLine, RunRecordRow, Stage
 from zeitgeist.store import MissingCheckpoint, Store
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
 # The Runs list draws three rows in the sidebar strip and pages beyond that.
 DEFAULT_PAGE = 25
+
+
+def _run_or_404(store: Store, run_id: str) -> RunRecordRow:
+    """Every run-scoped handler's preamble: the run, or the 404 naming it.
+
+    Phase 3 adds /resume, /stop and /abort to this same router, each
+    needing the same check — collapsing it here is what stops a fourth and
+    fifth copy of the message drifting from these.
+    """
+    run = store.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"No such run: {run_id}")
+    return run
 
 
 @router.get("", response_model=RunPage)
@@ -62,9 +75,7 @@ def resume_stage(store: Store, run_id: str) -> Stage | None:
 
 @router.get("/{run_id}", response_model=RunDetail)
 def read_run(run_id: str, store: Store = Depends(get_store)) -> RunDetail:
-    run = store.get_run(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"No such run: {run_id}")
+    run = _run_or_404(store, run_id)
     return RunDetail(
         run=run,
         stages=store.stages_for_run(run_id),
@@ -74,9 +85,7 @@ def read_run(run_id: str, store: Store = Depends(get_store)) -> RunDetail:
 
 @router.get("/{run_id}/topics", response_model=list[RankedTopic])
 def read_ranking(run_id: str, store: Store = Depends(get_store)) -> list[RankedTopic]:
-    run = store.get_run(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail=f"No such run: {run_id}")
+    run = _run_or_404(store, run_id)
     counts = store.render_counts(run_id)
     return [
         RankedTopic(
@@ -128,6 +137,7 @@ def _replies_for(store: Store, run_id: str, item_ids: set[str]) -> list[ReplyOut
 def read_topic(
     run_id: str, topic_id: str, store: Store = Depends(get_store)
 ) -> TopicDetail:
+    _run_or_404(store, run_id)
     row = next((r for r in store.run_topics(run_id) if r.topic_id == topic_id), None)
     if row is None:
         raise HTTPException(
@@ -159,6 +169,5 @@ def read_topic(
 def read_log(
     run_id: str, verbose: bool = False, store: Store = Depends(get_store)
 ) -> list[LogLine]:
-    if store.get_run(run_id) is None:
-        raise HTTPException(status_code=404, detail=f"No such run: {run_id}")
+    _run_or_404(store, run_id)
     return store.log_lines(run_id, verbose=verbose)

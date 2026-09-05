@@ -32,12 +32,17 @@ def _image_path(settings: Settings, record: RenderRecord, size: ImageSize) -> Pa
     )
 
 
-@router.get("/{render_id}", response_model=RenderRecord)
-def read_render(render_id: str, store: Store = Depends(get_store)) -> RenderRecord:
+def _render_or_404(store: Store, render_id: str) -> RenderRecord:
+    """Both handlers' preamble: the render record, or the 404 naming it."""
     record = store.get_render(render_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"No such render: {render_id}")
     return record
+
+
+@router.get("/{render_id}", response_model=RenderRecord)
+def read_render(render_id: str, store: Store = Depends(get_store)) -> RenderRecord:
+    return _render_or_404(store, render_id)
 
 
 @router.get("/{render_id}/image")
@@ -47,9 +52,7 @@ def read_image(
     store: Store = Depends(get_store),
     settings: Settings = Depends(get_settings),
 ) -> FileResponse:
-    record = store.get_render(render_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail=f"No such render: {render_id}")
+    record = _render_or_404(store, render_id)
     path = _image_path(settings, record, size)
     if not path.is_file():
         raise HTTPException(

@@ -529,6 +529,33 @@ def test_an_unknown_topic_is_a_404(tmp_path):
     assert client.get("/api/runs/20260901T120000Z/topics/nope").status_code == 404
 
 
+def test_an_unknown_run_on_the_topic_route_names_the_run_not_the_topic(tmp_path):
+    """read_topic used to resolve its 404 off store.run_topics(run_id)
+    returning no match, rather than off store.get_run — so an unknown run
+    reported the topic-specific message ("No such topic in {run}: {topic}")
+    instead of the run-specific one every sibling handler uses. Routing it
+    through _run_or_404 makes an unknown run report itself here exactly as
+    it does on the other three run-scoped routes."""
+    client = seeded_client(tmp_path)
+
+    response = client.get("/api/runs/nope/topics/cats")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "No such run: nope"
+
+
+def test_an_unknown_topic_in_a_real_run_still_names_the_topic(tmp_path):
+    """The fix for the case above must not blur into reporting every 404 on
+    this route as a run problem — a real run with no such topic still gets
+    the topic-specific message."""
+    client = seeded_client(tmp_path, runs=[SeededRun(topics=[make_topic("cats")])])
+
+    response = client.get("/api/runs/20260901T120000Z/topics/nope")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "No such topic in 20260901T120000Z: nope"
+
+
 def test_the_log_of_a_run_with_no_lines_is_empty(tmp_path):
     """Nothing writes log lines until phase 3 adds capture. The endpoint
     exists now because it is part of the contract phase 5 builds against."""
