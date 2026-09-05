@@ -64,7 +64,10 @@ def create_app(settings: Settings, *, execute: ExecuteFn | None = None) -> FastA
             ", ".join(interrupted),
         )
 
-    runner = RunService(settings, execute=execute)
+    # The same Store as app.state.store, not a second connection: enqueue
+    # opens a run's row on the request thread, through this Store, before
+    # the client is ever handed the id — see RunService's docstring.
+    runner = RunService(settings, store, execute=execute)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

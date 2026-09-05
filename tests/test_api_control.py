@@ -69,6 +69,34 @@ def test_the_active_endpoint_reports_the_running_run_and_the_queue(tmp_path):
         gate.release.set()
 
 
+def test_a_queued_run_is_fetchable_before_it_starts_executing(tmp_path):
+    """Important 2: no `run_records` row existed until `_run_one` called
+    `start_run` on the worker thread, so a run_id the client had just been
+    handed 404d on both its detail page and its event stream for however
+    long it sat queued behind another run. `enqueue` now opens the row on
+    the request thread, before the id is ever returned, so a run still
+    strictly behind the live one — never touched by the worker yet — must
+    already answer both.
+    """
+    gate = GatedExecute()
+    client = seeded_client(tmp_path, execute=gate)
+    try:
+        client.post("/api/runs", json={})
+        assert gate.entered.wait(timeout=5)
+
+        second = client.post("/api/runs", json={}).json()
+        assert client.get("/api/runs/active").json()["queued"] == [second["run_id"]]
+
+        detail = client.get(f"/api/runs/{second['run_id']}")
+        assert detail.status_code == 200
+        assert detail.json()["run"]["status"] == "running"
+
+        events = client.get(f"/api/runs/{second['run_id']}/events")
+        assert events.status_code == 200
+    finally:
+        gate.release.set()
+
+
 def test_the_active_endpoint_reports_nothing_when_idle(tmp_path):
     """The common case, and the one that decides whether the card renders at
     all. An endpoint 404ing or erroring when idle would break every poll on a

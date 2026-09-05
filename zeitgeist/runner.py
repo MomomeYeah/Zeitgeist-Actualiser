@@ -130,14 +130,24 @@ class RunService:
     """One worker thread, one FIFO queue, at most one run executing.
 
     The worker constructs its own `Store` because `sqlite3` connections are
-    thread-bound: the API's and the worker's are separate objects.
+    thread-bound: the API's and the worker's are separate objects. `store`
+    is a *third*, distinct role — the API's own long-lived, `check_same_
+    thread=False` connection (see `zeitgeist.api.app.create_app`), reused
+    here rather than opened again, so `enqueue` can open a run's row on
+    whichever request thread calls it, before the id is ever handed back.
+    Without that, no `run_records` row exists until the worker actually
+    dequeues the request, and a client holding a freshly queued id 404s on
+    both its detail page and its event stream in the meantime.
 
     The queue is in-memory. A restart loses queued runs, which for a
     single-user local tool is the right trade against persisting a job table.
     """
 
-    def __init__(self, settings: Settings, *, execute: ExecuteFn | None = None) -> None:
+    def __init__(
+        self, settings: Settings, store: Store, *, execute: ExecuteFn | None = None
+    ) -> None:
         self._settings = settings
+        self._store = store
         self._execute = execute or _execute
         self._queue: queue.Queue[Any] = queue.Queue()
         self._thread: threading.Thread | None = None
@@ -195,11 +205,9 @@ class RunService:
             raise ValueError(f"Not settable per run: {', '.join(unknown)}")
         # Validate on the request thread, before a run_id is ever issued. A
         # bad override (an unknown source, a non-numeric topic_count) raises
-        # ValueError here, which the endpoint turns into a 4xx. Left until
-        # the worker reaches it, the same failure lands after the client
-        # already holds a run_id from POST /api/runs, with no row to show
-        # for it — see _build_settings and _run_one.
-        self._build_settings(request.overrides)
+        # ValueError here, which the endpoint turns into a 4xx — and the
+        # built Settings is also what freezes the row opened below.
+        settings = self._build_settings(request.overrides)
 
         run_id = request.run_id or new_run_id()
         request = request.model_copy(update={"run_id": run_id})
@@ -232,6 +240,19 @@ class RunService:
             position = (0 if self._current is None else 1) + len(self._waiting)
             self._waiting.append(run_id)
             self._tokens[run_id] = CancelToken()
+        # Opened here, on the request thread, rather than left for _run_one
+        # to open on the worker thread: a client holding this id must be
+        # able to GET /api/runs/{run_id} and open its event stream
+        # immediately, not only once the worker actually dequeues it.
+        # RunStatus has no "queued" state, so this uses "running" like
+        # every other open row — startup reconciliation already turns a
+        # "running" row left over from a dead process into "interrupted",
+        # which is the right story for one that never got past the queue
+        # either. Store.start_run is an upsert that leaves `started_at`
+        # untouched on a second call (see _run_one), so the two calls
+        # below — this one, then _run_one's, then run_pipeline's own —
+        # all agree on when the run "started" as this first one.
+        self._store.start_run(run_id, RunConfig.freeze(settings, request.template_ids))
         self._queue.put(request)
         return QueuedRun(run_id=run_id, position=position)
 
@@ -337,17 +358,23 @@ class RunService:
             # Opened before _execute, not inside it: build_trend_source and
             # build_provider (called from the default _execute) can raise —
             # a dormant/unknown source or a bad provider config — and
-            # everything before this line runs before any row exists.
-            # store.fail_run below is `UPDATE ... WHERE run_id = ?`, a
-            # silent no-op against a row that was never opened, so a run_id
-            # already handed to a client would 404 forever with no trace
-            # beyond the server log. run_pipeline calls start_run again with
-            # the same (run_id, config) pair; that is an upsert keyed on
-            # run_id (see Store.start_run), so the second call only refreshes
+            # everything before this line runs before any row exists on
+            # *this* connection. store.fail_run below is `UPDATE ... WHERE
+            # run_id = ?`, a silent no-op against a row that was never
+            # opened.
+            #
+            # This is actually the *second* open of this row: enqueue
+            # already opened it, on the request thread, through the API's
+            # own Store, so the client has had something to GET since
+            # before this method ever ran. run_pipeline calls start_run a
+            # third time with the same (run_id, config) pair. All three are
+            # upserts keyed on run_id (see Store.start_run), and none but
+            # the first touches `started_at` — its `DO UPDATE SET` omits
+            # that column, so a second or third call only refreshes
             # `status`/`config` back to "running" and clears the previous
-            # attempt's outcome columns to NULL — started_at is untouched,
-            # and there is no previous outcome yet on a fresh run, so the
-            # result is identical to the row this call already wrote.
+            # attempt's outcome columns to NULL. There is no previous
+            # outcome yet on a fresh run, so this call's result is
+            # identical to the row enqueue already wrote.
             store.start_run(run_id, RunConfig.freeze(settings, request.template_ids))
             with capture_run_log(run_id, store) as buffer:
                 with self._lock:

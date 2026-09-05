@@ -18,6 +18,19 @@ def _settings(tmp_path) -> Settings:
     )
 
 
+def _open_store(tmp_path) -> Store:
+    """The "request-thread" Store `enqueue` now opens a run's row through —
+    standing in for the app's own `app.state.store` in `create_app`.
+    `check_same_thread=False` because `enqueue` in these tests is called
+    from the same thread as everything else here, but the real one is
+    touched from whatever thread FastAPI dispatches a request onto.
+    """
+    settings = _settings(tmp_path)
+    store = Store(settings.db_path, check_same_thread=False)
+    store.init_schema()
+    return store
+
+
 class _Gate:
     """A run that blocks until released, so a test can hold the worker in a
     known state without sleeping.
@@ -46,7 +59,7 @@ class _Gate:
 
 
 def _service(tmp_path, execute) -> RunService:
-    service = RunService(_settings(tmp_path), execute=execute)
+    service = RunService(_settings(tmp_path), _open_store(tmp_path), execute=execute)
     service.start()
     return service
 
@@ -193,7 +206,7 @@ def test_aborting_the_current_run_trips_its_token(tmp_path):
 
     entered = threading.Event()
     released = threading.Event()
-    service = RunService(_settings(tmp_path), execute=execute)
+    service = RunService(_settings(tmp_path), _open_store(tmp_path), execute=execute)
     service.start()
     try:
         queued = service.enqueue(RunRequest())
@@ -220,7 +233,7 @@ def test_stopping_the_current_run_trips_stopping_but_not_aborted(tmp_path):
 
     entered = threading.Event()
     released = threading.Event()
-    service = RunService(_settings(tmp_path), execute=execute)
+    service = RunService(_settings(tmp_path), _open_store(tmp_path), execute=execute)
     service.start()
     try:
         queued = service.enqueue(RunRequest())
@@ -255,7 +268,7 @@ def test_a_run_stopped_after_a_stage_is_recorded_as_aborted(tmp_path):
         # A stop is honoured at a stage boundary: the pipeline returns rather
         # than raising, which is what returning here stands in for.
 
-    service = RunService(_settings(tmp_path), execute=execute)
+    service = RunService(_settings(tmp_path), _open_store(tmp_path), execute=execute)
     service.start()
     queued = service.enqueue(RunRequest())
     assert entered.wait(timeout=5)
@@ -297,7 +310,7 @@ def test_a_run_gets_a_log_buffer_for_its_duration(tmp_path):
 
     entered = threading.Event()
     released = threading.Event()
-    service = RunService(_settings(tmp_path), execute=execute)
+    service = RunService(_settings(tmp_path), _open_store(tmp_path), execute=execute)
     service.start()
     try:
         service.enqueue(RunRequest())
@@ -332,7 +345,7 @@ def test_an_allowlisted_override_reaches_the_run(tmp_path):
     def execute(settings, request, store, observer, token) -> None:
         seen.append(settings.topic_count)
 
-    service = RunService(_settings(tmp_path), execute=execute)
+    service = RunService(_settings(tmp_path), _open_store(tmp_path), execute=execute)
     service.start()
     service.enqueue(RunRequest(overrides={"topic_count": "9"}))
     service.shutdown(timeout=10)
@@ -354,7 +367,7 @@ def test_a_run_that_fails_before_any_row_exists_still_leaves_a_failed_row(tmp_pa
     def execute(settings, request, store, observer, token) -> None:
         raise RuntimeError("boom before the executor did anything")
 
-    service = RunService(_settings(tmp_path), execute=execute)
+    service = RunService(_settings(tmp_path), _open_store(tmp_path), execute=execute)
     service.start()
     queued = service.enqueue(RunRequest())
     service.shutdown(timeout=10)
@@ -380,7 +393,9 @@ def test_enqueue_lists_every_queued_run_before_the_worker_catches_up(tmp_path):
     Never starting the worker reproduces that window deterministically:
     nothing ever dequeues either request, so both stay exactly as `enqueue`
     left them for this assertion to inspect."""
-    service = RunService(_settings(tmp_path), execute=lambda *a: None)
+    service = RunService(
+        _settings(tmp_path), _open_store(tmp_path), execute=lambda *a: None
+    )
 
     first = service.enqueue(RunRequest())
     second = service.enqueue(RunRequest())
@@ -516,7 +531,7 @@ def test_a_run_failing_after_a_later_stage_is_recorded_with_that_stage(tmp_path)
         assert released.wait(timeout=5)
         raise RuntimeError("boom in generate")
 
-    service = RunService(_settings(tmp_path), execute=execute)
+    service = RunService(_settings(tmp_path), _open_store(tmp_path), execute=execute)
     service.start()
     queued = service.enqueue(RunRequest(start_at=Stage.INGEST))
     assert entered.wait(timeout=5)
@@ -580,7 +595,7 @@ def test_a_run_picks_up_the_settings_table_for_fields_it_does_not_override(
     def execute(settings, request, store, observer, token) -> None:
         seen.append(settings.phrase_min_authors)
 
-    service = RunService(settings, execute=execute)
+    service = RunService(settings, _open_store(tmp_path), execute=execute)
     service.start()
     service.enqueue(RunRequest())
     service.shutdown(timeout=10)
