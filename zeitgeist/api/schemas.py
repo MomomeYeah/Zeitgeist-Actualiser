@@ -41,6 +41,15 @@ class SettingField(BaseModel):
     source: SettingSource
 
 
+class SettingsUpdate(BaseModel):
+    """An empty string clears that field's row so the `.env` fallback
+    applies again, which is what "Reset to .env" does."""
+
+    model_config = STRICT
+
+    values: dict[str, str]
+
+
 class StartRunBody(BaseModel):
     """What `POST /api/runs` accepts.
 

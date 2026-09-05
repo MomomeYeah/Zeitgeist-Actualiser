@@ -1,4 +1,8 @@
+import os
+from pathlib import Path
+
 from tests.api_factory import api_settings, seeded_client
+from zeitgeist.config import Settings
 from zeitgeist.settings_source import WRITABLE_KEYS
 from zeitgeist.store import Store
 
@@ -84,3 +88,132 @@ def test_the_api_key_is_never_in_the_response(tmp_path, monkeypatch):
 
     assert "sk-ant-secret" not in raw
     assert "anthropic_api_key" not in raw
+
+
+def test_a_written_value_is_stored_and_reported_as_set_here(tmp_path):
+    """The screen's whole feedback loop: save, and the chip changes. A write
+    that stored the value but reported the old source would leave the user
+    unable to tell whether it took."""
+    client = seeded_client(tmp_path)
+
+    body = client.put(
+        "/api/settings", json={"values": {"bluesky_trend_limit": "11"}}
+    ).json()
+
+    fields = {field["key"]: field for field in body}
+    assert fields["bluesky_trend_limit"]["value"] == 11
+    assert fields["bluesky_trend_limit"]["source"] == "settings"
+
+
+def test_a_written_value_survives_into_a_new_settings_object(tmp_path):
+    """The point of the table: the next run picks the value up. A write that
+    only touched the response would change the screen and nothing else.
+
+    Asserted on a freshly built `Settings` rather than on `GET /api/settings`,
+    because that is what "the next run" actually is — the worker constructs
+    one per run and `SettingsTableSource` reads the table at construction.
+    The GET reports `getattr` on the app's *startup* `Settings`, which no
+    write reaches, so a GET-based assertion here could never pass.
+    """
+    client = seeded_client(tmp_path)
+
+    client.put("/api/settings", json={"values": {"phrase_min_authors": "7"}})
+
+    assert Settings(_env_file=None).phrase_min_authors == 7
+
+
+def test_an_empty_value_clears_the_row_so_the_fallback_applies(tmp_path):
+    """ "Reset to .env" deletes the row rather than writing a default —
+    writing the default back would pin the value and make a later `.env`
+    edit invisible, which is the opposite of what the button says."""
+    client = seeded_client(tmp_path)
+    client.put("/api/settings", json={"values": {"phrase_min_authors": "7"}})
+
+    body = client.put(
+        "/api/settings", json={"values": {"phrase_min_authors": ""}}
+    ).json()
+
+    # Compared against a freshly built Settings rather than the literal 3:
+    # that literal is the field's default, which the code is free to change,
+    # so a test pinning it would fail for a decision rather than a bug.
+    fields = {field["key"]: field for field in body}
+    assert fields["phrase_min_authors"]["value"] == (
+        Settings(_env_file=None).phrase_min_authors
+    )
+    assert fields["phrase_min_authors"]["source"] != "settings"
+
+
+def test_a_field_outside_the_seven_is_refused(tmp_path):
+    """A UI that can rewrite where the database lives is a different and
+    worse thing than a tuning screen."""
+    client = seeded_client(tmp_path)
+
+    response = client.put(
+        "/api/settings", json={"values": {"db_path": "/tmp/elsewhere.db"}}
+    )
+
+    assert response.status_code == 400
+
+
+def test_the_api_key_cannot_be_written(tmp_path):
+    """Named separately because this is the one the allowlist exists for:
+    storing a key in the settings table would put it in the database in
+    plain text, and `GET /api/settings` would then have to know to hide a
+    field it otherwise reports."""
+    client = seeded_client(tmp_path)
+
+    response = client.put(
+        "/api/settings", json={"values": {"anthropic_api_key": "sk-ant-nope"}}
+    )
+
+    assert response.status_code == 400
+
+
+def test_a_refused_field_writes_nothing_at_all(tmp_path):
+    """A request naming one good field and one bad one must write neither.
+    Applying the valid half would leave the screen showing a partial save
+    with a 400 beside it, and no way to tell which half landed.
+
+    Asserted against the settings table rather than `GET /api/settings`: the
+    GET reports `getattr` on the app's startup `Settings`, which no write can
+    change, so a GET-based assertion here reads 3 whether the endpoint wrote
+    nothing, the good half, or both.
+    """
+    client = seeded_client(tmp_path)
+
+    response = client.put(
+        "/api/settings",
+        json={"values": {"phrase_min_authors": "7", "db_path": "/tmp/x.db"}},
+    )
+
+    assert response.status_code == 400
+    store = Store(Path(os.environ["DB_PATH"]))
+    try:
+        assert store.get_settings() == {}
+    finally:
+        store.close()
+
+
+def test_a_value_that_settings_would_reject_is_refused(tmp_path):
+    """`meme_potential_weight` is `ge=0.0, le=1.0`. Stored unvalidated, 2.0
+    would be written happily and then fail when the *next run* built its
+    Settings — surfacing as a broken run rather than a rejected save.
+    """
+    client = seeded_client(tmp_path)
+
+    response = client.put(
+        "/api/settings", json={"values": {"meme_potential_weight": "2.0"}}
+    )
+
+    assert response.status_code == 400
+
+
+def test_a_non_numeric_value_is_refused(tmp_path):
+    """Same failure mode, cruder input. The form is a text box."""
+    client = seeded_client(tmp_path)
+
+    response = client.put(
+        "/api/settings", json={"values": {"bluesky_trend_limit": "banana"}}
+    )
+
+    assert response.status_code == 400

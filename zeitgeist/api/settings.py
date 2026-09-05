@@ -9,10 +9,11 @@ screen.
 
 import os
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import ValidationError
 
 from zeitgeist.api.app import get_settings, get_store
-from zeitgeist.api.schemas import SettingField, SettingSource
+from zeitgeist.api.schemas import SettingField, SettingSource, SettingsUpdate
 from zeitgeist.config import Settings
 from zeitgeist.settings_source import WRITABLE_KEYS, _dotenv_value
 from zeitgeist.store import Store
@@ -49,3 +50,48 @@ def read_settings(
         )
         for key in sorted(WRITABLE_KEYS)
     ]
+
+
+@router.put("", response_model=list[SettingField])
+def write_settings(
+    body: SettingsUpdate,
+    store: Store = Depends(get_store),
+    settings: Settings = Depends(get_settings),
+) -> list[SettingField]:
+    """Write the seven tunables, then report every field's new state.
+
+    Same response shape as the `GET`, so the screen re-renders its source
+    chips from this reply rather than issuing a second request.
+    """
+    unknown = sorted(set(body.values) - WRITABLE_KEYS)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not writable through settings: {', '.join(unknown)}",
+        )
+
+    # Validate before writing anything. Stored unvalidated, a
+    # meme_potential_weight of 2.0 would be accepted here and fail when the
+    # *next run* built its Settings — a broken run rather than a rejected
+    # save. Validating a candidate object is also how the endpoint stays
+    # ignorant of each field's type.
+    proposed = {key: value for key, value in body.values.items() if value != ""}
+    if proposed:
+        try:
+            Settings(**(settings.model_dump() | proposed))
+        except ValidationError as exc:
+            raise HTTPException(status_code=400, detail=exc.errors()) from exc
+
+    # Only after every field has been accepted: a request naming one good
+    # field and one bad one must write neither, or the screen shows a
+    # partial save with a 400 beside it.
+    for key, value in body.values.items():
+        if value == "":
+            # "Reset to .env" deletes the row so the fallback applies again.
+            # Writing the default back would pin the value and make a later
+            # .env edit invisible.
+            store.clear_setting(key)
+        else:
+            store.set_setting(key, value)
+
+    return read_settings(store=store, settings=Settings())
