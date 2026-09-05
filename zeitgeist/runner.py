@@ -230,7 +230,18 @@ class RunService:
                 item = self._queue.get()
                 if item is SHUTDOWN:
                     return
-                self._run_one(item, store)
+                try:
+                    self._run_one(item, store)
+                except Exception:  # noqa: BLE001 - the loop must outlive this
+                    # _run_one's own bookkeeping (the lock acquisition, the
+                    # token lookup) runs before its try, and its exception
+                    # handlers call the store directly (abort_run, fail_run).
+                    # Either can raise something _run_one does not catch.
+                    # Without this, that exception would kill the thread:
+                    # active() would report a stale _current forever, every
+                    # later enqueue would never be picked up, and shutdown
+                    # would find nothing to join cleanly.
+                    log.exception("Worker loop swallowed an unhandled error")
         finally:
             store.close()
 

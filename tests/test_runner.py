@@ -405,3 +405,27 @@ def test_start_after_a_timed_out_shutdown_does_not_spawn_a_second_worker(tmp_pat
     finally:
         gate.release.set()
         service.shutdown(timeout=10)
+
+
+def test_the_worker_survives_an_error_in_run_ones_own_bookkeeping(tmp_path):
+    """`_run_one`'s bookkeeping — the lock acquisition and the token lookup
+    — runs before its own try/except, and its handlers call the store
+    directly (`abort_run`, `fail_run`). Either can raise something
+    `_run_one` itself does not catch; the worker loop's survival must not
+    depend on it. A request queued without ever going through `enqueue` has
+    no token, so `_run_one`'s `self._tokens[run_id]` raises `KeyError`
+    before its try block is even entered — reproducing that class of error
+    deterministically, with nothing left for `_run_one`'s own exception
+    handling to catch."""
+    gate = _Gate()
+    service = _service(tmp_path, gate)
+    try:
+        service._queue.put(RunRequest(run_id="ghost-with-no-token"))
+
+        second = service.enqueue(RunRequest())
+        assert gate.entered.wait(timeout=5)
+
+        assert second.run_id in gate.run_ids
+    finally:
+        gate.release.set()
+        service.shutdown(timeout=10)
