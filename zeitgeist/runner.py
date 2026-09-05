@@ -97,6 +97,23 @@ def _execute(
     )
 
 
+class _StageTracker(NullObserver):
+    """Records the last stage `stage_started` reported.
+
+    `RunError.stage` must name where a run *died*, not where it *started*:
+    `request.start_at` is the latter, and a run that starts at ingest and
+    fails in generate must not be recorded as failing in ingest. Subclassing
+    `NullObserver` rather than proxying with `__getattr__` because `ty` will
+    not accept a `__getattr__` proxy as a `RunObserver`.
+    """
+
+    def __init__(self) -> None:
+        self.last_stage: Stage | None = None
+
+    def stage_started(self, stage: Stage) -> None:
+        self.last_stage = stage
+
+
 class RunService:
     """One worker thread, one FIFO queue, at most one run executing.
 
@@ -253,6 +270,7 @@ class RunService:
                 self._waiting.remove(run_id)
             token = self._tokens[run_id]
 
+        stage_tracker = _StageTracker()
         try:
             settings = self._build_settings(request.overrides)
             # Opened before _execute, not inside it: build_trend_source and
@@ -273,7 +291,7 @@ class RunService:
             with capture_run_log(run_id, store) as buffer:
                 with self._lock:
                     self._buffers[run_id] = buffer
-                self._execute(settings, request, store, NullObserver(), token)
+                self._execute(settings, request, store, stage_tracker, token)
                 if token.stopping:
                     self._aborted(store, run_id)
         except Aborted:
@@ -285,7 +303,7 @@ class RunService:
                 RunError(
                     kind=type(exc).__name__,
                     message=str(exc),
-                    stage=request.start_at,
+                    stage=stage_tracker.last_stage or request.start_at,
                 ),
             )
         finally:

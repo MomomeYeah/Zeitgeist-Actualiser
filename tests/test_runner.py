@@ -5,6 +5,7 @@ import pytest
 from tests.run_factory import make_run_config
 from zeitgeist.config import Settings
 from zeitgeist.progress import Aborted
+from zeitgeist.records import Stage
 from zeitgeist.runner import RunRequest, RunService
 from zeitgeist.store import Store
 
@@ -429,3 +430,37 @@ def test_the_worker_survives_an_error_in_run_ones_own_bookkeeping(tmp_path):
     finally:
         gate.release.set()
         service.shutdown(timeout=10)
+
+
+def test_a_run_failing_after_a_later_stage_is_recorded_with_that_stage(tmp_path):
+    """`stage=request.start_at` names where a run *started*, not where it
+    *failed*: a run that starts at ingest and dies in generate must not be
+    recorded as failing in ingest. The Runs screen renders "RenderError in
+    generate" from exactly this field, so the run here starts at ingest but
+    reports entering generate before it raises — a stage later than its
+    start, which is the only way this assertion can tell the fix from the
+    bug it replaces."""
+    entered = threading.Event()
+    released = threading.Event()
+
+    def execute(settings, request, store, observer, token) -> None:
+        observer.stage_started(Stage.GENERATE)
+        entered.set()
+        assert released.wait(timeout=5)
+        raise RuntimeError("boom in generate")
+
+    service = RunService(_settings(tmp_path), execute=execute)
+    service.start()
+    queued = service.enqueue(RunRequest(start_at=Stage.INGEST))
+    assert entered.wait(timeout=5)
+    released.set()
+    service.shutdown(timeout=10)
+
+    store = Store(_settings(tmp_path).db_path)
+    store.init_schema()
+    record = store.get_run(queued.run_id)
+    store.close()
+    assert record is not None
+    assert record.status == "failed"
+    assert record.error is not None
+    assert record.error.stage == Stage.GENERATE
