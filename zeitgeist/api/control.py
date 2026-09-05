@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from zeitgeist.api.app import get_runner, get_store
 from zeitgeist.api.runs import _run_or_404, resume_stage
 from zeitgeist.api.schemas import ResumeBody, StartRunBody
+from zeitgeist.records import ORDER
 from zeitgeist.runner import ActiveRuns, QueuedRun, RunRequest, RunService
 from zeitgeist.store import Store
 
@@ -62,6 +63,22 @@ def resume_run(
             detail=f"Run {run_id} wrote no checkpoints; there is nothing to "
             "resume from.",
         )
+    if body.stage is not None:
+        # `resume_stage`'s own return is honourable by construction — it is
+        # the first stage with no checkpoint, so everything earlier already
+        # has one. A stage the *client* names carries no such guarantee:
+        # resuming at generate with only an ingest checkpoint would enqueue a
+        # run whose generate branch reads a missing analyse or evaluate
+        # checkpoint and fails on the worker thread — well after the 202 the
+        # client already got.
+        written = store.written_stages(run_id)
+        for earlier in ORDER[: ORDER.index(body.stage)]:
+            if earlier not in written:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Run {run_id} has no {earlier.value} checkpoint; "
+                    f"cannot resume at {body.stage.value}.",
+                )
     return runner.enqueue(
         RunRequest(
             run_id=run_id,

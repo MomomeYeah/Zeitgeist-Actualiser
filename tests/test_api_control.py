@@ -147,6 +147,13 @@ def test_resuming_reuses_the_runs_existing_id(tmp_path):
     checkpoints are the whole point. A resume that allocated a fresh id would
     write a second run's rows and leave the first stranded at `interrupted`
     forever.
+
+    Resumes at `evaluate` rather than `generate`: `generate` needs an
+    EVALUATE checkpoint, which nothing in this factory can seed, so a request
+    naming it would now be refused by the resume-stage check regardless of
+    id reuse — which is not what this test is about. `evaluate` only needs
+    INGEST and ANALYSE, which the added evidence and the run's default topic
+    already back, so the request still reaches the executor.
     """
     seen: list[str] = []
 
@@ -155,12 +162,17 @@ def test_resuming_reuses_the_runs_existing_id(tmp_path):
 
     client = seeded_client(
         tmp_path,
-        runs=[SeededRun(run_id="20260901T120000Z")],
+        runs=[
+            SeededRun(
+                run_id="20260901T120000Z",
+                evidence=[make_evidence(["p1"])],
+            )
+        ],
         execute=execute,
     )
 
     response = client.post(
-        "/api/runs/20260901T120000Z/resume", json={"stage": "generate"}
+        "/api/runs/20260901T120000Z/resume", json={"stage": "evaluate"}
     )
     client.app.state.runner.shutdown(timeout=10)
 
@@ -207,6 +219,11 @@ def test_resuming_carries_the_narrowed_template_library(tmp_path):
     edit a manifest, re-render the same frozen topics against one template.
     Dropped here, resume would re-render against the whole library every
     time and the loop would be no faster than a fresh run.
+
+    Resumes at `evaluate` rather than `generate`, for the same reason as
+    `test_resuming_reuses_the_runs_existing_id`: there is no way to seed the
+    EVALUATE checkpoint `generate` needs, and this test's subject is
+    `template_ids` reaching the request, not which stage was named.
     """
     seen: list[list[str] | None] = []
 
@@ -215,13 +232,18 @@ def test_resuming_carries_the_narrowed_template_library(tmp_path):
 
     client = seeded_client(
         tmp_path,
-        runs=[SeededRun(run_id="20260901T120000Z")],
+        runs=[
+            SeededRun(
+                run_id="20260901T120000Z",
+                evidence=[make_evidence(["p1"])],
+            )
+        ],
         execute=execute,
     )
 
     client.post(
         "/api/runs/20260901T120000Z/resume",
-        json={"stage": "generate", "template_ids": ["drake"]},
+        json={"stage": "evaluate", "template_ids": ["drake"]},
     )
     client.app.state.runner.shutdown(timeout=10)
 
@@ -250,6 +272,78 @@ def test_resuming_a_run_with_no_checkpoints_is_refused(tmp_path):
     response = client.post("/api/runs/20260901T120000Z/resume", json={})
 
     assert response.status_code == 409
+
+
+def test_resuming_at_a_stage_the_run_cannot_honour_is_refused(tmp_path):
+    """A client-named stage is not the computed one — nothing guarantees its
+    predecessors were actually written. This run has an INGEST checkpoint
+    but no ANALYSE one (`topics=[]`), and is resumed at `generate`, whose
+    predecessors in `ORDER` are INGEST, ANALYSE and EVALUATE. Without a
+    check on the *named* stage, only the "nothing at all was written" branch
+    guards this route, `stage` is used as given, and the run is enqueued: it
+    reaches `generate`'s branch of `run_pipeline`, which reads a missing
+    ANALYSE or EVALUATE checkpoint and fails on the worker thread — a 202
+    now, a `failed` row later, instead of a 409 at the door. Asserting on
+    `seen` (not just the status code) catches a fix that returns 409 while
+    still calling `runner.enqueue` first.
+    """
+    seen: list[str] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        seen.append(request.run_id or "")
+
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id="20260901T120000Z",
+                topics=[],
+                evidence=[make_evidence(["p1"])],
+            )
+        ],
+        execute=execute,
+    )
+
+    response = client.post(
+        "/api/runs/20260901T120000Z/resume", json={"stage": "generate"}
+    )
+
+    assert response.status_code == 409
+    assert seen == []
+
+
+def test_resuming_at_a_stage_the_run_can_honour_is_accepted(tmp_path):
+    """The companion to `test_resuming_at_a_stage_the_run_cannot_honour_is_
+    refused`: a fix that refuses every explicit `stage` — not just an
+    unbacked one — would also pass that test, since it never checks `seen`
+    is non-empty anywhere else. Here INGEST (from the added evidence) and
+    ANALYSE (from the run's default topic) are both written, which is
+    everything `evaluate` needs from `ORDER`, so the request must still
+    reach the executor with a 202.
+    """
+    seen: list[str] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        seen.append(request.run_id or "")
+
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id="20260901T120000Z",
+                evidence=[make_evidence(["p1"])],
+            )
+        ],
+        execute=execute,
+    )
+
+    response = client.post(
+        "/api/runs/20260901T120000Z/resume", json={"stage": "evaluate"}
+    )
+    client.app.state.runner.shutdown(timeout=10)
+
+    assert response.status_code == 202
+    assert seen == ["20260901T120000Z"]
 
 
 def test_stop_trips_stopping_and_abort_trips_aborted(tmp_path):
