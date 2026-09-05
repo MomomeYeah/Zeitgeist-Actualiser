@@ -1,7 +1,16 @@
 import inspect
+import threading
+
+import pytest
 
 from tests.run_factory import make_topic
-from zeitgeist.progress import NullObserver, RecordingObserver, RunObserver
+from zeitgeist.progress import (
+    Aborted,
+    CancelToken,
+    NullObserver,
+    RecordingObserver,
+    RunObserver,
+)
 from zeitgeist.records import Stage
 
 
@@ -73,3 +82,78 @@ def test_named_selects_one_kind_without_disturbing_the_stream():
 
     assert [event.name for event in distilled] == ["topic_distilled"]
     assert len(observer.events) == 2
+
+
+def test_a_fresh_token_stops_nothing():
+    """The default path. Every run that is never cancelled calls `check()`
+    once per model call and once per brief, and every one of them must
+    return."""
+    token = CancelToken()
+
+    token.check()
+
+    assert token.stopping is False
+    assert token.aborted is False
+
+
+def test_stopping_does_not_raise_from_check():
+    """Stop-after-stage promises the current stage completes and writes its
+    checkpoint. A `check()` that raised for a stopping token would abandon
+    the stage mid-flight and lose exactly the resumability the button
+    promises — and no other test would notice, because the stage boundary
+    reads `stopping` on a different code path.
+    """
+    token = CancelToken()
+
+    token.stop_after_stage()
+
+    token.check()
+    assert token.stopping is True
+    assert token.aborted is False
+
+
+def test_aborting_raises_from_check():
+    token = CancelToken()
+
+    token.abort()
+
+    with pytest.raises(Aborted):
+        token.check()
+
+
+def test_an_aborted_token_is_also_stopping():
+    """The stage boundary reads `stopping` to decide whether to begin the
+    next stage. An aborted token reporting `stopping is False` would start
+    one more stage in the window between the abort and the next `check()`.
+    """
+    token = CancelToken()
+
+    token.abort()
+
+    assert token.stopping is True
+    assert token.aborted is True
+
+
+def test_a_flag_set_on_one_thread_is_seen_on_another():
+    """This is the token's entire job: `POST /api/runs/{id}/abort` runs on a
+    request thread and the pipeline reads it on the worker. A token that
+    held state per thread — a thread-local, or a copy taken at
+    construction — would pass every other test here and never cancel a real
+    run.
+    """
+    token = CancelToken()
+    seen = threading.Event()
+    released = threading.Event()
+
+    def watcher() -> None:
+        released.wait(timeout=5)
+        if token.aborted:
+            seen.set()
+
+    thread = threading.Thread(target=watcher)
+    thread.start()
+    token.abort()
+    released.set()
+    thread.join(timeout=5)
+
+    assert seen.is_set()

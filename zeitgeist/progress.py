@@ -12,6 +12,15 @@ from zeitgeist.models import Topic
 from zeitgeist.records import RenderRecord, Stage
 
 
+class Aborted(Exception):
+    """Raised from `CancelToken.check()` when a run has been aborted.
+
+    Its own type rather than a flag return, because it has to unwind out of
+    the distil worker's thread pool and out of the render loop, both of
+    which are several frames below the code that can act on it.
+    """
+
+
 class RunObserver(Protocol):
     """What a watcher of a run is told, as it happens.
 
@@ -101,3 +110,53 @@ class RecordingObserver:
         one event type at a time far more often than on the whole stream.
         """
         return [event for event in self.events if event.name == name]
+
+
+class CancelToken:
+    """Two different cancellations, deliberately not one flag.
+
+    *Stop* lets the current stage finish and write its checkpoint, so the run
+    stays resumable — which is what the button promises. *Abort* unwinds the
+    current work now, and the run is whatever it managed to write.
+
+    So `check()` raises only for abort. A stopping token's `check()` returns
+    normally, and `stopping` is read at the stage boundary instead.
+
+    Written by the request thread handling `POST /api/runs/{id}/abort` and
+    read by the worker thread. No lock: a `bool` assignment is atomic under
+    the GIL, and these flags are set once and never cleared — a token belongs
+    to one run and is never reset, so there is no read-modify-write to lose.
+    """
+
+    def __init__(self) -> None:
+        self._stopping = False
+        self._aborted = False
+
+    def stop_after_stage(self) -> None:
+        self._stopping = True
+
+    def abort(self) -> None:
+        # Order matters for a reader that lands between the two assignments:
+        # setting `_stopping` first leaves no window where `aborted` is true
+        # but `stopping` is false, which is the window in which a stage
+        # boundary would start one more stage.
+        self._stopping = True
+        self._aborted = True
+
+    def check(self) -> None:
+        if self._aborted:
+            raise Aborted("run aborted")
+
+    @property
+    def stopping(self) -> bool:
+        """True after either call: both mean this run is ending, and the
+        stage boundary must not begin another stage.
+        """
+        return self._stopping
+
+    @property
+    def aborted(self) -> bool:
+        """Which of the two happened, and so which terminal status the run
+        gets.
+        """
+        return self._aborted
