@@ -85,6 +85,7 @@ def create_app(settings: Settings, *, execute: ExecuteFn | None = None) -> FastA
     app.state.runner = runner
 
     from zeitgeist.api import control as control_router
+    from zeitgeist.api import options as options_router
     from zeitgeist.api import renders as renders_router
     from zeitgeist.api import runs as runs_router
     from zeitgeist.api import settings as settings_router
@@ -99,5 +100,6 @@ def create_app(settings: Settings, *, execute: ExecuteFn | None = None) -> FastA
     app.include_router(runs_router.router)
     app.include_router(renders_router.router)
     app.include_router(topics_router.router)
+    app.include_router(options_router.router)
 
     return app

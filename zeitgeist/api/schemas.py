@@ -197,3 +197,35 @@ class TopicIndex(BaseModel):
     status_totals: dict[str, int]
     sentiment_totals: dict[str, int]
     previous_sentiment_totals: dict[str, int]
+
+
+class PlatformOption(BaseModel):
+    """`enabled` is False for the dormant platforms — Lemmy and Wikipedia
+    have code and tests but no live stage consumes a flat item list, and
+    `Settings` rejects them. Reported rather than hidden so the screen can
+    say why they are unavailable."""
+
+    model_config = STRICT
+
+    name: str
+    enabled: bool
+
+
+class TemplateOption(BaseModel):
+    model_config = STRICT
+
+    id: str
+    slots: list[str]
+
+
+class ConfigOptions(BaseModel):
+    """`anthropic_key_present` is a boolean and the key itself is never
+    returned, in any form."""
+
+    model_config = STRICT
+
+    models: dict[str, list[str]]
+    platforms: list[PlatformOption]
+    templates: list[TemplateOption]
+    defaults: dict[str, str]
+    anthropic_key_present: bool
