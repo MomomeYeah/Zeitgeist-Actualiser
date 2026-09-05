@@ -1,8 +1,9 @@
+import json
 import threading
 
-from tests.api_factory import GatedExecute, SeededRun, seeded_client
+from tests.api_factory import GatedExecute, LoggingGate, SeededRun, seeded_client
 from tests.run_factory import make_evidence, make_run_config
-from zeitgeist.records import Stage
+from zeitgeist.records import LogLine, Stage
 
 
 def test_posting_a_run_returns_the_id_it_will_have(tmp_path):
@@ -395,3 +396,177 @@ def test_stopping_a_run_that_is_not_executing_is_a_404(tmp_path):
 
     assert client.post("/api/runs/20260901T120000Z/stop").status_code == 404
     assert client.post("/api/runs/20260901T120000Z/abort").status_code == 404
+
+
+def _events(client, url, *, release_after=None, limit=400):
+    """Read an SSE response into (event, data) pairs until it closes.
+
+    `release_after` is called once, after the first batch of events has been
+    read, to let a gated run finish — otherwise the stream would stay open
+    for as long as the run does and this would never return.
+
+    Bounded, so a generator that fails to terminate fails the test in a few
+    seconds rather than hanging it. Do not raise the bound to make a test
+    pass; a stream that will not close is the bug.
+    """
+    collected: list[tuple[str, str]] = []
+    released = False
+    with client.stream("GET", url) as response:
+        assert response.status_code == 200
+        name = ""
+        for index, line in enumerate(response.iter_lines()):
+            if index > limit:
+                raise AssertionError("stream did not end")
+            if line.startswith("event:"):
+                name = line.removeprefix("event:").strip()
+            elif line.startswith("data:"):
+                collected.append((name, line.removeprefix("data:").strip()))
+                if release_after is not None and not released:
+                    released = True
+                    release_after()
+    return collected
+
+
+def _logged(events):
+    return [
+        line["message"]
+        for name, data in events
+        if name == "log"
+        for line in json.loads(data)
+    ]
+
+
+def test_the_stream_carries_the_runs_log_lines(tmp_path):
+    """The live log is the reason this endpoint exists. A stream emitting
+    only ticks would leave the client polling the historical log endpoint it
+    was built to replace.
+    """
+    gate = LoggingGate()
+    client = seeded_client(tmp_path, execute=gate)
+    body = client.post("/api/runs", json={}).json()
+    assert gate.entered.wait(timeout=5)
+
+    events = _events(
+        client,
+        f"/api/runs/{body['run_id']}/events",
+        release_after=gate.release.set,
+    )
+
+    assert "hello from the run" in _logged(events)
+
+
+def test_the_stream_ends_when_the_run_ends(tmp_path):
+    """A stream that never closed would hold one connection per watched run
+    for the life of the process — and because the browser reconnects on
+    close, one that stayed open after the run finished would never let it
+    stop watching either.
+
+    The bound inside `_events` is what turns "never closes" into a failure;
+    reaching this assertion at all is the result.
+    """
+    gate = LoggingGate()
+    client = seeded_client(tmp_path, execute=gate)
+    body = client.post("/api/runs", json={}).json()
+    assert gate.entered.wait(timeout=5)
+
+    events = _events(
+        client,
+        f"/api/runs/{body['run_id']}/events",
+        release_after=gate.release.set,
+    )
+
+    assert events
+
+
+def test_a_line_is_sent_once(tmp_path):
+    """The generator polls with the last seq it sent. Draining from 0 each
+    time would resend the whole log on every tick, and the browser would
+    render the run's output over and over for the life of the run.
+    """
+    gate = LoggingGate(message="only once")
+    client = seeded_client(tmp_path, execute=gate)
+    body = client.post("/api/runs", json={}).json()
+    assert gate.entered.wait(timeout=5)
+
+    events = _events(
+        client,
+        f"/api/runs/{body['run_id']}/events",
+        release_after=gate.release.set,
+    )
+
+    assert _logged(events).count("only once") == 1
+
+
+def test_every_poll_emits_a_tick_the_client_can_invalidate_on(tmp_path):
+    """A tick carries no data of its own: the observer has already written
+    `run_records`, `run_stages` and `run_topics` from the worker thread, and
+    the tick is what tells the client to refetch them. Without it the stream
+    would deliver log lines and nothing else, and the stage cards would never
+    advance until the page was reloaded — which no other test here would
+    notice, because they all filter for `log`.
+    """
+    client = seeded_client(tmp_path, runs=[SeededRun(run_id="20260901T120000Z")])
+
+    events = _events(client, "/api/runs/20260901T120000Z/events")
+
+    ticks = [json.loads(data) for name, data in events if name == "tick"]
+    assert ticks
+    assert all(set(tick) == {"seq"} for tick in ticks)
+
+
+def test_a_streamed_line_carries_everything_the_log_viewer_renders(tmp_path):
+    """The viewer colours by level, groups by logger and orders by seq, and
+    the historical endpoint returns all five fields. A stream sending only
+    the message would make the live log and the post-mortem log two different
+    things, and the verbose toggle would have nothing to filter on until the
+    run ended.
+    """
+    gate = LoggingGate()
+    client = seeded_client(tmp_path, execute=gate)
+    body = client.post("/api/runs", json={}).json()
+    assert gate.entered.wait(timeout=5)
+
+    events = _events(
+        client,
+        f"/api/runs/{body['run_id']}/events",
+        release_after=gate.release.set,
+    )
+
+    lines = [
+        line for name, data in events if name == "log" for line in json.loads(data)
+    ]
+    [line] = [line for line in lines if line["message"] == gate.message]
+    # Parity with `LogLine` rather than a literal key set: the invariant is
+    # that the live stream and the historical endpoint carry the same fields,
+    # so adding one to both should keep this passing and adding it to only
+    # one should not. A hardcoded set would fire on the former, which is a
+    # decision rather than a bug.
+    assert set(line) == set(LogLine.model_fields)
+    assert line["level"] == "INFO"
+    assert line["logger"] == "zeitgeist.testing.sse"
+
+
+def test_streaming_an_unknown_run_is_a_404(tmp_path):
+    """The client opens this from a run detail page. A stream that opened
+    for any id would leave a mistyped URL hanging rather than erroring."""
+    client = seeded_client(tmp_path)
+
+    response = client.get("/api/runs/nope/events")
+
+    assert response.status_code == 404
+
+
+def test_streaming_a_finished_run_ends_immediately(tmp_path):
+    """A completed run has no buffer — the worker drops it when the run ends,
+    and the historical log endpoint serves it instead. This must close rather
+    than wait forever for a run that will never emit anything, which is the
+    case a client hitting an old run's detail page produces.
+
+    No `release_after` here: there is nothing holding this stream open, and
+    needing one would mean the terminating condition was wrong.
+    """
+    client = seeded_client(tmp_path, runs=[SeededRun(run_id="20260901T120000Z")])
+
+    events = _events(client, "/api/runs/20260901T120000Z/events")
+
+    assert _logged(events) == []

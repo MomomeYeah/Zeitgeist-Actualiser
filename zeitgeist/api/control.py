@@ -4,7 +4,12 @@ Split from `runs.py`, which is five endpoints of read-only history: these
 mutate execution, fail differently, and phase 4 adds two more of its own.
 """
 
+import asyncio
+import json
+from collections.abc import AsyncIterator
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 
 from zeitgeist.api.app import get_runner, get_store
 from zeitgeist.api.runs import _run_or_404, resume_stage
@@ -14,6 +19,12 @@ from zeitgeist.runner import ActiveRuns, QueuedRun, RunRequest, RunService
 from zeitgeist.store import Store
 
 router = APIRouter(prefix="/api/runs", tags=["control"])
+
+POLL_SECONDS = 0.25
+
+
+def _sse(name: str, data: str) -> str:
+    return f"event: {name}\ndata: {data}\n\n"
 
 
 @router.post("", response_model=QueuedRun, status_code=status.HTTP_202_ACCEPTED)
@@ -106,3 +117,58 @@ def abort_run(run_id: str, runner: RunService = Depends(get_runner)) -> dict[str
     if not runner.abort(run_id):
         raise HTTPException(status_code=404, detail=f"Run {run_id} is not running")
     return {"run_id": run_id, "requested": "abort"}
+
+
+@router.get("/{run_id}/events")
+def stream_events(
+    run_id: str,
+    store: Store = Depends(get_store),
+    runner: RunService = Depends(get_runner),
+) -> StreamingResponse:
+    """Log lines and progress ticks, until the run ends.
+
+    Polls the run's buffer rather than being pushed to. A quarter-second of
+    latency on a log line is invisible, and polling keeps the logging handler
+    free of any reference to the event loop — which is what lets the same
+    handler work under `TestClient` and under the dev harness.
+
+    A tick carries no payload. The observer has already written
+    `run_records`, `run_stages` and `run_topics` from the worker thread, so
+    the client refetches rather than being handed the same data twice.
+    """
+    _run_or_404(store, run_id)
+
+    async def generate() -> AsyncIterator[str]:
+        seq = 0
+        while True:
+            buffer = runner.buffer(run_id)
+            executing = runner.active().current == run_id
+            if buffer is not None:
+                lines = buffer.since(seq)
+                if lines:
+                    seq = lines[-1].seq
+                    yield _sse(
+                        "log",
+                        json.dumps(
+                            [
+                                {
+                                    "seq": line.seq,
+                                    "logged_at": line.logged_at.isoformat(),
+                                    "level": line.level,
+                                    "logger": line.logger,
+                                    "message": line.message,
+                                }
+                                for line in lines
+                            ]
+                        ),
+                    )
+            yield _sse("tick", json.dumps({"seq": seq}))
+            if not executing and buffer is None:
+                # The worker drops the buffer when the run ends, so this is
+                # the run being over *and* its last lines already drained.
+                # A stream that stayed open would hold a connection per
+                # watched run for the life of the process.
+                return
+            await asyncio.sleep(POLL_SECONDS)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
