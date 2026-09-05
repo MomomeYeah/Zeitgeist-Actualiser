@@ -206,16 +206,33 @@ class RunService:
         return QueuedRun(run_id=run_id, position=position)
 
     def _build_settings(self, overrides: dict[str, str]) -> Settings:
-        """Build the per-run `Settings` by constructing a fresh instance
-        rather than `model_copy(update=...)`, which bypasses validation
-        entirely: `"9"` would stay the string `"9"` for `topic_count`, with
-        no error raised anywhere. Constructing instead runs the overrides
-        through pydantic as constructor arguments — the highest-precedence
-        layer, which is exactly what a per-run override should be — so they
-        arrive coerced to the right type, and an invalid one (an unknown
-        source, a non-numeric count) raises `ValueError` here.
+        """Build the per-run `Settings`: this service's own settings for
+        everything not run-settable, the request's overrides for what is.
+
+        Only the fields *outside* `RUN_OVERRIDE_KEYS` are taken from this
+        snapshot. Those are the fields a run cannot set for itself — `db_path`,
+        `output_dir`, `anthropic_api_key` and the rest — and the API's own
+        `Settings` may carry programmatic values for them that must survive.
+        Splatting *every* field here, as this service's own settings, would
+        pin every run-settable field at its value from RunService's own
+        construction: `init_settings` outranks everything else in
+        `Settings.settings_customise_sources`, so a value written to the
+        settings table afterwards (`PUT /api/settings`) would never reach a
+        run started later. Leaving those fields out lets them resolve
+        through the normal precedence chain instead, picking up the table's
+        current value when the request itself doesn't override them.
+
+        Building a fresh `Settings` rather than `model_copy(update=...)`,
+        which bypasses validation entirely: `"9"` would stay the string
+        `"9"` for `topic_count`, with no error raised anywhere. Constructing
+        instead runs the overrides through pydantic as constructor
+        arguments — the highest-precedence layer, which is exactly what a
+        per-run override should be — so they arrive coerced to the right
+        type, and an invalid one (an unknown source, a non-numeric count)
+        raises `ValueError` here.
         """
-        return Settings(**(self._settings.model_dump() | dict(overrides)))
+        snapshot = self._settings.model_dump(exclude=set(RUN_OVERRIDE_KEYS))
+        return Settings(**(snapshot | dict(overrides)))
 
     def active(self) -> ActiveRuns:
         with self._lock:

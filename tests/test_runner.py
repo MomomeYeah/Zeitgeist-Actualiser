@@ -490,3 +490,41 @@ def test_aborting_a_completed_run_reports_that_it_did_nothing(tmp_path):
 
     assert service.abort(queued.run_id) is False
     assert service.stop(queued.run_id) is False
+
+
+def test_a_run_picks_up_the_settings_table_for_fields_it_does_not_override(
+    tmp_path, monkeypatch
+):
+    """`PUT /api/settings` writes to this table, and the spec's promise is
+    that changes apply to new runs. Splatting *every* field of this
+    service's own startup settings as constructor arguments would pin every
+    run-settable field at its value from `RunService.__init__` forever —
+    `init_settings` outranks the table in `Settings.settings_customise_
+    sources` — making that promise false until a restart. A request that
+    does not override `phrase_min_authors` must still see a value written
+    to the table after the service started.
+
+    `SettingsTableSource` cannot resolve its database from a constructed
+    `Settings.db_path` — that would be circular — so it re-derives its own
+    path from `DB_PATH`/`.env` instead (see `zeitgeist/settings_source.py`).
+    `DB_PATH` has to point at this test's database for the table to be
+    consulted at all, the same as every test in `test_settings_source.py`.
+    """
+    settings = _settings(tmp_path)
+    monkeypatch.setenv("DB_PATH", str(settings.db_path))
+    store = Store(settings.db_path)
+    store.init_schema()
+    store.set_setting("phrase_min_authors", "7")
+    store.close()
+
+    seen: list[int] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        seen.append(settings.phrase_min_authors)
+
+    service = RunService(settings, execute=execute)
+    service.start()
+    service.enqueue(RunRequest())
+    service.shutdown(timeout=10)
+
+    assert seen == [7]
