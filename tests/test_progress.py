@@ -146,7 +146,7 @@ def test_a_flag_set_on_one_thread_is_seen_on_another():
     released = threading.Event()
 
     def watcher() -> None:
-        released.wait(timeout=5)
+        assert released.wait(timeout=5), "released was never set"
         if token.aborted:
             seen.set()
 

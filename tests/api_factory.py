@@ -78,7 +78,7 @@ class GatedExecute:
         store.start_run(run_id, make_run_config())
         self.run_ids.append(run_id)
         self.entered.set()
-        self.release.wait(timeout=5)
+        assert self.release.wait(timeout=5), "release was never set"
 
 
 @dataclass
@@ -98,7 +98,7 @@ class LoggingGate:
         store.start_run(request.run_id or "", make_run_config())
         logging.getLogger("zeitgeist.testing.sse").info(self.message)
         self.entered.set()
-        self.release.wait(timeout=5)
+        assert self.release.wait(timeout=5), "release was never set"
 
 
 def api_settings(tmp_path: Path) -> Settings:
