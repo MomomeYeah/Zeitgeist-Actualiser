@@ -8,7 +8,9 @@ and the endpoints would be serving a table layout nothing produces.
 from `DB_PATH`, so a test's renders and database are its own.
 """
 
+import logging
 import os
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +29,7 @@ from zeitgeist.records import (
     Stage,
     StageRecord,
 )
+from zeitgeist.runner import ExecuteFn
 from zeitgeist.store import Store
 
 # Clients `seeded_client` has entered as a context manager, awaiting exit.
@@ -52,6 +55,50 @@ class SeededRun:
     stages: list[StageRecord] = field(default_factory=list)
     renders: list[RenderRecord] = field(default_factory=list)
     evidence: list[TrendEvidence] = field(default_factory=list)
+
+
+@dataclass
+class GatedExecute:
+    """A run that blocks until released, so a test can hold the worker in a
+    known state without sleeping. Lives here rather than in one test module
+    because both the control tests and the SSE tests need it.
+
+    It opens the run row, because the real executor reaches `run_pipeline`
+    and `run_pipeline` is what calls `store.start_run`. Without that, every
+    endpoint guarded by `_run_or_404` — the event stream among them —
+    answers 404 for a run that is executing.
+    """
+
+    entered: threading.Event = field(default_factory=threading.Event)
+    release: threading.Event = field(default_factory=threading.Event)
+    run_ids: list[str] = field(default_factory=list)
+
+    def __call__(self, settings, request, store, observer, token) -> None:
+        run_id = request.run_id or ""
+        store.start_run(run_id, make_run_config())
+        self.run_ids.append(run_id)
+        self.entered.set()
+        self.release.wait(timeout=5)
+
+
+@dataclass
+class LoggingGate:
+    """A run that opens its row, logs one line, then blocks until released.
+
+    The line has to be emitted while the run is still executing, because the
+    worker drops the buffer the moment it ends — so a stream opened after the
+    run finished can never carry it.
+    """
+
+    message: str = "hello from the run"
+    entered: threading.Event = field(default_factory=threading.Event)
+    release: threading.Event = field(default_factory=threading.Event)
+
+    def __call__(self, settings, request, store, observer, token) -> None:
+        store.start_run(request.run_id or "", make_run_config())
+        logging.getLogger("zeitgeist.testing.sse").info(self.message)
+        self.entered.set()
+        self.release.wait(timeout=5)
 
 
 def api_settings(tmp_path: Path) -> Settings:
@@ -125,7 +172,9 @@ def seed_run(store: Store, spec: SeededRun) -> None:
     )
 
 
-def seeded_client(tmp_path: Path, *, runs: Sequence[SeededRun] = ()) -> TestClient:
+def seeded_client(
+    tmp_path: Path, *, runs: Sequence[SeededRun] = (), execute: ExecuteFn | None = None
+) -> TestClient:
     """An app over a store holding `runs`, with its lifespan already running.
 
     The store is seeded before `create_app` opens its own connection, so the
@@ -137,6 +186,9 @@ def seeded_client(tmp_path: Path, *, runs: Sequence[SeededRun] = ()) -> TestClie
     `_open_clients` for `conftest`'s autouse fixture to exit later — means
     every caller gets a client whose lifespan has actually started, without
     having to become a `with` block itself.
+
+    `execute` threads a fake executor into the app's `RunService`, so a test
+    can drive the queue without a real pipeline.
     """
     settings = api_settings(tmp_path)
     store = Store(settings.db_path)
@@ -144,7 +196,7 @@ def seeded_client(tmp_path: Path, *, runs: Sequence[SeededRun] = ()) -> TestClie
     for spec in runs:
         seed_run(store, spec)
     store.close()
-    client = TestClient(create_app(settings))
+    client = TestClient(create_app(settings, execute=execute))
     client.__enter__()
     _open_clients.append(client)
     return client

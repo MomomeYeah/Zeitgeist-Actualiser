@@ -41,6 +41,20 @@ class SettingField(BaseModel):
     source: SettingSource
 
 
+class StartRunBody(BaseModel):
+    """What `POST /api/runs` accepts.
+
+    `overrides` is `str`-valued because the values come from a form and are
+    validated by `Settings` when the worker freezes the run's config — the
+    one place that knows each field's real type.
+    """
+
+    model_config = STRICT
+
+    template_ids: list[str] | None = None
+    overrides: dict[str, str] = {}
+
+
 class RunSummary(BaseModel):
     """One row of the Runs list.
 

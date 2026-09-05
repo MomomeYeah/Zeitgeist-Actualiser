@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 
 from zeitgeist.config import Settings
+from zeitgeist.runner import ExecuteFn, RunService
 from zeitgeist.store import Store
 
 log = logging.getLogger(__name__)
@@ -34,7 +35,11 @@ def get_settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
-def create_app(settings: Settings) -> FastAPI:
+def get_runner(request: Request) -> RunService:
+    return request.app.state.runner
+
+
+def create_app(settings: Settings, *, execute: ExecuteFn | None = None) -> FastAPI:
     # Opened here rather than inside the lifespan: `TestClient` runs the
     # lifespan only when used as a context manager, and two of this task's
     # tests call `create_app` without a client at all. The lifespan's only
@@ -59,22 +64,37 @@ def create_app(settings: Settings) -> FastAPI:
             ", ".join(interrupted),
         )
 
+    runner = RunService(settings, execute=execute)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # The worker thread starts here rather than in `create_app`, unlike
+        # the store: an app that is built and never entered — which two tests
+        # in test_api_app.py do deliberately — must not leave a live thread
+        # behind.
+        runner.start()
         try:
             yield
         finally:
+            runner.shutdown()
             store.close()
 
     app = FastAPI(title="Zeitgeist", lifespan=lifespan)
     app.state.store = store
     app.state.settings = settings
+    app.state.runner = runner
 
+    from zeitgeist.api import control as control_router
     from zeitgeist.api import renders as renders_router
     from zeitgeist.api import runs as runs_router
     from zeitgeist.api import settings as settings_router
     from zeitgeist.api import topics as topics_router
 
+    # control.router owns POST /api/runs and GET /api/runs/active; it must
+    # be mounted before runs.router, which owns GET /api/runs/{run_id} — a
+    # path parameter that would otherwise capture "active" and 404 it as an
+    # unknown run.
+    app.include_router(control_router.router)
     app.include_router(settings_router.router)
     app.include_router(runs_router.router)
     app.include_router(renders_router.router)
