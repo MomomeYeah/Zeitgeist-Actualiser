@@ -15,6 +15,7 @@ from fastapi import FastAPI
 
 from zeitgeist.api import create_app
 from zeitgeist.config import Settings
+from zeitgeist.store import StoreSchemaError
 
 
 def _app() -> FastAPI:
@@ -54,7 +55,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    uvicorn.run(create_app(Settings()), host=args.host, port=args.port)
+    try:
+        app = create_app(Settings())
+    except StoreSchemaError as error:
+        # The exception's own message already says what to do about it
+        # ("delete it and re-run"); a bare traceback would bury that as the
+        # first thing anyone running this command against a stale database
+        # sees. Nothing else here is caught: a genuine bug should still
+        # surface as a traceback.
+        print(str(error), file=sys.stderr)
+        return 1
+
+    uvicorn.run(app, host=args.host, port=args.port)
     return 0
 
 

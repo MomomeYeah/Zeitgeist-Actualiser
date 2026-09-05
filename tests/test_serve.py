@@ -2,9 +2,12 @@
 monkeypatched in every test, and each test asserts what `main` handed it.
 """
 
+import sqlite3
+
 from fastapi import FastAPI
 
 import zeitgeist.serve as serve
+from zeitgeist.schema import SCHEMA_VERSION
 
 
 def _capture_run(monkeypatch):
@@ -86,3 +89,29 @@ def test_host_and_port_flags_also_apply_on_the_reload_path(monkeypatch):
 
     assert calls[0]["host"] == "0.0.0.0"
     assert calls[0]["port"] == 9000
+
+
+def test_a_stale_database_is_reported_without_a_traceback(
+    monkeypatch, tmp_path, capsys
+):
+    """The exception's own message is well-written and actionable -- "Delete
+    it and re-run" -- which an uncaught traceback would bury. This is also
+    the repository owner's actual local state, so it is the first thing
+    this command would show them."""
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "stale.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript("CREATE TABLE placeholder (id INTEGER PRIMARY KEY)")
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION - 1}")
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    calls = _capture_run(monkeypatch)
+
+    exit_code = serve.main([])
+
+    assert exit_code != 0
+    assert calls == []  # uvicorn.run must never be reached on this path.
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    assert "Delete it and re-run" in captured.err
