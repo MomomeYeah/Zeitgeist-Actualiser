@@ -185,6 +185,49 @@ class Store:
         )
         self._conn.commit()
 
+    def reconcile_interrupted(self) -> list[str]:
+        """Mark every run still `running` as `interrupted`, returning the ids.
+
+        Runs on server startup. The queue is in-memory and the worker dies
+        with the process, so a row left at `running` is one the UI would poll
+        forever. The checkpoints are untouched: an interrupted run resumes
+        from its last good one like any other.
+        """
+        with self._conn:
+            rows = self._conn.execute(
+                "SELECT run_id FROM run_records WHERE status = 'running' "
+                "ORDER BY started_at"
+            ).fetchall()
+            if not rows:
+                return []
+            self._conn.execute(
+                "UPDATE run_records SET status = 'interrupted', finished_at = ? "
+                "WHERE status = 'running'",
+                (_now(),),
+            )
+        return [row[0] for row in rows]
+
+    def abort_run(self, run_id: str) -> None:
+        """Record that a run was stopped or aborted by the user.
+
+        Its own method rather than a status argument to `finish_run`, for the
+        reason `fail_run`'s docstring gives: `finish_run` requires the four
+        counts, and a run that ended early has none to record. Stop and abort
+        share this status — `RunStatus` has no separate "stopped" — and differ
+        in what was preserved, not in the label.
+
+        The `status = 'running'` guard makes this idempotent. The worker calls
+        it on both the stop and the abort path, and an abort can land after
+        `run_pipeline` has already written `ok`; a run that reached a terminal
+        status must not be relabelled.
+        """
+        self._conn.execute(
+            "UPDATE run_records SET status = 'aborted', finished_at = ? "
+            "WHERE run_id = ? AND status = 'running'",
+            (_now(), run_id),
+        )
+        self._conn.commit()
+
     def get_run(self, run_id: str) -> RunRecordRow | None:
         row = self._conn.execute(
             "SELECT run_id, status, started_at, finished_at, config, error, "

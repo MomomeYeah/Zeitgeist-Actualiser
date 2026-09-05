@@ -11,6 +11,7 @@ connections are thread-bound, reads need no isolation from each other, and
 phase 3's worker thread constructs its own connection anyway.
 """
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -18,6 +19,8 @@ from fastapi import FastAPI, Request
 
 from zeitgeist.config import Settings
 from zeitgeist.store import Store
+
+log = logging.getLogger(__name__)
 
 
 def get_store(request: Request) -> Store:
@@ -47,6 +50,14 @@ def create_app(settings: Settings) -> FastAPI:
     # phase 3's PUT /api/settings will need to reckon with separately.
     store = Store(settings.db_path, check_same_thread=False)
     store.init_schema()
+
+    interrupted = store.reconcile_interrupted()
+    if interrupted:
+        log.info(
+            "Marked %d run(s) interrupted after an unclean shutdown: %s",
+            len(interrupted),
+            ", ".join(interrupted),
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

@@ -3,9 +3,12 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.api_factory import api_settings, seeded_client
+from tests.run_factory import make_run_config
 from zeitgeist.api import create_app
 from zeitgeist.config import Settings
 from zeitgeist.schema import SCHEMA_VERSION
+from zeitgeist.store import Store
 
 
 def _settings(tmp_path) -> Settings:
@@ -92,3 +95,21 @@ def test_the_app_creates_its_schema_on_startup(tmp_path):
     # test exists to catch init_schema not being called at all, which
     # leaves the version at 0.
     assert version == SCHEMA_VERSION
+
+
+def test_a_run_left_running_by_a_crash_is_interrupted_on_startup(tmp_path):
+    """End to end, because the store test alone cannot show that anything
+    calls it. A `reconcile_interrupted` that existed but was never wired in
+    would pass every test in `test_store.py` and leave the UI polling a dead
+    run forever.
+    """
+    settings = api_settings(tmp_path)
+    store = Store(settings.db_path)
+    store.init_schema()
+    store.start_run("20260905T120000Z", make_run_config())
+    store.close()
+
+    client = seeded_client(tmp_path)
+
+    body = client.get("/api/runs/20260905T120000Z").json()
+    assert body["run"]["status"] == "interrupted"

@@ -268,6 +268,124 @@ def test_a_failed_run_records_the_error_and_the_stage(tmp_path):
     assert record.error.stage is Stage.INGEST
 
 
+def test_reconciling_marks_a_running_run_interrupted(tmp_path):
+    """The process died mid-run. Left at `running`, the UI polls it forever
+    and draws an in-flight card for a run with no worker behind it."""
+    store = _store(tmp_path)
+    store.start_run("20260905T120000Z", make_run_config())
+
+    changed = store.reconcile_interrupted()
+
+    assert changed == ["20260905T120000Z"]
+    record = store.get_run("20260905T120000Z")
+    assert record is not None
+    assert record.status == "interrupted"
+
+
+def test_reconciling_leaves_finished_runs_alone(tmp_path):
+    """This runs on every startup, over the whole table. A predicate matching
+    more than `status = 'running'` would rewrite the history of every run the
+    user has ever made, on every restart, silently.
+    """
+    store = _store(tmp_path)
+    store.start_run("ok-run", make_run_config())
+    store.finish_run(
+        "ok-run",
+        status="ok",
+        item_count=1,
+        trends_found=1,
+        topics_kept=1,
+        phrases_found=0,
+    )
+    store.start_run("failed-run", make_run_config())
+    store.fail_run(
+        "failed-run",
+        RunError(kind="DistilError", message="no", stage=Stage.ANALYSE),
+    )
+
+    assert store.reconcile_interrupted() == []
+
+    # Guarded rather than dereferenced inline: `get_run` returns
+    # `RunRecordRow | None`, and `ty` covers tests as part of the gate.
+    finished = store.get_run("ok-run")
+    failed = store.get_run("failed-run")
+    assert finished is not None
+    assert failed is not None
+    assert (finished.status, failed.status) == ("ok", "failed")
+
+
+def test_reconciling_an_already_reconciled_database_changes_nothing(tmp_path):
+    """Restarts happen back to back during development, and `--reload`
+    restarts on every save. A second pass must be a no-op rather than
+    re-stamping rows or reporting the same run again.
+    """
+    store = _store(tmp_path)
+    store.start_run("20260905T120000Z", make_run_config())
+    store.reconcile_interrupted()
+
+    assert store.reconcile_interrupted() == []
+
+
+def test_aborting_a_run_records_it_without_counts(tmp_path):
+    """`finish_run` requires the four counts and a run that ended early has
+    none. Routing an abort through it would mean inventing zeros, which the
+    Runs list would render as a run that found nothing — indistinguishable
+    from a real empty result.
+    """
+    store = _store(tmp_path)
+    store.start_run("20260905T120000Z", make_run_config())
+
+    store.abort_run("20260905T120000Z")
+
+    record = store.get_run("20260905T120000Z")
+    assert record is not None
+    assert record.status == "aborted"
+    assert record.item_count is None
+
+
+def test_aborting_a_run_that_already_finished_changes_nothing(tmp_path):
+    """The worker calls this on both the stop and the abort path, and an
+    abort can land after the pipeline already wrote `ok`. Relabelling a
+    completed run as aborted would lose a successful run's outcome — and the
+    counts with it.
+    """
+    store = _store(tmp_path)
+    store.start_run("20260905T120000Z", make_run_config())
+    store.finish_run(
+        "20260905T120000Z",
+        status="ok",
+        item_count=4,
+        trends_found=2,
+        topics_kept=1,
+        phrases_found=0,
+    )
+
+    store.abort_run("20260905T120000Z")
+
+    record = store.get_run("20260905T120000Z")
+    assert record is not None
+    assert record.status == "ok"
+    assert record.item_count == 4
+
+
+def test_reconciling_preserves_the_checkpoints_a_resume_needs(tmp_path):
+    """An interrupted run is resumable from its last good checkpoint like any
+    other. A reconciliation that cleared partial state — the tempting reading
+    of "clean up the dead run" — would throw away the ingest payload the user
+    waited minutes for.
+    """
+    store = _store(tmp_path)
+    store.start_run("20260905T120000Z", make_run_config())
+    store.write_analyse_checkpoint(
+        "20260905T120000Z", [make_topic("cats")], meme_potential_weight=0.3
+    )
+
+    store.reconcile_interrupted()
+
+    assert Stage.ANALYSE in store.written_stages("20260905T120000Z")
+    assert store.run_topics("20260905T120000Z")
+
+
 def test_get_run_returns_none_for_a_run_that_does_not_exist(tmp_path):
     assert _store(tmp_path).get_run("nope") is None
 
