@@ -37,9 +37,20 @@ def ollama_models(
     a stopped daemon should cost a moment, not the request's whole budget.
     """
     if client is None:
+        # Owned here, so it must be closed here — every GET
+        # /api/config/options with no client injected used to leak a
+        # connection pool until GC happened to collect it. The injected
+        # path is left untouched: a caller-owned client outlives this call,
+        # and closing one out from under the tests that inject a fake would
+        # break every later use of it.
         import httpx
 
-        client = httpx.Client()
+        with httpx.Client() as owned_client:
+            return _query_ollama(owned_client, host, timeout)
+    return _query_ollama(client, host, timeout)
+
+
+def _query_ollama(client: Any, host: str, timeout: float) -> list[str]:
     try:
         response = client.get(f"{host.rstrip('/')}/api/tags", timeout=timeout)
         payload = response.json()
