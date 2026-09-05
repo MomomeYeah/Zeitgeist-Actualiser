@@ -11,9 +11,22 @@ import argparse
 import sys
 
 import uvicorn
+from fastapi import FastAPI
 
 from zeitgeist.api import create_app
 from zeitgeist.config import Settings
+
+
+def _app() -> FastAPI:
+    """Built lazily, on demand, by uvicorn's reloader.
+
+    Reload needs an import string it can re-invoke after each restart, not
+    an app instance built once up front — passing an instance disables
+    `--reload` outright (uvicorn refuses it at startup). Naming this factory
+    keeps that requirement satisfied without building the app before we know
+    whether reload was even asked for.
+    """
+    return create_app(Settings())
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -28,12 +41,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    uvicorn.run(
-        create_app(Settings()),
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-    )
+    if args.reload:
+        # Import string + factory=True: the reloader re-imports and rebuilds
+        # the app itself on every change, in a subprocess it manages. Nothing
+        # is opened in this process on this path.
+        uvicorn.run(
+            "zeitgeist.serve:_app",
+            factory=True,
+            host=args.host,
+            port=args.port,
+            reload=True,
+        )
+        return 0
+
+    uvicorn.run(create_app(Settings()), host=args.host, port=args.port)
     return 0
 
 
