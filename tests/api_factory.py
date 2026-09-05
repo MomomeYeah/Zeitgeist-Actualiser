@@ -160,15 +160,24 @@ def seed_run(store: Store, spec: SeededRun) -> None:
             ),
         )
         return
-    # "aborted" and "interrupted" have no writer anywhere in this phase —
-    # see records.RunStatus's docstring: phase 3's execution service is what
-    # will honour the stop button and reconcile a dead process into these,
-    # and no accessor exists yet that produces either. A test that needs one
-    # would be testing a state this phase cannot actually write, so this
-    # fails loudly rather than silently leaving the row "running".
+    if spec.status == "aborted":
+        # Store.abort_run is exactly the writer the "no writer anywhere in
+        # this phase" comment used to say did not exist — it does now,
+        # phase 3's stop/abort endpoints are what call it, and Critical 2's
+        # tests want a run seeded straight into this status.
+        store.abort_run(spec.run_id)
+        return
+    # "interrupted" still has no writer this factory can safely use for one
+    # run in isolation: Store.reconcile_interrupted is the only accessor
+    # that produces it, and it marks *every* row still "running" across the
+    # whole store, not just this one — reconciling it here would also flip
+    # any other "running" run a test happened to seed alongside it. A test
+    # that needs "interrupted" would be testing a state this factory cannot
+    # write for a single run, so this fails loudly rather than silently
+    # leaving the row "running" or reconciling rows the test never asked
+    # about.
     raise NotImplementedError(
-        f"seed_run has no way to write status={spec.status!r} yet — phase 3's "
-        "execution service is what writes it"
+        f"seed_run has no way to write status={spec.status!r} for one run in isolation"
     )
 
 
