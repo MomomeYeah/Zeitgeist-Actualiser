@@ -514,6 +514,90 @@ def test_a_token_less_run_gets_a_fresh_one_and_the_worker_moves_on(tmp_path):
     assert service.active().current is None
 
 
+class _FailRunRaisesStore(Store):
+    """A worker `Store` whose `fail_run` raises for one chosen run id.
+
+    Stands in for a genuine store failure — a locked file, a disk-full
+    write — reached from `_run_one`'s `except Exception` handler itself,
+    which calls `store.fail_run` directly and is not wrapped in a further
+    try/except of its own. That is a route Critical 2's `setdefault` fix
+    does not touch: `setdefault` only closes the `self._tokens[run_id]`
+    `KeyError`, which used to raise *before* `_run_one`'s `try` even began;
+    this raises *inside* one of its `except` bodies, after the try has
+    already been entered and exited abnormally, so `setdefault` has
+    nothing to say about it either way.
+    """
+
+    def __init__(self, path, *, raises_for: str) -> None:
+        super().__init__(path)
+        self._raises_for = raises_for
+
+    def fail_run(self, run_id: str, error) -> None:
+        if run_id == self._raises_for:
+            raise RuntimeError(f"store exploded recording failure for {run_id}")
+        super().fail_run(run_id, error)
+
+
+def test_the_worker_survives_fail_run_itself_raising(tmp_path):
+    """Problem 2 (follow-up): the loop's own `try/except Exception` around
+    `self._run_one(item, store)` in `_work` exists because `_run_one`'s own
+    exception handlers call the store directly (`abort_run`, `fail_run`),
+    and either can raise something `_run_one` does not itself catch — see
+    `_work`'s comment on that handler. Critical 2's `setdefault` fix closed
+    the one route the suite used to exercise this with (a token-less
+    request's bare `self._tokens[run_id]` `KeyError`, raised *before*
+    `_run_one`'s `try`), leaving the loop's handler with no test driving it
+    through a route `setdefault` doesn't close.
+
+    This test drives it through a different, still-open route: `execute`
+    raises a plain exception for every run, which sends `_run_one` into its
+    `except Exception as exc: ... store.fail_run(...)` handler — itself not
+    wrapped in a further try. `_FailRunRaisesStore` makes that specific
+    call raise for the first run id only, so the new exception propagates
+    out of `_run_one` (past its own `finally`, which still runs first) and
+    reaches `_work`'s loop handler. The second run uses the same store, a
+    different run id, and hits the ordinary success path of that handler
+    (a ordinary `fail_run` write, no raise) — proving the worker survived
+    the first run's handler blowing up and moved on to actually run the
+    next one, rather than the thread dying silently.
+    """
+    settings = _settings(tmp_path)
+    exploding_run_id = "explodes-recording-its-own-failure"
+
+    def worker_store() -> Store:
+        return _FailRunRaisesStore(settings.db_path, raises_for=exploding_run_id)
+
+    seen: list[str] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        seen.append(request.run_id or "")
+        raise RuntimeError("boom")
+
+    service = RunService(
+        settings,
+        _open_store(tmp_path),
+        execute=execute,
+        worker_store=worker_store,
+    )
+    service.start()
+    try:
+        service.enqueue(RunRequest(run_id=exploding_run_id))
+        second = service.enqueue(RunRequest())
+        service.shutdown(timeout=10)
+    finally:
+        service.shutdown(timeout=10)
+
+    assert seen == [exploding_run_id, second.run_id]
+    assert service.active().current is None
+
+    reader = Store(settings.db_path)
+    reader.init_schema()
+    record = reader.get_run(second.run_id)
+    reader.close()
+    assert record is not None
+    assert record.status == "failed"
+
+
 def test_a_run_failing_after_a_later_stage_is_recorded_with_that_stage(tmp_path):
     """`stage=request.start_at` names where a run *started*, not where it
     *failed*: a run that starts at ingest and dies in generate must not be

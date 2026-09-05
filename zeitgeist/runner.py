@@ -144,11 +144,22 @@ class RunService:
     """
 
     def __init__(
-        self, settings: Settings, store: Store, *, execute: ExecuteFn | None = None
+        self,
+        settings: Settings,
+        store: Store,
+        *,
+        execute: ExecuteFn | None = None,
+        worker_store: Callable[[], Store] | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
         self._execute = execute or _execute
+        # Injectable for the same reason `execute` is: a test that needs
+        # the worker's own connection to misbehave in a controlled way
+        # (see test_runner.py's coverage of _work's except/finally) has no
+        # other seam to reach it through, since _work always builds this
+        # itself rather than taking it as a constructor argument.
+        self._worker_store = worker_store or (lambda: Store(self._settings.db_path))
         self._queue: queue.Queue[Any] = queue.Queue()
         self._thread: threading.Thread | None = None
         # Guards the three dicts below, which the request threads read and
@@ -308,7 +319,7 @@ class RunService:
         return True
 
     def _work(self) -> None:
-        store = Store(self._settings.db_path)
+        store = self._worker_store()
         store.init_schema()
         try:
             while True:
