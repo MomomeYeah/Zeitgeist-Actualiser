@@ -563,32 +563,36 @@ The fix is that `ThreadPoolExecutor.map` already returns a **lazy iterator that 
 
 Add to `tests/test_analysis_distil.py`. Check the module's existing imports and helpers first — it already builds `TrendEvidence` and `DossierDraft` fixtures, and you should reuse them rather than write new ones. Merge new imports into the existing blocks or isort's `I001` will fire.
 
+**Read the module's existing helpers before writing these.** It already has `_settings(**overrides)` — **which takes no `tmp_path`** — plus `_item`, `_reply(text, author, likes)`, `_evidence(name, *, replies=None, posts=1, status=...)` and `_draft(**overrides)`. Every test below uses them as they stand. Add only `_ScriptedProvider`.
+
 ```python
 import threading
-from typing import Any
+from collections.abc import Callable
 
-import pytest
-from pydantic import BaseModel
-
-from zeitgeist.analysis.distil import DistilError, DossierDraft, distil_topics
 from zeitgeist.models import Topic
 from zeitgeist.progress import Aborted, CancelToken
 
 
 class _ScriptedProvider:
-    """A provider that runs a per-call hook, so a test can control the order
-    two concurrent distillations finish in.
+    """A provider that runs a per-call hook and returns a per-call draft, so
+    a test can control both the order two concurrent distillations finish in
+    and which draft each one produced.
 
-    `FakeLLMProvider` pops from a shared list with no lock, so it cannot be
-    used to script concurrent calls: two workers popping at once is a race,
-    and the test would be asserting on whichever ordering it happened to get.
+    `FakeLLMProvider` pops from a shared list with no lock, so it cannot
+    script concurrent calls: two workers popping at once is a race, and the
+    test would be asserting on whichever ordering it happened to get.
+
+    The unmatched-prompt branch raises rather than returning a default: a
+    double that accepts anything would let a mis-scripted test pass while
+    verifying nothing.
     """
 
     name = "scripted"
 
-    def __init__(self, hooks: dict[str, Any], draft: DossierDraft) -> None:
-        self._hooks = hooks
-        self._draft = draft
+    def __init__(
+        self, script: dict[str, tuple[Callable[[], None] | None, DossierDraft]]
+    ) -> None:
+        self._script = script
 
     def complete(
         self,
@@ -598,13 +602,15 @@ class _ScriptedProvider:
         system: str | None = None,
         max_tokens: int | None = None,
     ) -> Any:
-        for marker, hook in self._hooks.items():
+        for marker, (hook, draft) in self._script.items():
             if marker in prompt:
-                hook()
-        return self._draft
+                if hook is not None:
+                    hook()
+                return draft
+        raise AssertionError("no script entry matched this prompt")
 
 
-def test_a_topic_is_reported_while_later_trends_are_still_running(tmp_path):
+def test_a_topic_is_reported_while_later_trends_are_still_running():
     """This is the whole point of the callback: the mid-analyse screen appends
     ranking rows as they arrive. An implementation that collected every result
     and then called `on_topic` in a loop at the end would satisfy every other
@@ -622,8 +628,9 @@ def test_a_topic_is_reported_while_later_trends_are_still_running(tmp_path):
         reported_cats.wait(timeout=5)
         order.append("dogs-call-end")
 
-    provider = _ScriptedProvider({"Dogs": dogs_call}, _draft())
-    settings = _settings(tmp_path, distil_concurrency=2)
+    provider = _ScriptedProvider(
+        {"Cats": (None, _draft()), "Dogs": (dogs_call, _draft())}
+    )
 
     def on_topic(topic: Topic) -> None:
         order.append(f"reported:{topic.id}")
@@ -633,65 +640,83 @@ def test_a_topic_is_reported_while_later_trends_are_still_running(tmp_path):
     distil_topics(
         [_evidence("Cats"), _evidence("Dogs")],
         provider,
-        settings,
+        _settings(distil_concurrency=2),
         on_topic=on_topic,
     )
 
     assert order.index("reported:cats") < order.index("dogs-call-end")
 
 
-def test_topic_ids_do_not_depend_on_which_trend_finishes_first(tmp_path):
+def test_topic_ids_do_not_depend_on_which_trend_finishes_first():
     """Ids come from `unique_slug`, which suffixes on collision using a set
     that accumulates in iteration order. Reporting as futures *complete*
-    rather than in submission order would give this input `cats` and `cats-2`
-    in whichever order the pool happened to finish — so the same evidence
-    would produce different ids run to run, and resume, which keys on the id,
-    would break.
+    rather than in submission order would give this input `a-trend` and
+    `a-trend-2` in whichever order the pool happened to finish — so the same
+    evidence would produce different ids run to run, and resume, which keys
+    on the id, would break.
 
-    Here the second trend finishes first. The ids must still follow evidence
-    order.
+    Both trends share a label, because that is the only shape in which the
+    bug is observable: with distinct display names `unique_slug` never
+    collides, the ids are fixed by the names alone, and a half-fix that
+    iterated by completion and then sorted the *list* back into evidence
+    order would pass while assigning the ids the wrong way round.
+
+    Here the second trend finishes first. The first must still get `a-trend`,
+    and the drafts prove which topic is which.
     """
     second_done = threading.Event()
+    first = _draft(what_happened="the first one")
+    second = _draft(what_happened="the second one")
 
-    def first_call() -> None:
-        second_done.wait(timeout=5)
-
-    provider = _ScriptedProvider({"first": first_call, "second": second_done.set}, _draft())
-    settings = _settings(tmp_path, distil_concurrency=2)
-
-    topics = distil_topics(
-        [_evidence("Cats first"), _evidence("Cats second")],
-        provider,
-        settings,
+    provider = _ScriptedProvider(
+        {
+            "marker-first": (lambda: second_done.wait(timeout=5), first),
+            "marker-second": (second_done.set, second),
+        }
     )
 
-    assert [topic.id for topic in topics] == ["cats-first", "cats-second"]
+    topics = distil_topics(
+        [
+            _evidence("A trend", replies=[_reply("marker-first")]),
+            _evidence("A trend", replies=[_reply("marker-second")]),
+        ],
+        provider,
+        _settings(distil_concurrency=2),
+    )
+
+    assert [(topic.id, topic.summary) for topic in topics] == [
+        ("a-trend", "the first one"),
+        ("a-trend-2", "the second one"),
+    ]
 
 
-def test_a_failed_trend_consumes_no_id(tmp_path):
+def test_a_failed_trend_consumes_no_id():
     """`used_ids` must only record ids that were actually handed out.
     Pre-assigning a slug to every trend before distillation — a tempting way
     to make ids independent of completion order — would let a *failed* trend
-    reserve `cats`, pushing the trend that succeeded to `cats-2` for no
+    reserve `a-trend`, pushing the trend that succeeded to `a-trend-2` for no
     reason a reader of the output could reconstruct.
+
+    Both trends share a label for the same reason as the test above: with
+    distinct names there is no collision, so a pre-assigned id and a lazily
+    assigned one are indistinguishable and the bug is invisible.
+
+    `FakeLLMProvider` is safe here because `distil_concurrency=1` means only
+    one worker ever pops from its response list; the race its own docstring
+    warns about needs two.
     """
-    provider = _ScriptedProvider(
-        {"doomed": _raise(LLMError("no"))}, _draft()
-    )
-    settings = _settings(tmp_path, distil_concurrency=1)
+    provider = FakeLLMProvider(responses=[LLMError("no"), _draft()])
 
     topics = distil_topics(
-        [_evidence("Cats doomed"), _evidence("Cats")],
+        [_evidence("A trend"), _evidence("A trend")],
         provider,
-        settings,
+        _settings(distil_concurrency=1),
     )
 
-    assert [topic.id for topic in topics] == ["cats"]
+    assert [topic.id for topic in topics] == ["a-trend"]
 
 
-def test_an_aborted_token_stops_the_stage_rather_than_failing_every_trend(
-    tmp_path,
-):
+def test_an_aborted_token_stops_the_stage_rather_than_failing_every_trend():
     """`_distil_one` catches bare `Exception` so one bad trend is dropped
     rather than failing the run. `Aborted` must escape that handler: caught,
     every trend would report as failed and the caller would see `DistilError`
@@ -701,43 +726,34 @@ def test_an_aborted_token_stops_the_stage_rather_than_failing_every_trend(
     """
     token = CancelToken()
     token.abort()
-    provider = _ScriptedProvider({}, _draft())
-    settings = _settings(tmp_path, distil_concurrency=1)
+    provider = _ScriptedProvider({"Cats": (None, _draft())})
 
     with pytest.raises(Aborted):
-        distil_topics([_evidence("Cats")], provider, settings, token=token)
+        distil_topics(
+            [_evidence("Cats")],
+            provider,
+            _settings(distil_concurrency=1),
+            token=token,
+        )
 
 
-def test_a_trend_that_fails_is_not_reported(tmp_path):
+def test_a_trend_that_fails_is_not_reported():
     """The callback appends a ranking row. A dropped trend has no topic, so
     reporting one would put a row on the screen for something that does not
     exist in the checkpoint.
     """
     reported: list[str] = []
-    provider = _ScriptedProvider({"Cats": _raise(LLMError("no"))}, _draft())
-    settings = _settings(tmp_path, distil_concurrency=1)
+    provider = FakeLLMProvider(responses=[LLMError("no")])
 
     with pytest.raises(DistilError):
         distil_topics(
             [_evidence("Cats")],
             provider,
-            settings,
+            _settings(distil_concurrency=1),
             on_topic=lambda topic: reported.append(topic.id),
         )
 
     assert reported == []
-```
-
-You will need two small helpers at the top of the module if equivalents are not already there. `_evidence(name)` builds a `TrendEvidence` whose `trend.display_name` is `name` with one post and one reply; `_draft()` builds a valid `DossierDraft`; `_settings(tmp_path, **overrides)` builds a `Settings`. **Reuse whatever this module already has for these** — read it before writing, and only add what is genuinely missing. `_raise(exc)` is:
-
-```python
-def _raise(exc: Exception):
-    """A hook that raises, for scripting a failed distillation."""
-
-    def hook() -> None:
-        raise exc
-
-    return hook
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -915,8 +931,13 @@ extend-immutable-calls = [
 
 Add to `tests/test_pipeline.py`. It already has `_FakeTrendSource`, `_template_library` and `_settings`; reuse them. Read the module for how it builds evidence, drafts and brief choices, and reuse those helpers too.
 
+The rewritten checkpoint-size test reads the `checkpoints` table directly, so this module needs `sqlite3`, and `ORDER` alongside the `Stage` it already imports. Merge these into the existing blocks:
+
 ```python
+import sqlite3
+
 from zeitgeist.progress import Aborted, CancelToken, RecordingObserver
+from zeitgeist.records import ORDER
 
 
 def test_every_stage_reports_started_and_finished(tmp_path):
@@ -934,22 +955,37 @@ def test_every_stage_reports_started_and_finished(tmp_path):
     assert finished == list(ORDER)
 
 
-def test_a_stage_reports_the_size_of_the_checkpoint_it_wrote(tmp_path):
+def test_every_stage_reports_the_size_of_the_checkpoint_it_wrote(tmp_path):
     """`stage_finished` carries payload bytes rather than a path because
-    checkpoints are rows. Reporting a constant, or zero, would make every
-    stage card claim the same size — and the ingest payload is the largest
-    thing in the database, which is exactly what the card is for.
+    checkpoints are rows. `is not None and > 0` would pass for a hardcoded 1
+    on every stage — which is exactly the "every stage card claims the same
+    size" bug — so each reported number is checked against the row it
+    describes, read out of the checkpoints table rather than back through the
+    pipeline that reported it.
     """
     observer = RecordingObserver()
+    run_id = "20260905T150000Z"
 
-    run_pipeline(*_full_run_args(tmp_path), observer=observer)
+    run_pipeline(*_full_run_args(tmp_path, run_id=run_id), observer=observer)
 
-    sizes = {
+    reported = {
         event.payload[0]: event.payload[1]
         for event in observer.named("stage_finished")
     }
-    assert sizes[Stage.INGEST] is not None
-    assert sizes[Stage.INGEST] > 0
+    conn = sqlite3.connect(tmp_path / "data" / "z.db")
+    try:
+        written = {
+            Stage(stage): len(payload.encode("utf-8"))
+            for stage, payload in conn.execute(
+                "SELECT stage, payload FROM checkpoints WHERE run_id = ?",
+                (run_id,),
+            )
+        }
+    finally:
+        conn.close()
+
+    assert set(written) == set(ORDER), "a stage wrote no checkpoint"
+    assert {stage: reported[stage] for stage in written} == written
 
 
 def test_a_skipped_stage_reports_no_payload(tmp_path):
@@ -1020,16 +1056,14 @@ def test_stopping_after_a_stage_leaves_that_stages_checkpoint_written(tmp_path):
     """
     token = CancelToken()
     store = _store(tmp_path)
-    observer = RecordingObserver()
 
-    class _StopAfterIngest:
-        def stage_finished(self, stage, payload_bytes):
+    # Subclassed rather than proxied through `__getattr__`: `ty` cannot see
+    # that a proxy satisfies `RunObserver`, and the gate covers tests.
+    class _StopAfterIngest(RecordingObserver):
+        def stage_finished(self, stage: Stage, payload_bytes: int | None) -> None:
             if stage is Stage.INGEST:
                 token.stop_after_stage()
-            observer.stage_finished(stage, payload_bytes)
-
-        def __getattr__(self, name):
-            return getattr(observer, name)
+            super().stage_finished(stage, payload_bytes)
 
     run_pipeline(
         *_full_run_args(tmp_path, store=store, run_id="20260905T130000Z"),
@@ -1059,33 +1093,68 @@ def test_a_stopped_run_is_not_marked_finished(tmp_path):
     assert record.status == "running"
 
 
-def test_aborting_propagates_out_of_the_pipeline(tmp_path):
+def test_aborting_during_a_stage_propagates_out_of_the_pipeline(tmp_path):
     """The worker catches `Aborted` to write the terminal status. Swallowed
     inside `run_pipeline`, an aborted run would return normally and be
     recorded as a success.
+
+    The abort is raised from inside the generate stage rather than before the
+    run, because `abort()` also sets `stopping` — a token aborted up front is
+    consumed by the stage boundary, which *returns* rather than raising, so a
+    test written that way would assert on a path abort never takes and could
+    never pass.
     """
     token = CancelToken()
-    token.abort()
+
+    class _AbortOnGenerate(RecordingObserver):
+        def stage_started(self, stage: Stage) -> None:
+            if stage is Stage.GENERATE:
+                token.abort()
+            super().stage_started(stage)
 
     with pytest.raises(Aborted):
-        run_pipeline(*_full_run_args(tmp_path), token=token)
+        run_pipeline(
+            *_full_run_args(tmp_path),
+            observer=_AbortOnGenerate(),
+            token=token,
+        )
 
 
-def test_a_run_with_no_observer_and_no_token_behaves_as_before(tmp_path):
-    """Both seams default to no-ops so `scripts/run_pipeline.py` and every
-    existing test construct neither. A default that was `None` and then
-    dereferenced would break every one of them at the first stage.
+def test_generate_reports_progress_before_each_brief(tmp_path):
+    """The in-flight screen's generate card counts memes as they render, and
+    `stage_progress` is the only event carrying that count. Deleting the call
+    — or reporting `done` as one-based, or a constant total — leaves every
+    other test in this module green while the card sits still until the stage
+    ends.
+
+    `done` is checked against the render events rather than a literal, because
+    the number of briefs is a property of the fixture rather than of the
+    behaviour under test; what matters is that it counts up from zero, once
+    per brief, with the total fixed.
     """
-    run_id = run_pipeline(*_full_run_args(tmp_path))
+    observer = RecordingObserver()
 
-    assert run_id
+    run_pipeline(*_full_run_args(tmp_path), observer=observer)
+
+    progress = [event.payload for event in observer.named("stage_progress")]
+    rendered = [event.payload[0] for event in observer.named("render_finished")]
+
+    assert rendered, "the fixture rendered nothing; the assertion is vacuous"
+    assert [payload[0] for payload in progress] == [Stage.GENERATE] * len(rendered)
+    assert [payload[1] for payload in progress] == list(range(len(rendered)))
+    assert {payload[2] for payload in progress} == {len(rendered)}
+    assert [payload[3] for payload in progress] == [
+        record.topic_id for record in rendered
+    ]
 ```
+
+**No test asserts that the seams default to no-ops.** That is deliberate: every pre-existing test in `tests/test_pipeline.py` calls `run_pipeline` with neither, so a `None` default that was then dereferenced would fail all of them first. A test doing it again would add nothing and cost maintenance forever.
 
 `_full_run_args(tmp_path, **overrides)` and `_failing_render_args(tmp_path)` are helpers you write, returning the positional arguments `run_pipeline` takes — settings, source, provider, store, run_id. The module already builds each of those pieces for its existing tests; factor the shared construction out rather than duplicating it, and give `_failing_render_args` a template whose image is missing so `render_meme` raises `RenderError`, which the module already exercises elsewhere.
 
 - [ ] **Step 3: Run to verify they fail**
 
-Run: `uv run pytest tests/test_pipeline.py -k "reports or stopping or abort or observer" -v`
+Run: `uv run pytest tests/test_pipeline.py -k "reports or stopping or abort or progress" -v`
 Expected: FAIL — `TypeError: run_pipeline() got an unexpected keyword argument 'observer'`
 
 - [ ] **Step 4: Add the parameters and the stage boundary**
@@ -1238,14 +1307,25 @@ import logging
 def test_each_trend_logs_its_post_and_reply_counts_at_debug(caplog):
     """The verbose toggle's whole purpose on the ingest stage: seeing that a
     trend yielded three posts and forty replies is how you tell a thin fetch
-    from a broken one. Without a DEBUG record here the toggle shows nothing
-    for the stage that takes the longest to explain.
+    from a broken one.
+
+    Asserted on `record.args` rather than on a record merely existing, and
+    never on the formatted string. Existence is satisfied by
+    `log.debug("fetched")`; the wrong-argument mutation — the two counts
+    swapped, or the post count logged twice — is the one that makes the line
+    lie while the toggle still appears to work. The literals below are what
+    this module's stubbed client is seeded with; take them from that fixture,
+    do not compute them from the source under test.
     """
     with caplog.at_level(logging.DEBUG, logger="zeitgeist.sources.bluesky"):
         source.fetch_evidence(settings)
 
-    debug = [r for r in caplog.records if r.levelno == logging.DEBUG]
-    assert debug, "ingest emitted no DEBUG records"
+    assert [
+        record.args
+        for record in caplog.records
+        if record.levelno == logging.DEBUG
+        and record.name == "zeitgeist.sources.bluesky"
+    ] == [("A trend", 2, 3)]
 
 
 def test_no_debug_record_carries_reply_text(caplog):
@@ -1269,11 +1349,11 @@ def test_no_debug_record_carries_reply_text(caplog):
 
 `REPLY_TEXT` and `AUTHOR_KEY` are distinctive sentinel strings you put into the fixture the test drives the source with — something like `"UNIQUE-REPLY-BODY-SENTINEL"` — so the assertion catches the text wherever it appears rather than matching on a substring that could occur by chance. Read the module for how it stubs the HTTP client and reuse that; **do not add a network call.**
 
-Write the equivalent pair for the other three modules, driving each through its existing test entry point:
+Write the equivalent for the other three modules, driving each through its existing test entry point. **Each asserts on `record.args`, with hand-derived literals taken from that module's fixture** — an existence check cannot catch a wrong argument, which is the mutation these exist to stop:
 
-- `tests/test_analysis_distil.py` — `distil_topics` must emit a DEBUG record per topic carrying elapsed time and the reply *character count*, never the replies. Reuse the module's existing fixtures.
-- `tests/test_media_brief.py` — `generate_briefs` must emit a DEBUG record naming the chosen template id and the attempt number, since `_brief_one` retries once and which attempt succeeded is the thing you want when captions are poor.
-- `tests/test_media_render.py` — `render_meme` must emit a DEBUG record per slot carrying the fitted font size, which is what you need when text overflows a box.
+- `tests/test_analysis_distil.py` — a DEBUG record per topic carrying the trend name, the reply count and the prompt *character count*, never the replies themselves. Its elapsed-time line is the one exception: a duration is not hand-derivable, so assert `record.args[0]` is the trend name and that `record.args[1]` is a `float`.
+- `tests/test_media_brief.py` — a DEBUG record naming the topic, the chosen template id and the attempt number, since `_brief_one` retries once and which attempt succeeded is the thing you want when captions are poor.
+- `tests/test_media_render.py` — a DEBUG record per slot carrying the slot name and the fitted font size, which is what you need when text overflows a box.
 
 The reply-text assertion belongs on the distil module too, which is the one that actually handles reply bodies. For brief and render there is no reply text in scope, so a single DEBUG-exists test each is enough.
 
@@ -1386,7 +1466,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Interfaces:**
 - Produces:
   - `zeitgeist.logcapture.CapturedLine` — a frozen dataclass: `seq: int`, `logged_at: datetime`, `level: str`, `logger: str`, `message: str`
-  - `zeitgeist.logcapture.RunLogBuffer` — `append(line)`, `since(seq) -> list[CapturedLine]`, `latest_seq -> int`; a bounded `deque`
+  - `zeitgeist.logcapture.RunLogBuffer` — `append(line)` and `since(seq) -> list[CapturedLine]`; a bounded `deque`
   - `zeitgeist.logcapture.RunLogHandler(logging.Handler)` — `__init__(run_id, buffer, store, batch_size=50)`, `emit(record)`, `flush()`, and `attach()` / `detach()` as a context manager via `capture_run_log(...)`
   - `zeitgeist.logcapture.capture_run_log(run_id, store, *, maxlen=2000) -> AbstractContextManager[RunLogBuffer]`
   - `Store.write_log_lines(run_id: str, lines: Sequence[CapturedLine]) -> None` — one transaction for the batch
@@ -1761,11 +1841,6 @@ class RunLogBuffer:
         """
         return [line for line in tuple(self._lines) if line.seq > seq]
 
-    @property
-    def latest_seq(self) -> int:
-        lines = tuple(self._lines)
-        return lines[-1].seq if lines else 0
-
 
 class RunLogHandler(logging.Handler):
     """Writes one run's lines to a buffer and, in batches, to the store.
@@ -1934,8 +2009,13 @@ def test_reconciling_leaves_finished_runs_alone(tmp_path):
 
     assert store.reconcile_interrupted() == []
 
-    assert store.get_run("ok-run").status == "ok"
-    assert store.get_run("failed-run").status == "failed"
+    # Guarded rather than dereferenced inline: `get_run` returns
+    # `RunRecordRow | None`, and `ty` covers tests as part of the gate.
+    finished = store.get_run("ok-run")
+    failed = store.get_run("failed-run")
+    assert finished is not None
+    assert failed is not None
+    assert (finished.status, failed.status) == ("ok", "failed")
 
 
 def test_reconciling_an_already_reconciled_database_changes_nothing(tmp_path):
@@ -2199,7 +2279,14 @@ def _settings(tmp_path) -> Settings:
 
 class _Gate:
     """A run that blocks until released, so a test can hold the worker in a
-    known state without sleeping."""
+    known state without sleeping.
+
+    It opens the run row itself. The real executor reaches `run_pipeline`,
+    and `run_pipeline` is what calls `store.start_run`; a fake that skips
+    that leaves `run_records` empty, and both `abort_run` and `fail_run` are
+    `UPDATE ... WHERE run_id = ?`, so every terminal-status assertion would
+    read back `None` no matter what the worker did.
+    """
 
     def __init__(self) -> None:
         self.entered = threading.Event()
@@ -2208,7 +2295,9 @@ class _Gate:
         self.raise_on_release: Exception | None = None
 
     def __call__(self, settings, request, store, observer, token) -> None:
-        self.run_ids.append(request.run_id or "")
+        run_id = request.run_id or ""
+        store.start_run(run_id, make_run_config())
+        self.run_ids.append(run_id)
         self.entered.set()
         assert self.release.wait(timeout=5)
         if self.raise_on_release is not None:
@@ -2397,6 +2486,43 @@ def test_stopping_the_current_run_trips_stopping_but_not_aborted(tmp_path):
         service.shutdown(timeout=10)
 
     assert seen == [(True, False)]
+
+
+def test_a_run_stopped_after_a_stage_is_recorded_as_aborted(tmp_path):
+    """`run_pipeline` returns normally on a stop, without writing a terminal
+    status: only the worker holds the token and can tell a stop from a clean
+    completion. Left unwritten, the run keeps the `running` row it started
+    with and the next startup reconciles it to `interrupted` — a crash story
+    for a run the user deliberately stopped.
+
+    Distinct from the abort test above, which reaches the `except Aborted`
+    branch: this one reaches `if token.stopping`, and deleting that branch
+    fails nothing else in the suite.
+    """
+    entered = threading.Event()
+    released = threading.Event()
+
+    def execute(settings, request, store, observer, token) -> None:
+        store.start_run(request.run_id or "", make_run_config())
+        entered.set()
+        assert released.wait(timeout=5)
+        # A stop is honoured at a stage boundary: the pipeline returns rather
+        # than raising, which is what returning here stands in for.
+
+    service = RunService(_settings(tmp_path), execute=execute)
+    service.start()
+    queued = service.enqueue(RunRequest())
+    assert entered.wait(timeout=5)
+    assert service.stop(queued.run_id) is True
+    released.set()
+    service.shutdown(timeout=10)
+
+    store = Store(_settings(tmp_path).db_path)
+    store.init_schema()
+    record = store.get_run(queued.run_id)
+    store.close()
+    assert record is not None
+    assert record.status == "aborted"
 
 
 def test_aborting_an_unknown_run_reports_that_it_did_nothing(tmp_path):
@@ -2733,7 +2859,7 @@ class RunService:
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `uv run pytest tests/test_runner.py -v`
-Expected: PASS, 13 tests.
+Expected: PASS, 14 tests.
 
 - [ ] **Step 5: Run the full gate**
 
@@ -2826,7 +2952,9 @@ and pass it straight through where the service is constructed, as shown above. P
 
 In `tests/api_factory.py`, add the same keyword-only argument to `seeded_client` and pass it to `create_app`. **Do not change the existing positional parameters** — every API test module calls `seeded_client(tmp_path)` or `seeded_client(tmp_path, runs=[...])`, and those call sites must keep working untouched.
 
-Also add a small executor double, beside `SeededRun`:
+Also add two executor doubles beside `SeededRun`. Both open the run row, and that is the point: the real executor reaches `run_pipeline`, and `run_pipeline` is what calls `store.start_run`. A double that skipped it would leave `run_records` empty, so every endpoint guarded by `_run_or_404` — the event stream among them — would answer 404 for a run that is executing, and every terminal-status assertion in `test_runner.py` would read back `None`.
+
+`tests/api_factory.py` needs `import logging`, `import threading`, `field` added to its `dataclasses` import, and `make_run_config` added to its `tests.run_factory` import.
 
 ```python
 @dataclass
@@ -2834,6 +2962,11 @@ class GatedExecute:
     """A run that blocks until released, so a test can hold the worker in a
     known state without sleeping. Lives here rather than in one test module
     because both the control tests and the SSE tests need it.
+
+    It opens the run row, because the real executor reaches `run_pipeline`
+    and `run_pipeline` is what calls `store.start_run`. Without that, every
+    endpoint guarded by `_run_or_404` — the event stream among them —
+    answers 404 for a run that is executing.
     """
 
     entered: threading.Event = field(default_factory=threading.Event)
@@ -2841,7 +2974,29 @@ class GatedExecute:
     run_ids: list[str] = field(default_factory=list)
 
     def __call__(self, settings, request, store, observer, token) -> None:
-        self.run_ids.append(request.run_id or "")
+        run_id = request.run_id or ""
+        store.start_run(run_id, make_run_config())
+        self.run_ids.append(run_id)
+        self.entered.set()
+        self.release.wait(timeout=5)
+
+
+@dataclass
+class LoggingGate:
+    """A run that opens its row, logs one line, then blocks until released.
+
+    The line has to be emitted while the run is still executing, because the
+    worker drops the buffer the moment it ends — so a stream opened after the
+    run finished can never carry it.
+    """
+
+    message: str = "hello from the run"
+    entered: threading.Event = field(default_factory=threading.Event)
+    release: threading.Event = field(default_factory=threading.Event)
+
+    def __call__(self, settings, request, store, observer, token) -> None:
+        store.start_run(request.run_id or "", make_run_config())
+        logging.getLogger("zeitgeist.testing.sse").info(self.message)
         self.entered.set()
         self.release.wait(timeout=5)
 ```
@@ -2946,6 +3101,25 @@ def test_overrides_reach_the_run(tmp_path):
     assert seen == [9]
 
 
+def test_a_posted_template_selection_reaches_the_run(tmp_path):
+    """The New run screen's template picker is this field. Dropped in the
+    router, every run would render against the whole library and the picker
+    would be decorative — and the resume endpoint's own test would not
+    notice, because that is a different call site with its own body model.
+    """
+    seen: list[list[str] | None] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        seen.append(request.template_ids)
+
+    client = seeded_client(tmp_path, execute=execute)
+
+    client.post("/api/runs", json={"template_ids": ["drake"]})
+    client.app.state.runner.shutdown(timeout=10)
+
+    assert seen == [["drake"]]
+
+
 def test_an_override_outside_the_allowlist_is_a_400(tmp_path):
     """`db_path` and `anthropic_api_key` are not run options. The service
     raises ValueError; a router that let it escape would return 500 and tell
@@ -3043,7 +3217,7 @@ class StartRunBody(BaseModel):
 - [ ] **Step 6: Run to verify they pass**
 
 Run: `uv run pytest tests/test_api_control.py -v`
-Expected: PASS, 8 tests.
+Expected: PASS, 9 tests.
 
 - [ ] **Step 7: Run the full gate**
 
@@ -3073,12 +3247,13 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ### Task 10: Resume, stop and abort
 
 **Files:**
-- Modify: `zeitgeist/api/control.py`, `zeitgeist/api/schemas.py`, `tests/test_api_control.py`
+- Modify: `zeitgeist/api/control.py`, `zeitgeist/api/schemas.py`, `tests/run_factory.py`, `tests/test_api_control.py`
 
 **Interfaces:**
 - Consumes: `RunService.stop`, `.abort`, `.enqueue`; `resume_stage` from `zeitgeist/api/runs.py` (phase 2).
 - Produces:
   - `zeitgeist.api.schemas.ResumeBody` — `stage: Stage | None = None`, `template_ids: list[str] | None = None`
+  - `tests.run_factory.make_evidence(source_ids, *, name="A trend", replies=(), status="trending") -> TrendEvidence`
   - `POST /api/runs/{run_id}/resume`, `POST /api/runs/{run_id}/stop`, `POST /api/runs/{run_id}/abort`
 
 **`template_ids` on resume is the tuning loop.** The loop this replaces is `--resume-from generate --templates drake`: edit a prompt or a manifest, re-render the same frozen topics, look at the output. The design's "Resume from &lt;stage&gt;" button takes no options, so without this there is no way to resume with the template library narrowed — which is exactly the loop.
@@ -3087,11 +3262,69 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 **Stop and abort are 404 when the run is not executing.** `RunService.stop` and `.abort` return `False` for a run it has never heard of or has already finished, and a router reporting success for those would tell the user a finished run was aborting.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Add an evidence factory**
 
-Add to `tests/test_api_control.py`:
+`test_resuming_without_a_stage_uses_the_computed_one` needs a run whose INGEST checkpoint exists, and `seed_run` writes one only when `SeededRun.evidence` is non-empty. Three test modules already hand-roll a `TrendEvidence` builder; this is the fourth caller, which is what `run_factory` is for.
+
+Add to `tests/run_factory.py`:
 
 ```python
+def make_evidence(
+    source_ids: list[str],
+    *,
+    name: str = "A trend",
+    replies: Sequence[Reply] = (),
+    status: TrendStatus = "trending",
+) -> TrendEvidence:
+    """One trend's evidence, for tests that need an ingest checkpoint.
+
+    `source_ids` are the post ids the topic's `item_ids` will match against,
+    which is what makes a seeded run's topic detail able to find its replies.
+    """
+    return TrendEvidence(
+        trend=TrendInfo(
+            topic_id=f"id-{name}",
+            display_name=name,
+            description="Something happened.",
+            category="news",
+            post_count=len(source_ids),
+            started_at=FIXED_NOW,
+            status=status,
+        ),
+        posts=[
+            PostEvidence(
+                item=Item(
+                    source_id=source_id,
+                    title="a post",
+                    permalink=f"https://bsky.app/profile/x/post/{source_id}",
+                    fetched_at=FIXED_NOW,
+                    metrics=BlueskyMetrics(
+                        like_count=1,
+                        reply_count=len(replies),
+                        repost_count=0,
+                        trend=name,
+                        status=status,
+                        created_at=FIXED_NOW,
+                    ),
+                ),
+                replies=list(replies),
+            )
+            for source_id in source_ids
+        ],
+    )
+```
+
+`FIXED_NOW` is whatever fixed datetime the module already uses for its other builders — read it and reuse it rather than adding a second. A fixture dated relative to `now` would make any comparison against the current time pass or fail depending on the hour the suite runs. Extend the module's existing import block with `BlueskyMetrics`, `Item`, `PostEvidence`, `Reply`, `TrendEvidence` and `TrendInfo` from `zeitgeist.models`, and `Sequence` from `collections.abc`.
+
+- [ ] **Step 2: Write the failing tests**
+
+Add to `tests/test_api_control.py`. It already imports `GatedExecute` and `seeded_client`; extend that block rather than adding a second `from tests.api_factory import ...` line, or isort's `I001` will fire.
+
+```python
+import threading
+
+from tests.api_factory import GatedExecute, SeededRun, seeded_client
+from tests.run_factory import make_evidence, make_run_config
 from zeitgeist.records import Stage
 
 
@@ -3125,6 +3358,13 @@ def test_resuming_without_a_stage_uses_the_computed_one(tmp_path):
     """The button posts no stage. A router requiring one would make the
     button unusable, and defaulting to `ingest` would silently redo the
     minutes of fetching that the run's checkpoints already hold.
+
+    The run is seeded with its ingest evidence as well as its topics, so
+    INGEST and ANALYSE are written and EVALUATE is not — making the computed
+    stage EVALUATE rather than either end of `ORDER`, so a router hardcoding
+    one fails here. The default `SeededRun` will not do: with no evidence it
+    writes no INGEST checkpoint, `resume_stage` returns `None`, and the
+    endpoint 409s before the default is ever consulted.
     """
     seen: list[Stage] = []
 
@@ -3133,14 +3373,19 @@ def test_resuming_without_a_stage_uses_the_computed_one(tmp_path):
 
     client = seeded_client(
         tmp_path,
-        runs=[SeededRun(run_id="20260901T120000Z")],
+        runs=[
+            SeededRun(
+                run_id="20260901T120000Z",
+                evidence=[make_evidence(["p1"])],
+            )
+        ],
         execute=execute,
     )
 
     client.post("/api/runs/20260901T120000Z/resume", json={})
     client.app.state.runner.shutdown(timeout=10)
 
-    assert seen == [Stage.GENERATE]
+    assert seen == [Stage.EVALUATE]
 
 
 def test_resuming_carries_the_narrowed_template_library(tmp_path):
@@ -3221,6 +3466,46 @@ def test_aborting_the_current_run_is_accepted(tmp_path):
         gate.release.set()
 
 
+def test_stop_trips_stopping_and_abort_trips_aborted(tmp_path):
+    """Two buttons, two meanings, and 202 from both. A stop wired to
+    `runner.abort` would answer 202 exactly as it does now while unwinding
+    the stage mid-flight and losing the checkpoint the stop button promises —
+    so what gets asserted is the token the worker handed the run, not the
+    status code. Task 8 pins this at the service; nothing else pins it at the
+    seam the button actually goes through.
+    """
+    flags: dict[str, tuple[bool, bool]] = {}
+    entered = threading.Event()
+    released = threading.Event()
+
+    def execute(settings, request, store, observer, token) -> None:
+        run_id = request.run_id or ""
+        store.start_run(run_id, make_run_config())
+        entered.set()
+        assert released.wait(timeout=5)
+        flags[run_id] = (token.stopping, token.aborted)
+
+    client = seeded_client(tmp_path, execute=execute)
+
+    stopped = client.post("/api/runs", json={}).json()
+    assert entered.wait(timeout=5)
+    assert client.post(f"/api/runs/{stopped['run_id']}/stop").status_code == 202
+    released.set()
+    client.app.state.runner.shutdown(timeout=10)
+
+    entered.clear()
+    released.clear()
+    client.app.state.runner.start()
+    aborted = client.post("/api/runs", json={}).json()
+    assert entered.wait(timeout=5)
+    assert client.post(f"/api/runs/{aborted['run_id']}/abort").status_code == 202
+    released.set()
+    client.app.state.runner.shutdown(timeout=10)
+
+    assert flags[stopped["run_id"]] == (True, False)
+    assert flags[aborted["run_id"]] == (True, True)
+
+
 def test_stopping_a_run_that_is_not_executing_is_a_404(tmp_path):
     """The inline abort confirmation is drawn from a poll that can be a
     moment stale. Reporting success for a run that already finished would
@@ -3232,12 +3517,12 @@ def test_stopping_a_run_that_is_not_executing_is_a_404(tmp_path):
     assert client.post("/api/runs/20260901T120000Z/abort").status_code == 404
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [ ] **Step 3: Run to verify they fail**
 
 Run: `uv run pytest tests/test_api_control.py -k "resum or stop or abort" -v`
 Expected: FAIL with 404s.
 
-- [ ] **Step 3: Write the endpoints**
+- [ ] **Step 4: Write the endpoints**
 
 Add to `zeitgeist/api/control.py`:
 
@@ -3311,20 +3596,20 @@ class ResumeBody(BaseModel):
     template_ids: list[str] | None = None
 ```
 
-- [ ] **Step 4: Run to verify they pass**
+- [ ] **Step 5: Run to verify they pass**
 
 Run: `uv run pytest tests/test_api_control.py -v`
-Expected: PASS, 16 tests.
+Expected: PASS, 18 tests.
 
-- [ ] **Step 5: Run the full gate**
+- [ ] **Step 6: Run the full gate**
 
 Run: `uv run ruff check . && uv run ruff format --check . && uv run ty check && uv run pytest`
 Expected: all four pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add zeitgeist/api/control.py zeitgeist/api/schemas.py tests/test_api_control.py
+git add zeitgeist/api/control.py zeitgeist/api/schemas.py tests/run_factory.py tests/test_api_control.py
 git commit -m "Serve resume, stop and abort
 
 Resume reuses the run's id and its checkpoints, and defaults to the stage
@@ -3346,7 +3631,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Modify: `zeitgeist/api/control.py`, `tests/test_api_control.py`
 
 **Interfaces:**
-- Consumes: `RunService.buffer(run_id)`, `RunLogBuffer.since(seq)`, `latest_seq`.
+- Consumes: `RunService.buffer(run_id)` and `RunLogBuffer.since(seq)`. The generator tracks its own cursor from the last line it sent, which is why `RunLogBuffer` needs no `latest_seq`.
 - Produces: `GET /api/runs/{run_id}/events` — `text/event-stream`, emitting `log` and `tick` events
 
 **The shape of the stream.** Two event types. A `log` event carries one batch of new lines as JSON. A `tick` carries nothing but a sequence number and tells the client to invalidate its queries — the observer has already written `run_records`, `run_stages` and `run_topics` from the worker thread, so the client refetches rather than being handed the data twice.
@@ -3365,27 +3650,8 @@ Add to `tests/test_api_control.py`:
 
 ```python
 import json
-import logging
-import threading
-from dataclasses import dataclass, field
 
-
-@dataclass
-class LoggingGate:
-    """A run that logs one line, then blocks until released.
-
-    The line has to be emitted while the run is still executing, because the
-    worker drops the buffer the moment it ends.
-    """
-
-    message: str = "hello from the run"
-    entered: threading.Event = field(default_factory=threading.Event)
-    release: threading.Event = field(default_factory=threading.Event)
-
-    def __call__(self, settings, request, store, observer, token) -> None:
-        logging.getLogger("zeitgeist.testing.sse").info(self.message)
-        self.entered.set()
-        self.release.wait(timeout=5)
+from tests.api_factory import LoggingGate, SeededRun, seeded_client
 
 
 def _events(client, url, *, release_after=None, limit=400):
@@ -3485,6 +3751,50 @@ def test_a_line_is_sent_once(tmp_path):
     )
 
     assert _logged(events).count("only once") == 1
+
+
+def test_every_poll_emits_a_tick_the_client_can_invalidate_on(tmp_path):
+    """A tick carries no data of its own: the observer has already written
+    `run_records`, `run_stages` and `run_topics` from the worker thread, and
+    the tick is what tells the client to refetch them. Without it the stream
+    would deliver log lines and nothing else, and the stage cards would never
+    advance until the page was reloaded — which no other test here would
+    notice, because they all filter for `log`.
+    """
+    client = seeded_client(tmp_path, runs=[SeededRun(run_id="20260901T120000Z")])
+
+    events = _events(client, "/api/runs/20260901T120000Z/events")
+
+    ticks = [json.loads(data) for name, data in events if name == "tick"]
+    assert ticks
+    assert all(set(tick) == {"seq"} for tick in ticks)
+
+
+def test_a_streamed_line_carries_everything_the_log_viewer_renders(tmp_path):
+    """The viewer colours by level, groups by logger and orders by seq, and
+    the historical endpoint returns all five fields. A stream sending only
+    the message would make the live log and the post-mortem log two different
+    things, and the verbose toggle would have nothing to filter on until the
+    run ended.
+    """
+    gate = LoggingGate()
+    client = seeded_client(tmp_path, execute=gate)
+    body = client.post("/api/runs", json={}).json()
+    assert gate.entered.wait(timeout=5)
+
+    events = _events(
+        client,
+        f"/api/runs/{body['run_id']}/events",
+        release_after=gate.release.set,
+    )
+
+    lines = [
+        line for name, data in events if name == "log" for line in json.loads(data)
+    ]
+    [line] = [line for line in lines if line["message"] == gate.message]
+    assert set(line) == {"seq", "logged_at", "level", "logger", "message"}
+    assert line["level"] == "INFO"
+    assert line["logger"] == "zeitgeist.testing.sse"
 
 
 def test_streaming_an_unknown_run_is_a_404(tmp_path):
@@ -3594,7 +3904,7 @@ def stream_events(
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `uv run pytest tests/test_api_control.py -v`
-Expected: PASS, 21 tests.
+Expected: PASS, 25 tests.
 
 If a stream test hangs rather than failing, the terminating condition is wrong — fix the generator, **not** the test's bound. The bound is what turns a hang into a failure, and removing it would make this suite hang on CI instead.
 
@@ -3655,7 +3965,7 @@ import httpx
 import pytest
 
 from zeitgeist.config import Settings
-from zeitgeist.llm.registry import ANTHROPIC_MODELS, available_models, ollama_models
+from zeitgeist.llm.registry import available_models, ollama_models
 
 
 class _FakeClient:
@@ -3715,7 +4025,12 @@ def test_available_models_reports_both_providers(tmp_path):
 
     models = available_models(settings, client=client)
 
-    assert models["anthropic"] == list(ANTHROPIC_MODELS)
+    # Presence rather than equality against `ANTHROPIC_MODELS`: comparing the
+    # function's output to the constant it is built from is true whatever
+    # either one says, and pinning the exact list would fire the next time
+    # Anthropic ships a model.
+    assert set(models) == {"anthropic", "ollama"}
+    assert models["anthropic"]
     assert models["ollama"] == ["qwen3.5"]
 ```
 
@@ -3787,7 +4102,38 @@ def available_models(settings: Settings, client: Any = None) -> dict[str, list[s
 Create `tests/test_api_options.py`:
 
 ```python
+import pytest
+
 from tests.api_factory import seeded_client
+
+
+@pytest.fixture(autouse=True)
+def _no_real_ollama(monkeypatch):
+    """`read_options` calls `available_models`, which builds its own
+    `httpx.Client` and gets `/api/tags`. Left alone, every test in this
+    module reaches whatever Ollama the developer happens to be running:
+    `conftest` strips `OLLAMA_HOST`, so the host falls back to the real
+    default and the result depends on who runs the suite — exactly the
+    hermeticity the autouse fixture exists to guarantee.
+
+    `test_llm_registry.py` injects a fake client for this reason; this module
+    has no seam to inject through, so the host is pointed at a port nothing
+    listens on instead. `ollama_models` swallows the refusal and reports an
+    empty list, which is the CI shape.
+    """
+    monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:9")
+
+
+def test_a_stopped_ollama_leaves_the_dropdown_empty_rather_than_500ing(tmp_path):
+    """The settings screen has to render when Ollama is not running. The
+    registry's own test proves `ollama_models` swallows the error; this
+    proves the endpoint above it does not reintroduce one."""
+    client = seeded_client(tmp_path)
+
+    response = client.get("/api/config/options")
+
+    assert response.status_code == 200
+    assert response.json()["models"]["ollama"] == []
 
 
 def test_the_options_report_both_providers_models(tmp_path):
@@ -3842,14 +4188,22 @@ def test_platforms_report_which_are_actually_usable(tmp_path):
 
 def test_templates_report_their_slots(tmp_path):
     """The manual generation panel in phase 4 draws one caption input per
-    slot. Reporting template ids alone would leave it unable to render a
-    form for a template it had not hardcoded."""
+    slot. Reporting ids alone — or the key with an empty list, which
+    `"slots" in template` cannot tell apart, because `TemplateOption` declares
+    the field and so FastAPI always emits it — would leave that panel unable
+    to render a form for a template it had not hardcoded.
+
+    `drake`'s two slots are named in `zeitgeist/media/templates/drake.json`,
+    the library `Settings.templates_dir` points at by default.
+    """
     client = seeded_client(tmp_path)
 
-    templates = client.get("/api/config/options").json()["templates"]
+    templates = {
+        template["id"]: template["slots"]
+        for template in client.get("/api/config/options").json()["templates"]
+    }
 
-    assert templates
-    assert all("slots" in template for template in templates)
+    assert templates["drake"] == ["rejected", "preferred"]
 
 
 def test_the_env_defaults_are_reported(tmp_path):
@@ -3951,7 +4305,7 @@ Mount `options.router` in `create_app` alongside the others. **Check `TemplateMa
 - [ ] **Step 5: Run to verify they pass**
 
 Run: `uv run pytest tests/test_llm_registry.py tests/test_api_options.py -v`
-Expected: PASS, 10 tests.
+Expected: PASS, 11 tests.
 
 - [ ] **Step 6: Run the full gate**
 
@@ -4003,7 +4357,17 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `tests/test_api_settings.py`:
+Add to `tests/test_api_settings.py`. Two of these assert against the settings table and a freshly built `Settings` rather than through `GET /api/settings`, because that endpoint reports `getattr` on the app's *startup* `Settings` object, which no write reaches — an assertion through the GET reads the same value whatever the endpoint did. Extend the module's existing import block with:
+
+```python
+import os
+from pathlib import Path
+
+from zeitgeist.config import Settings
+from zeitgeist.store import Store
+```
+
+Then the tests:
 
 ```python
 def test_a_written_value_is_stored_and_reported_as_set_here(tmp_path):
@@ -4024,14 +4388,18 @@ def test_a_written_value_is_stored_and_reported_as_set_here(tmp_path):
 def test_a_written_value_survives_into_a_new_settings_object(tmp_path):
     """The point of the table: the next run picks the value up. A write that
     only touched the response would change the screen and nothing else.
+
+    Asserted on a freshly built `Settings` rather than on `GET /api/settings`,
+    because that is what "the next run" actually is — the worker constructs
+    one per run and `SettingsTableSource` reads the table at construction.
+    The GET reports `getattr` on the app's *startup* `Settings`, which no
+    write reaches, so a GET-based assertion here could never pass.
     """
     client = seeded_client(tmp_path)
 
     client.put("/api/settings", json={"values": {"phrase_min_authors": "7"}})
 
-    assert client.get("/api/settings").json()
-    fields = {f["key"]: f for f in client.get("/api/settings").json()}
-    assert fields["phrase_min_authors"]["value"] == 7
+    assert Settings(_env_file=None).phrase_min_authors == 7
 
 
 def test_an_empty_value_clears_the_row_so_the_fallback_applies(tmp_path):
@@ -4045,8 +4413,13 @@ def test_an_empty_value_clears_the_row_so_the_fallback_applies(tmp_path):
         "/api/settings", json={"values": {"phrase_min_authors": ""}}
     ).json()
 
+    # Compared against a freshly built Settings rather than the literal 3:
+    # that literal is the field's default, which the code is free to change,
+    # so a test pinning it would fail for a decision rather than a bug.
     fields = {field["key"]: field for field in body}
-    assert fields["phrase_min_authors"]["value"] == 3
+    assert fields["phrase_min_authors"]["value"] == (
+        Settings(_env_file=None).phrase_min_authors
+    )
     assert fields["phrase_min_authors"]["source"] != "settings"
 
 
@@ -4079,16 +4452,26 @@ def test_the_api_key_cannot_be_written(tmp_path):
 def test_a_refused_field_writes_nothing_at_all(tmp_path):
     """A request naming one good field and one bad one must write neither.
     Applying the valid half would leave the screen showing a partial save
-    with a 400 beside it, and no way to tell which half landed."""
+    with a 400 beside it, and no way to tell which half landed.
+
+    Asserted against the settings table rather than `GET /api/settings`: the
+    GET reports `getattr` on the app's startup `Settings`, which no write can
+    change, so a GET-based assertion here reads 3 whether the endpoint wrote
+    nothing, the good half, or both.
+    """
     client = seeded_client(tmp_path)
 
-    client.put(
+    response = client.put(
         "/api/settings",
         json={"values": {"phrase_min_authors": "7", "db_path": "/tmp/x.db"}},
     )
 
-    fields = {f["key"]: f for f in client.get("/api/settings").json()}
-    assert fields["phrase_min_authors"]["value"] == 3
+    assert response.status_code == 400
+    store = Store(Path(os.environ["DB_PATH"]))
+    try:
+        assert store.get_settings() == {}
+    finally:
+        store.close()
 
 
 def test_a_value_that_settings_would_reject_is_refused(tmp_path):
