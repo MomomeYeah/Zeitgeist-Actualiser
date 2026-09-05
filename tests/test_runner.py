@@ -92,21 +92,17 @@ def test_queued_runs_execute_in_the_order_they_were_posted(tmp_path):
     """FIFO. A queue drained in any other order would run the user's newest
     request last, which is the opposite of what a queue notice promises.
 
-    Explicit, distinct `run_id`s rather than three auto-generated ones:
-    `new_run_id()` has whole-second resolution, so three calls issued this
-    close together can collide on the same string. `_tokens` is keyed by
-    `run_id` and a completed run pops its own key (Finding 6), so a
-    collision would mean the first run's completion pops the token the
-    *third* enqueue just installed under the same key — a test artifact of
-    the id generator's granularity, not something this test is for.
+    Auto-generated `run_id`s, exercising the real `new_run_id()`: it now has
+    millisecond resolution backed by a monotonic counter, so three calls
+    issued this close together can no longer collide on the same string.
     """
     gate = _Gate()
     service = _service(tmp_path, gate)
     try:
-        first = service.enqueue(RunRequest(run_id="run-1"))
+        first = service.enqueue(RunRequest())
         assert gate.entered.wait(timeout=5)
-        second = service.enqueue(RunRequest(run_id="run-2"))
-        third = service.enqueue(RunRequest(run_id="run-3"))
+        second = service.enqueue(RunRequest())
+        third = service.enqueue(RunRequest())
         gate.release.set()
         service.shutdown(timeout=10)
     finally:

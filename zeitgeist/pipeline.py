@@ -6,6 +6,7 @@ partial checkpoints to inspect.
 """
 
 import logging
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -33,9 +34,33 @@ from zeitgeist.store import Store
 
 log = logging.getLogger(__name__)
 
+_run_id_lock = threading.Lock()
+_last_run_id_ms: int | None = None
+
 
 def new_run_id() -> str:
-    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    """A sortable, filesystem-safe id with millisecond resolution.
+
+    Whole-second resolution let two calls in the same second collide, and
+    `Store.start_run` upserts on `run_id`, so a collision silently reset one
+    run's row onto another's. Milliseconds alone narrow that window but
+    don't close it - a tight loop can issue thousands of calls inside one
+    millisecond. A module-level counter closes it outright: each call is
+    forced to at least one millisecond past the last one this process
+    handed out, so ids stay strictly increasing (hence still sortable) and
+    therefore always distinct, without this module reaching into the store
+    to check.
+    """
+    global _last_run_id_ms
+    with _run_id_lock:
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        if _last_run_id_ms is not None and now_ms <= _last_run_id_ms:
+            now_ms = _last_run_id_ms + 1
+        _last_run_id_ms = now_ms
+
+    seconds, millis = divmod(now_ms, 1000)
+    stamp = datetime.fromtimestamp(seconds, UTC).strftime("%Y%m%dT%H%M%S")
+    return f"{stamp}.{millis:03d}Z"
 
 
 def _count(n: int, noun: str) -> str:

@@ -24,7 +24,7 @@ from zeitgeist.models import (
     TrendEvidence,
     TrendInfo,
 )
-from zeitgeist.pipeline import Stage, run_pipeline
+from zeitgeist.pipeline import Stage, new_run_id, run_pipeline
 from zeitgeist.progress import Aborted, CancelToken, RecordingObserver
 from zeitgeist.records import ORDER, AutoOrigin, RenderRecord
 from zeitgeist.sources.base import TrendSource
@@ -817,3 +817,25 @@ def test_generate_reports_progress_before_each_brief(tmp_path):
     assert [payload[3] for payload in progress] == [
         record.topic_id for record in rendered
     ]
+
+
+def test_new_run_id_is_distinct_on_every_call_even_in_a_tight_loop():
+    """`Store.start_run` upserts on `run_id`: `INSERT ... ON CONFLICT(run_id)
+    DO UPDATE`. Two calls to `new_run_id()` that return the same string
+    therefore don't just label two runs alike - the second `start_run` call
+    resets the first run's row back to `running`, replaces its frozen
+    config, and nulls its outcome columns, while the first run's worker is
+    still executing against it. Both runs then write checkpoints, stage
+    records, renders and log lines under the one surviving id, and one run's
+    result is silently lost.
+
+    The old implementation formatted with whole-second resolution
+    (`%Y%m%dT%H%M%SZ`), so any two calls landing in the same wall-clock
+    second - trivial in a tight loop - returned the identical string. 10,000
+    iterations with no delay would collide many times over under that
+    scheme; asserting the results form a set of the same size as the list
+    catches that collision even though it may not happen on every call.
+    """
+    ids = [new_run_id() for _ in range(10_000)]
+
+    assert len(set(ids)) == len(ids)
