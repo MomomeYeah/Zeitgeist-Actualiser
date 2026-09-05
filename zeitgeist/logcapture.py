@@ -7,6 +7,7 @@ other.
 """
 
 import logging
+import threading
 from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -65,8 +66,27 @@ class RunLogBuffer:
 class RunLogHandler(logging.Handler):
     """Writes one run's lines to a buffer and, in batches, to the store.
 
-    Safe as a plain handler because the queue guarantees one run at a time,
-    so a second run's handler is never attached simultaneously.
+    Attached to the `"zeitgeist"` logger for a run's whole duration (see
+    `capture_run_log`), which means *any* code under that namespace logging
+    from *any* thread reaches `emit` while a run is in flight — not only the
+    worker thread actually running the pipeline. `llm/registry.py` logging a
+    debug line on a request thread while `GET /api/config/options` checks
+    Ollama is a real example, not a hypothetical one.
+
+    That matters because this handler closes over the worker's `Store`,
+    opened with the default `check_same_thread=True`: flushing from any
+    thread but the one that constructed this handler raises
+    `sqlite3.ProgrammingError`, and it would also record an unrelated
+    request's line into *this run's* rows and stream it to the browser as
+    this run's own output.
+
+    `_owner_thread` is recorded once, at construction, and `emit` drops
+    every record from any other thread before it touches `_seq`, `_pending`
+    or the store — cheaper and simpler than giving the handler a second,
+    thread-safe `Store` just to accept lines it has no business recording.
+    Safe as a plain handler otherwise, because the queue guarantees one run
+    executing at a time, so a second run's handler is never attached
+    simultaneously.
     """
 
     def __init__(
@@ -86,25 +106,44 @@ class RunLogHandler(logging.Handler):
         # two lines can share a timestamp at the resolution recorded here,
         # and the live log's ordering has to be total.
         self._seq = 0
+        # Guards `_seq` and `_pending` only — never held across the store
+        # write in `flush`. With `emit` already refusing every thread but
+        # this one, nothing should ever actually contend on it; it stays
+        # cheap insurance against a future caller that flushes from
+        # somewhere else, not a substitute for the thread check above.
+        self._lock = threading.Lock()
+        self._owner_thread = threading.get_ident()
 
     def emit(self, record: logging.LogRecord) -> None:
-        self._seq += 1
-        line = CapturedLine(
-            seq=self._seq,
-            logged_at=datetime.fromtimestamp(record.created, UTC),
-            level=record.levelname,
-            logger=record.name,
-            message=record.getMessage(),
-        )
-        self._buffer.append(line)
-        self._pending.append(line)
-        if len(self._pending) >= self._batch_size:
+        if threading.get_ident() != self._owner_thread:
+            # Not this run's business: a request thread logging while this
+            # run's handler happens to be attached. Silently dropping it —
+            # rather than writing it through the worker's thread-bound
+            # `Store` or recording it into this run's rows — is what keeps
+            # an unrelated endpoint's log line from crashing (foreign-thread
+            # write) or contaminating this run's output (wrong rows).
+            return
+        with self._lock:
+            self._seq += 1
+            seq = self._seq
+            line = CapturedLine(
+                seq=seq,
+                logged_at=datetime.fromtimestamp(record.created, UTC),
+                level=record.levelname,
+                logger=record.name,
+                message=record.getMessage(),
+            )
+            self._buffer.append(line)
+            self._pending.append(line)
+            should_flush = len(self._pending) >= self._batch_size
+        if should_flush:
             self.flush()
 
     def flush(self) -> None:
-        if not self._pending:
-            return
-        batch, self._pending = self._pending, []
+        with self._lock:
+            if not self._pending:
+                return
+            batch, self._pending = self._pending, []
         self._store.write_log_lines(self._run_id, batch)
 
 

@@ -183,21 +183,125 @@ def test_lines_written_from_a_worker_thread_are_visible_to_the_reader(tmp_path):
     the handler appends on the worker, the SSE generator reads from the loop.
     A buffer using thread-local state, or one built per reader, would pass
     every single-threaded test here and stream nothing during a real run.
+
+    `capture_run_log` is entered *on* the spawned thread here, not the main
+    one — and so is the `Store` it wraps, for the same reason `RunService`'s
+    worker builds its own rather than reusing one built elsewhere: a
+    `sqlite3` connection is thread-bound, so a `Store` built on the main
+    thread would itself raise when this handler's `flush` reached it from
+    the worker. In production the worker thread does both: it enters the
+    context manager and then runs the pipeline synchronously on itself, and
+    the handler only ever captures records from that one thread. Entering
+    the context manager on the main thread and logging from a second,
+    unrelated thread — as this test used to — is exactly the foreign-thread
+    case the guard drops, and would make this assertion fail for the wrong
+    reason.
+    """
+    log = logging.getLogger("zeitgeist.testing.threaded")
+    entered = threading.Event()
+    release = threading.Event()
+    buffers: list[RunLogBuffer] = []
+
+    def worker() -> None:
+        store = _store(tmp_path)
+        store.start_run("r1", make_run_config())
+        with capture_run_log("r1", store) as buffer:
+            buffers.append(buffer)
+            log.info("from the worker")
+            entered.set()
+            assert release.wait(timeout=5)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert entered.wait(timeout=5)
+
+    # Read from the main thread while the worker thread still holds the
+    # handler open — the buffer itself must tolerate that, even though the
+    # handler no longer accepts writes from any thread but the worker's.
+    assert [line.message for line in buffers[0].since(0)] == ["from the worker"]
+
+    release.set()
+    thread.join(timeout=5)
+
+
+def test_a_record_from_a_foreign_thread_is_dropped_without_raising(tmp_path):
+    """Critical 1: `llm/registry.py` logs on a request thread while a run's
+    handler happens to be attached to the `zeitgeist` logger. Before the
+    thread guard, `emit` would try to flush that line through the worker's
+    thread-bound `Store` from the foreign thread and raise
+    `sqlite3.ProgrammingError` — a 500 out of a read-only endpoint that has
+    nothing to do with the run. It must instead be silently dropped: not
+    captured, and no exception escapes the foreign thread either.
     """
     store = _store(tmp_path)
     store.start_run("r1", make_run_config())
-    log = logging.getLogger("zeitgeist.testing.threaded")
-    done = threading.Event()
+    log = logging.getLogger("zeitgeist.testing.foreign")
+    raised: list[BaseException] = []
 
     with capture_run_log("r1", store) as buffer:
 
-        def worker() -> None:
-            log.info("from the worker")
-            done.set()
+        def foreign() -> None:
+            try:
+                log.info("from a foreign thread")
+            except BaseException as exc:  # noqa: BLE001 - proving nothing escapes
+                raised.append(exc)
 
-        thread = threading.Thread(target=worker)
+        thread = threading.Thread(target=foreign)
         thread.start()
-        assert done.wait(timeout=5)
         thread.join(timeout=5)
 
-        assert [line.message for line in buffer.since(0)] == ["from the worker"]
+        log.info("from the owner")
+
+    assert raised == []
+    assert [line.message for line in buffer.since(0)] == ["from the owner"]
+    assert [line.message for line in store.log_lines("r1", verbose=True)] == [
+        "from the owner"
+    ]
+
+
+def test_concurrent_foreign_noise_leaves_the_owners_seq_unique_and_increasing(
+    tmp_path,
+):
+    """`_seq` is an unguarded read-modify-write and `flush`'s batch swap
+    races an `append` if either runs without the lock: two emits landing on
+    `_seq` at once could hand out the same number twice, which is an
+    `IntegrityError` against `log_lines`' `(run_id, seq)` primary key.
+
+    Several foreign threads hammer `emit` throughout, concurrently with the
+    owner thread logging its own 200 lines — real contention on the
+    handler's internal state, not simulated. The foreign lines must all be
+    dropped (proven by the exact count and content below) and the owner's
+    own sequence numbers must come out as a gapless, duplicate-free run —
+    proof the lock, and the thread guard ahead of it, both hold up under
+    load rather than merely in the single-threaded case.
+    """
+    store = _store(tmp_path)
+    store.start_run("r1", make_run_config())
+    log = logging.getLogger("zeitgeist.testing.concurrent")
+    owner_count = 200
+    stop = threading.Event()
+
+    def foreign_noise() -> None:
+        while not stop.is_set():
+            log.info("noise")
+
+    with capture_run_log("r1", store, batch_size=11) as buffer:
+        noise_threads = [threading.Thread(target=foreign_noise) for _ in range(4)]
+        for thread in noise_threads:
+            thread.start()
+        for index in range(owner_count):
+            log.info("owner %d", index)
+        stop.set()
+        for thread in noise_threads:
+            thread.join(timeout=5)
+
+    lines = buffer.since(0)
+    assert [line.message for line in lines] == [
+        f"owner {index}" for index in range(owner_count)
+    ]
+    assert [line.seq for line in lines] == list(range(1, owner_count + 1))
+    stored = store.log_lines("r1", verbose=True)
+    assert [line.message for line in stored] == [
+        f"owner {index}" for index in range(owner_count)
+    ]
+    assert [line.seq for line in stored] == list(range(1, owner_count + 1))
