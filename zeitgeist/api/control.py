@@ -15,7 +15,13 @@ from zeitgeist.api.app import get_runner, get_store
 from zeitgeist.api.runs import _run_or_404, resume_stage
 from zeitgeist.api.schemas import ResumeBody, StartRunBody
 from zeitgeist.records import ORDER
-from zeitgeist.runner import ActiveRuns, QueuedRun, RunRequest, RunService
+from zeitgeist.runner import (
+    ActiveRuns,
+    QueuedRun,
+    RunAlreadyActive,
+    RunRequest,
+    RunService,
+)
 from zeitgeist.store import Store
 
 router = APIRouter(prefix="/api/runs", tags=["control"])
@@ -40,6 +46,12 @@ def start_run(
                 overrides=body.overrides,
             )
         )
+    except RunAlreadyActive as exc:
+        # A fresh run always gets a fresh id from new_run_id(), so this can
+        # only fire if id generation somehow collided with a run still in
+        # flight — a conflict, not a malformed request, so this must not
+        # fall into the generic ValueError branch below and come out a 400.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         # The allowlist refused a field. That is the request's fault, not the
         # server's, and letting it escape as a 500 would say the opposite.
@@ -90,13 +102,21 @@ def resume_run(
                     detail=f"Run {run_id} has no {earlier.value} checkpoint; "
                     f"cannot resume at {body.stage.value}.",
                 )
-    return runner.enqueue(
-        RunRequest(
-            run_id=run_id,
-            start_at=stage,
-            template_ids=body.template_ids,
+    try:
+        return runner.enqueue(
+            RunRequest(
+                run_id=run_id,
+                start_at=stage,
+                template_ids=body.template_ids,
+            )
         )
-    )
+    except RunAlreadyActive as exc:
+        # Distinct from the 409s above: those mean the run has nothing to
+        # resume from, this means it does not need resuming at all right
+        # now — a double-clicked Resume button, or a second tab racing the
+        # first. A client that cannot tell the two apart cannot render two
+        # different messages for them.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/{run_id}/stop", status_code=status.HTTP_202_ACCEPTED)

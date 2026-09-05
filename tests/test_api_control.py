@@ -347,6 +347,53 @@ def test_resuming_at_a_stage_the_run_can_honour_is_accepted(tmp_path):
     assert seen == ["20260901T120000Z"]
 
 
+def test_resuming_a_run_twice_is_a_409_the_second_time(tmp_path):
+    """Critical 2: a double-clicked Resume button, or a second tab racing
+    the first. Before the fix, the second POST silently replaced the live
+    run's `CancelToken` with one nobody reads — the run became unstoppable
+    — and the worker's own second dequeue then raised `KeyError` before
+    `_run_one`'s `try` began, leaving `GET /api/runs/active` reporting this
+    run as current forever. This 409 must read differently from the
+    "wrote no checkpoints" 409 above, so a client can tell a duplicate
+    request apart from one that never had anything to resume from — and
+    the run itself must still be exactly what `active()` reports, not
+    replaced or lost.
+    """
+    gate = GatedExecute()
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id="20260901T120000Z",
+                evidence=[make_evidence(["p1"])],
+            )
+        ],
+        execute=gate,
+    )
+    try:
+        first = client.post(
+            "/api/runs/20260901T120000Z/resume", json={"stage": "evaluate"}
+        )
+        assert first.status_code == 202
+        assert gate.entered.wait(timeout=5)
+
+        second = client.post(
+            "/api/runs/20260901T120000Z/resume", json={"stage": "evaluate"}
+        )
+
+        assert second.status_code == 409
+        assert second.json()["detail"] != (
+            "Run 20260901T120000Z wrote no checkpoints; there is nothing to "
+            "resume from."
+        )
+        assert client.get("/api/runs/active").json()["current"] == ("20260901T120000Z")
+    finally:
+        gate.release.set()
+        client.app.state.runner.shutdown(timeout=10)
+
+    assert client.get("/api/runs/active").json()["current"] is None
+
+
 def test_stop_trips_stopping_and_abort_trips_aborted(tmp_path):
     """Two buttons, two meanings, and 202 from both. A stop wired to
     `runner.abort` would answer 202 exactly as it does now while unwinding

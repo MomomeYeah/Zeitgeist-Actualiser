@@ -41,6 +41,18 @@ RUN_OVERRIDE_KEYS = WRITABLE_KEYS | {
 SHUTDOWN = object()
 
 
+class RunAlreadyActive(ValueError):
+    """`enqueue` refuses a `run_id` that is already `_current`, in
+    `_waiting`, or in `_tokens` — a duplicate resume, or a double-clicked
+    Resume button.
+
+    A `ValueError` subclass rather than a fresh base: a caller that only
+    catches `ValueError` still gets a 4xx instead of a 500, while
+    `resume_run` and `POST /api/runs` can each catch this one specifically,
+    ahead of the generic `ValueError`, to give it its own status code.
+    """
+
+
 class RunRequest(BaseModel):
     """What to run. `run_id` is set only for a resume, which reuses the
     existing run's checkpoints; a new run gets its id from `new_run_id()`.
@@ -192,6 +204,24 @@ class RunService:
         run_id = request.run_id or new_run_id()
         request = request.model_copy(update={"run_id": run_id})
         with self._lock:
+            if (
+                run_id == self._current
+                or run_id in self._waiting
+                or run_id in self._tokens
+            ):
+                # A duplicate enqueue of a live run: resuming twice, or a
+                # double-clicked Resume button. Refusing here — rather than
+                # the old unconditional self._tokens[run_id] = CancelToken(),
+                # which silently replaced the live token — is what stops two
+                # failures at once: the replacement token orphans the one
+                # stop/abort still reach, so a still-executing run becomes
+                # impossible to stop; and a second dequeue of the same
+                # run_id would find its own entry already removed from
+                # _waiting, its token already gone from _tokens (see
+                # _run_one's finally), and raise KeyError before _run_one's
+                # own try began — leaving _current stuck on this run_id
+                # forever, since the finally that clears it never runs.
+                raise RunAlreadyActive(f"Run {run_id} is already queued or executing")
             # Appended unconditionally, and *before* the worker can possibly
             # have caught up to this request: between this put() and the
             # worker's own lock acquisition in _run_one, the request is in
@@ -267,14 +297,15 @@ class RunService:
                 try:
                     self._run_one(item, store)
                 except Exception:  # noqa: BLE001 - the loop must outlive this
-                    # _run_one's own bookkeeping (the lock acquisition, the
-                    # token lookup) runs before its try, and its exception
-                    # handlers call the store directly (abort_run, fail_run).
-                    # Either can raise something _run_one does not catch.
-                    # Without this, that exception would kill the thread:
-                    # active() would report a stale _current forever, every
-                    # later enqueue would never be picked up, and shutdown
-                    # would find nothing to join cleanly.
+                    # _run_one's own exception handlers call the store
+                    # directly (abort_run, fail_run), and either can raise
+                    # something _run_one does not itself catch — its
+                    # `finally` still runs first, since a `finally` always
+                    # does, but the exception then propagates here. Without
+                    # this handler that would kill the thread: active()
+                    # would report a stale _current forever, every later
+                    # enqueue would never be picked up, and shutdown would
+                    # find nothing to join cleanly.
                     log.exception("Worker loop swallowed an unhandled error")
         finally:
             store.close()
@@ -285,10 +316,23 @@ class RunService:
             self._current = run_id
             if run_id in self._waiting:
                 self._waiting.remove(run_id)
-            token = self._tokens[run_id]
 
         stage_tracker = _StageTracker()
         try:
+            # setdefault, not self._tokens[run_id]: the latter raised
+            # KeyError for a request with no pre-registered token (only
+            # possible by bypassing enqueue entirely), and it raised it
+            # *before* this try began — so the `finally` below never ran,
+            # `_current` stayed pinned to this run_id forever, and every
+            # later enqueue()'d run would sit behind a "current" run that
+            # was not actually executing. Moving the lookup in here, using
+            # setdefault, means the only bookkeeping now able to run before
+            # `try` is the lock-protected block above — plain dict/list
+            # operations on state this method already owns, which do not
+            # raise — so `finally` is now unconditionally reached and
+            # `_current` is always cleared.
+            with self._lock:
+                token = self._tokens.setdefault(run_id, CancelToken())
             settings = self._build_settings(request.overrides)
             # Opened before _execute, not inside it: build_trend_source and
             # build_provider (called from the default _execute) can raise —

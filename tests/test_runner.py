@@ -6,7 +6,7 @@ from tests.run_factory import make_run_config
 from zeitgeist.config import Settings
 from zeitgeist.progress import Aborted
 from zeitgeist.records import Stage
-from zeitgeist.runner import RunRequest, RunService
+from zeitgeist.runner import RunAlreadyActive, RunRequest, RunService
 from zeitgeist.store import Store
 
 
@@ -390,6 +390,59 @@ def test_enqueue_lists_every_queued_run_before_the_worker_catches_up(tmp_path):
     assert service.active().queued == [first.run_id, second.run_id]
 
 
+def test_enqueuing_a_run_id_already_executing_is_refused(tmp_path):
+    """Critical 2: a duplicate resume, or a double-clicked Resume button.
+    The old code unconditionally replaced `_tokens[run_id]`, orphaning the
+    token `stop`/`abort` still reach — the live run became unstoppable —
+    and the second dequeue's own `self._tokens[run_id]` then raised
+    `KeyError` before `_run_one`'s `try` began, leaving `_current` stuck on
+    this run_id forever. Refusing the duplicate outright, before either of
+    those has a chance to happen, is what this proves: `active()` must
+    still name the original run as current, and the *original* token —
+    not a replacement nobody is holding — must still be the one `stop`
+    reaches.
+    """
+    gate = _Gate()
+    service = _service(tmp_path, gate)
+    try:
+        first = service.enqueue(RunRequest(run_id="dup-run"))
+        assert gate.entered.wait(timeout=5)
+
+        with pytest.raises(RunAlreadyActive):
+            service.enqueue(RunRequest(run_id="dup-run"))
+
+        # Evidence the defect is gone: active() is still clean — naming
+        # exactly the original run, nothing stale or doubled — and the
+        # original token (not a replacement) still stops it.
+        assert service.active().current == first.run_id
+        assert service.active().queued == []
+        assert service.stop(first.run_id) is True
+    finally:
+        gate.release.set()
+        service.shutdown(timeout=10)
+
+    assert service.active().current is None
+
+
+def test_enqueuing_a_run_id_already_waiting_is_refused(tmp_path):
+    """The companion case: the duplicate names a run still queued behind
+    the current one, rather than the one executing right now."""
+    gate = _Gate()
+    service = _service(tmp_path, gate)
+    try:
+        service.enqueue(RunRequest())
+        assert gate.entered.wait(timeout=5)
+        service.enqueue(RunRequest(run_id="waiting-run"))
+
+        with pytest.raises(RunAlreadyActive):
+            service.enqueue(RunRequest(run_id="waiting-run"))
+
+        assert service.active().queued == ["waiting-run"]
+    finally:
+        gate.release.set()
+        service.shutdown(timeout=10)
+
+
 def test_start_after_a_timed_out_shutdown_does_not_spawn_a_second_worker(tmp_path):
     """A `shutdown` that times out while a run is still executing must leave
     `_thread` set. Unconditionally clearing it, as before, would mean a later
@@ -413,28 +466,37 @@ def test_start_after_a_timed_out_shutdown_does_not_spawn_a_second_worker(tmp_pat
         service.shutdown(timeout=10)
 
 
-def test_the_worker_survives_an_error_in_run_ones_own_bookkeeping(tmp_path):
-    """`_run_one`'s bookkeeping — the lock acquisition and the token lookup
-    — runs before its own try/except, and its handlers call the store
-    directly (`abort_run`, `fail_run`). Either can raise something
-    `_run_one` itself does not catch; the worker loop's survival must not
-    depend on it. A request queued without ever going through `enqueue` has
-    no token, so `_run_one`'s `self._tokens[run_id]` raises `KeyError`
-    before its try block is even entered — reproducing that class of error
-    deterministically, with nothing left for `_run_one`'s own exception
-    handling to catch."""
+def test_a_token_less_run_gets_a_fresh_one_and_the_worker_moves_on(tmp_path):
+    """Critical 2: `_run_one` used to look its token up with a plain
+    `self._tokens[run_id]`, sitting *before* its own try/except but after
+    `self._current = run_id` had already been assigned. A request queued
+    without ever going through `enqueue` — bypassing `_waiting` and
+    `_tokens` both — raised `KeyError` right there, escaping before the
+    `try` was ever entered. The worker loop's own handler kept the thread
+    alive, but `_run_one`'s `finally` had never run, so `_current` stayed
+    pinned to the ghost run forever: `active()` would report it as current
+    with nothing actually executing, and every later run would queue
+    behind a run that had already vanished.
+
+    `_run_one` now looks the token up with `self._tokens.setdefault(...)`,
+    inside its own try, so a token-less request no longer raises at all —
+    it gets a fresh, ad-hoc one and runs to completion like any properly
+    enqueued run, and the worker is free to dequeue whatever comes next.
+    `gate.release` is set up front so neither run blocks, which is what
+    lets both come out the other side well within the test."""
     gate = _Gate()
+    gate.release.set()
     service = _service(tmp_path, gate)
     try:
         service._queue.put(RunRequest(run_id="ghost-with-no-token"))
-
         second = service.enqueue(RunRequest())
-        assert gate.entered.wait(timeout=5)
-
-        assert second.run_id in gate.run_ids
+        service.shutdown(timeout=10)
     finally:
         gate.release.set()
         service.shutdown(timeout=10)
+
+    assert gate.run_ids == ["ghost-with-no-token", second.run_id]
+    assert service.active().current is None
 
 
 def test_a_run_failing_after_a_later_stage_is_recorded_with_that_stage(tmp_path):
