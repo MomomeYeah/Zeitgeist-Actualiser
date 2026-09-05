@@ -144,6 +144,7 @@ def read_topic(
     return TopicDetail(
         topic=row,
         dossier=None if topic is None else topic.dossier,
+        score_components={} if topic is None else topic.score_components,
         replies=_replies_for(store, run_id, set(topic.item_ids) if topic else set()),
         renders=[
             render

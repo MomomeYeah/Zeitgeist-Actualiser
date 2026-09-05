@@ -123,6 +123,10 @@ class TopicDetail(BaseModel):
     # None on the dormant path and on a stale checkpoint. The topic was
     # still ranked, so the row still exists.
     dossier: Dossier | None
+    # {} on the same two paths as dossier=None: an empty breakdown and an
+    # unknown one are the same thing to the screen, so this mirrors dossier
+    # rather than being optional in its own right.
+    score_components: dict[str, float]
     replies: list[ReplyOut]
     renders: list[RenderRecord]
     recurrence: TopicRecurrence

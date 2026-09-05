@@ -352,6 +352,49 @@ def test_topic_detail_carries_the_dossier(tmp_path):
     assert body["dossier"]["what_happened"]
 
 
+def test_topic_detail_carries_the_score_breakdown(tmp_path):
+    """The spec lists score_components alongside dossier and phrases as part
+    of this endpoint's contract; an implementation that kept dossier but
+    dropped this field would pass every other test here."""
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                topics=[
+                    make_topic(
+                        "cats",
+                        score_components={"bluesky": 0.7, "corroboration": 0.4},
+                    )
+                ]
+            )
+        ],
+    )
+
+    body = client.get("/api/runs/20260901T120000Z/topics/cats").json()
+
+    assert body["score_components"] == {"bluesky": 0.7, "corroboration": 0.4}
+
+
+def test_topic_detail_reports_no_score_breakdown_for_a_pruned_checkpoint(tmp_path):
+    """The analyse checkpoint holds score_components; when it has been
+    pruned there is nothing to report, and the response should say so with
+    {} rather than raising or fabricating a value."""
+    client = seeded_client(
+        tmp_path, runs=[SeededRun(topics=[make_topic("cats")], evidence=[])]
+    )
+    store = Store(api_settings(tmp_path).db_path)
+    store._conn.execute(
+        "DELETE FROM checkpoints WHERE run_id = ? AND stage = ?",
+        ("20260901T120000Z", "analyse"),
+    )
+    store._conn.commit()
+    store.close()
+
+    body = client.get("/api/runs/20260901T120000Z/topics/cats").json()
+
+    assert body["score_components"] == {}
+
+
 def test_topic_detail_carries_the_replies_most_liked_first(tmp_path):
     client = seeded_client(
         tmp_path,
