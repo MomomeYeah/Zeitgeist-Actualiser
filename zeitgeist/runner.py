@@ -130,16 +130,34 @@ class RunService:
         self._thread.start()
 
     def shutdown(self, timeout: float = 5.0) -> None:
-        """Drain what is queued, then stop the worker.
+        """Ask the worker to stop after finishing what is already queued,
+        and wait up to `timeout` for it to get there.
 
-        Called from the app's lifespan. Queued runs execute rather than being
-        discarded, because a shutdown that dropped them would look identical
-        to one that ran them.
+        Called from the app's lifespan. The sentinel is put onto the same
+        FIFO queue, so anything already queued is *offered the chance* to
+        run first — but at the default 5 second timeout that is aspirational
+        for any real run, which takes minutes: `join` will typically time
+        out while the worker is still mid-run, this call returns anyway, and
+        the worker (a daemon thread) is killed outright at interpreter exit
+        with whatever it was doing — including any run still queued behind
+        it — left undone. Its row stays `running`; the next startup's
+        reconciliation marks it `interrupted`, which is the correct story
+        for a run that was cut off mid-flight.
+
+        If the worker is still alive after the join, `_thread` is left set
+        so a later `start()` cannot spawn a second worker onto the same
+        queue while the first is still running.
         """
         if self._thread is None:
             return
         self._queue.put(SHUTDOWN)
         self._thread.join(timeout=timeout)
+        if self._thread.is_alive():
+            log.warning(
+                "Worker did not stop within %.1fs of shutdown; leaving it running",
+                timeout,
+            )
+            return
         self._thread = None
 
     def enqueue(self, request: RunRequest) -> QueuedRun:

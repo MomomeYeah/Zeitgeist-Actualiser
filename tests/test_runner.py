@@ -382,3 +382,26 @@ def test_enqueue_lists_every_queued_run_before_the_worker_catches_up(tmp_path):
     assert first.position == 0
     assert second.position == 1
     assert service.active().queued == [first.run_id, second.run_id]
+
+
+def test_start_after_a_timed_out_shutdown_does_not_spawn_a_second_worker(tmp_path):
+    """A `shutdown` that times out while a run is still executing must leave
+    `_thread` set. Unconditionally clearing it, as before, would mean a later
+    `start()` sees `_thread is None` and spawns a second worker thread onto
+    the same queue while the first is still running its own item — two
+    threads able to both call `_queue.get()` and both call `run_pipeline` at
+    once, which is exactly the invariant this class exists to hold."""
+    gate = _Gate()
+    service = _service(tmp_path, gate)
+    try:
+        service.enqueue(RunRequest())
+        assert gate.entered.wait(timeout=5)
+
+        service.shutdown(timeout=0.05)  # times out: gate.release is not set
+        service.start()
+
+        workers = [t for t in threading.enumerate() if t.name == "zeitgeist-runner"]
+        assert len(workers) == 1
+    finally:
+        gate.release.set()
+        service.shutdown(timeout=10)
