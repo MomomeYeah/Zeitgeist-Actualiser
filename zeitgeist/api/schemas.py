@@ -55,6 +55,18 @@ class StartRunBody(BaseModel):
     overrides: dict[str, str] = {}
 
 
+class ResumeBody(BaseModel):
+    """`stage` omitted means the computed resume point — the button posts no
+    stage. `template_ids` narrows the library for this resume only, which is
+    the tuning loop: edit a manifest, re-render the same frozen topics.
+    """
+
+    model_config = STRICT
+
+    stage: Stage | None = None
+    template_ids: list[str] | None = None
+
+
 class RunSummary(BaseModel):
     """One row of the Runs list.
 

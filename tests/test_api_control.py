@@ -1,4 +1,8 @@
-from tests.api_factory import GatedExecute, seeded_client
+import threading
+
+from tests.api_factory import GatedExecute, SeededRun, seeded_client
+from tests.run_factory import make_evidence, make_run_config
+from zeitgeist.records import Stage
 
 
 def test_posting_a_run_returns_the_id_it_will_have(tmp_path):
@@ -136,3 +140,164 @@ def test_the_api_key_is_not_accepted_as_an_override(tmp_path):
     )
 
     assert response.status_code == 400
+
+
+def test_resuming_reuses_the_runs_existing_id(tmp_path):
+    """Resume continues a run rather than starting a new one — its
+    checkpoints are the whole point. A resume that allocated a fresh id would
+    write a second run's rows and leave the first stranded at `interrupted`
+    forever.
+    """
+    seen: list[str] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        seen.append(request.run_id or "")
+
+    client = seeded_client(
+        tmp_path,
+        runs=[SeededRun(run_id="20260901T120000Z")],
+        execute=execute,
+    )
+
+    response = client.post(
+        "/api/runs/20260901T120000Z/resume", json={"stage": "generate"}
+    )
+    client.app.state.runner.shutdown(timeout=10)
+
+    assert response.status_code == 202
+    assert seen == ["20260901T120000Z"]
+
+
+def test_resuming_without_a_stage_uses_the_computed_one(tmp_path):
+    """The button posts no stage. A router requiring one would make the
+    button unusable, and defaulting to `ingest` would silently redo the
+    minutes of fetching that the run's checkpoints already hold.
+
+    The run is seeded with its ingest evidence as well as its topics, so
+    INGEST and ANALYSE are written and EVALUATE is not — making the computed
+    stage EVALUATE rather than either end of `ORDER`, so a router hardcoding
+    one fails here. The default `SeededRun` will not do: with no evidence it
+    writes no INGEST checkpoint, `resume_stage` returns `None`, and the
+    endpoint 409s before the default is ever consulted.
+    """
+    seen: list[Stage] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        seen.append(request.start_at)
+
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id="20260901T120000Z",
+                evidence=[make_evidence(["p1"])],
+            )
+        ],
+        execute=execute,
+    )
+
+    client.post("/api/runs/20260901T120000Z/resume", json={})
+    client.app.state.runner.shutdown(timeout=10)
+
+    assert seen == [Stage.EVALUATE]
+
+
+def test_resuming_carries_the_narrowed_template_library(tmp_path):
+    """This is the tuning loop the design's button cannot otherwise express:
+    edit a manifest, re-render the same frozen topics against one template.
+    Dropped here, resume would re-render against the whole library every
+    time and the loop would be no faster than a fresh run.
+    """
+    seen: list[list[str] | None] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        seen.append(request.template_ids)
+
+    client = seeded_client(
+        tmp_path,
+        runs=[SeededRun(run_id="20260901T120000Z")],
+        execute=execute,
+    )
+
+    client.post(
+        "/api/runs/20260901T120000Z/resume",
+        json={"stage": "generate", "template_ids": ["drake"]},
+    )
+    client.app.state.runner.shutdown(timeout=10)
+
+    assert seen == [["drake"]]
+
+
+def test_resuming_an_unknown_run_is_a_404(tmp_path):
+    client = seeded_client(tmp_path)
+
+    response = client.post("/api/runs/nope/resume", json={})
+
+    assert response.status_code == 404
+
+
+def test_resuming_a_run_with_no_checkpoints_is_refused(tmp_path):
+    """A source outage writes nothing, so there is nothing to resume from —
+    phase 2's `resume_stage` returns `None` for exactly this. Enqueuing it
+    anyway would start a run that fails on its first checkpoint read, and the
+    user would see a second failure rather than a refusal.
+    """
+    client = seeded_client(
+        tmp_path,
+        runs=[SeededRun(run_id="20260901T120000Z", topics=[], status="failed")],
+    )
+
+    response = client.post("/api/runs/20260901T120000Z/resume", json={})
+
+    assert response.status_code == 409
+
+
+def test_stop_trips_stopping_and_abort_trips_aborted(tmp_path):
+    """Two buttons, two meanings, and 202 from both. A stop wired to
+    `runner.abort` would answer 202 exactly as it does now while unwinding
+    the stage mid-flight and losing the checkpoint the stop button promises —
+    so what gets asserted is the token the worker handed the run, not the
+    status code. Task 8 pins this at the service; nothing else pins it at the
+    seam the button actually goes through.
+    """
+    flags: dict[str, tuple[bool, bool]] = {}
+    entered = threading.Event()
+    released = threading.Event()
+
+    def execute(settings, request, store, observer, token) -> None:
+        run_id = request.run_id or ""
+        store.start_run(run_id, make_run_config())
+        entered.set()
+        assert released.wait(timeout=5)
+        flags[run_id] = (token.stopping, token.aborted)
+
+    client = seeded_client(tmp_path, execute=execute)
+
+    stopped = client.post("/api/runs", json={}).json()
+    assert entered.wait(timeout=5)
+    assert client.post(f"/api/runs/{stopped['run_id']}/stop").status_code == 202
+    released.set()
+    client.app.state.runner.shutdown(timeout=10)
+
+    entered.clear()
+    released.clear()
+    client.app.state.runner.start()
+    aborted = client.post("/api/runs", json={}).json()
+    assert entered.wait(timeout=5)
+    assert client.post(f"/api/runs/{aborted['run_id']}/abort").status_code == 202
+    released.set()
+    client.app.state.runner.shutdown(timeout=10)
+
+    assert flags[stopped["run_id"]] == (True, False)
+    assert flags[aborted["run_id"]] == (True, True)
+
+
+def test_stopping_a_run_that_is_not_executing_is_a_404(tmp_path):
+    """The inline abort confirmation is drawn from a poll that can be a
+    moment stale. Reporting success for a run that already finished would
+    leave the UI showing "aborting…" for a run that is done.
+    """
+    client = seeded_client(tmp_path, runs=[SeededRun(run_id="20260901T120000Z")])
+
+    assert client.post("/api/runs/20260901T120000Z/stop").status_code == 404
+    assert client.post("/api/runs/20260901T120000Z/abort").status_code == 404
