@@ -22,6 +22,17 @@ from zeitgeist.models import Topic, TrendEvidence
 from zeitgeist.records import RenderRecord, RunConfig, Stage, StageRecord
 from zeitgeist.store import Store
 
+# Clients `seeded_client` has entered as a context manager, awaiting exit.
+#
+# `seeded_client` returns a plain client to its 52 call sites, unchanged, so
+# entering the lifespan here rather than pushing `with seeded_client(...) as
+# client:` onto every one of them. Something still has to call `__exit__` or
+# the store each client opened leaks for the process's lifetime, so this
+# module remembers what it opened and `conftest`'s autouse fixture closes
+# each one after the test body finishes — the same shape `TestClient` itself
+# would use if two tests couldn't ever run inside the same process.
+_open_clients: list[TestClient] = []
+
 
 @dataclass
 class SeededRun:
@@ -84,10 +95,17 @@ def seed_run(store: Store, spec: SeededRun) -> None:
 
 
 def seeded_client(tmp_path: Path, *, runs: Sequence[SeededRun] = ()) -> TestClient:
-    """An app over a store holding `runs`.
+    """An app over a store holding `runs`, with its lifespan already running.
 
     The store is seeded before `create_app` opens its own connection, so the
     app sees the rows on its first query.
+
+    `TestClient` only runs startup/shutdown when entered as a context
+    manager; a bare `TestClient(app)` serves requests with the lifespan
+    never having fired. Entering it here — and registering it in
+    `_open_clients` for `conftest`'s autouse fixture to exit later — means
+    every caller gets a client whose lifespan has actually started, without
+    having to become a `with` block itself.
     """
     settings = api_settings(tmp_path)
     store = Store(settings.db_path)
@@ -95,4 +113,7 @@ def seeded_client(tmp_path: Path, *, runs: Sequence[SeededRun] = ()) -> TestClie
     for spec in runs:
         seed_run(store, spec)
     store.close()
-    return TestClient(create_app(settings))
+    client = TestClient(create_app(settings))
+    client.__enter__()
+    _open_clients.append(client)
+    return client

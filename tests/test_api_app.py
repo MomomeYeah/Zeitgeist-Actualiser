@@ -38,9 +38,9 @@ def test_the_app_opens_the_database_it_was_given(tmp_path):
 
 
 def test_the_app_closes_its_store_when_it_shuts_down(tmp_path):
-    """The lifespan's only job is to close the store, and no other test
-    runs it: two build no client and the third never enters the context
-    manager. Deleting the `finally: store.close()` would pass all of them.
+    """The lifespan's only job is to close the store. Deleting the
+    `finally: store.close()` would pass every other test in this module,
+    none of which enters the client as a context manager itself.
     """
     app = create_app(_settings(tmp_path))
 
@@ -49,6 +49,32 @@ def test_the_app_closes_its_store_when_it_shuts_down(tmp_path):
 
     with pytest.raises(sqlite3.ProgrammingError):
         app.state.store._conn.execute("SELECT 1")
+
+
+def test_seeded_client_runs_the_apps_lifespan(tmp_path):
+    """`seeded_client` (tests/api_factory.py) is what every other API test
+    module actually builds its client from. If it returned a bare
+    `TestClient(create_app(settings))` — the shape it used to have —
+    Starlette would never run startup or shutdown, and this would still
+    pass every test in this module (they all build their own client) while
+    every seeded API test silently ran without ever exercising the
+    lifespan, and leaked its store's connection for the process's
+    lifetime.
+    """
+    from tests import api_factory
+
+    client = api_factory.seeded_client(tmp_path)
+    store = client.app.state.store
+
+    # api_factory._open_clients is what conftest's autouse fixture drains
+    # after the test body finishes; exiting it here, from inside the test,
+    # is what proves __exit__ (and therefore the lifespan's shutdown) is
+    # reachable at all.
+    api_factory._open_clients.remove(client)
+    client.__exit__(None, None, None)
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        store._conn.execute("SELECT 1")
 
 
 def test_the_app_creates_its_schema_on_startup(tmp_path):
