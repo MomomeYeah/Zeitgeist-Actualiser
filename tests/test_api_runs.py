@@ -205,6 +205,19 @@ def test_a_run_with_no_checkpoints_cannot_be_resumed(tmp_path):
     assert body["resume_stage"] is None
 
 
+def test_a_run_seeded_as_failed_is_reported_as_failed(tmp_path):
+    """seed_run used to special-case only status="ok", leaving every other
+    value in the "running" state start_run wrote and never calling
+    fail_run. This run relied on the analyse checkpoint being absent rather
+    than on the stored status actually reading "failed" -- pinning the
+    status itself here is what would have caught that."""
+    client = seeded_client(tmp_path, runs=[SeededRun(topics=[], status="failed")])
+
+    body = client.get("/api/runs/20260901T120000Z").json()
+
+    assert body["run"]["status"] == "failed"
+
+
 def test_an_unknown_run_is_a_404(tmp_path):
     client = seeded_client(tmp_path)
 

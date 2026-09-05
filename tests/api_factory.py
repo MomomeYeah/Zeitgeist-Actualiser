@@ -19,7 +19,14 @@ from tests.run_factory import make_run_config, make_topic
 from zeitgeist.api import create_app
 from zeitgeist.config import Settings
 from zeitgeist.models import Topic, TrendEvidence
-from zeitgeist.records import RenderRecord, RunConfig, Stage, StageRecord
+from zeitgeist.records import (
+    RenderRecord,
+    RunConfig,
+    RunError,
+    RunStatus,
+    Stage,
+    StageRecord,
+)
 from zeitgeist.store import Store
 
 # Clients `seeded_client` has entered as a context manager, awaiting exit.
@@ -39,7 +46,7 @@ class SeededRun:
     """One run to write into the store before the client is built."""
 
     run_id: str = "20260901T120000Z"
-    status: str = "ok"
+    status: RunStatus = "ok"
     config: RunConfig = field(default_factory=make_run_config)
     topics: list[Topic] = field(default_factory=lambda: [make_topic()])
     stages: list[StageRecord] = field(default_factory=list)
@@ -80,6 +87,9 @@ def seed_run(store: Store, spec: SeededRun) -> None:
         store.record_stage(spec.run_id, stage)
     for render in spec.renders:
         store.add_render(render)
+
+    if spec.status == "running":
+        return  # start_run already left the row in this state.
     if spec.status == "ok":
         store.finish_run(
             spec.run_id,
@@ -92,6 +102,27 @@ def seed_run(store: Store, spec: SeededRun) -> None:
                 for t in spec.topics
             ),
         )
+        return
+    if spec.status == "failed":
+        store.fail_run(
+            spec.run_id,
+            RunError(
+                kind="SeededFailure",
+                message="seeded as failed",
+                stage=Stage.INGEST,
+            ),
+        )
+        return
+    # "aborted" and "interrupted" have no writer anywhere in this phase —
+    # see records.RunStatus's docstring: phase 3's execution service is what
+    # will honour the stop button and reconcile a dead process into these,
+    # and no accessor exists yet that produces either. A test that needs one
+    # would be testing a state this phase cannot actually write, so this
+    # fails loudly rather than silently leaving the row "running".
+    raise NotImplementedError(
+        f"seed_run has no way to write status={spec.status!r} yet — phase 3's "
+        "execution service is what writes it"
+    )
 
 
 def seeded_client(tmp_path: Path, *, runs: Sequence[SeededRun] = ()) -> TestClient:
