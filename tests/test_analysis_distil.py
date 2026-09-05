@@ -1,9 +1,12 @@
 """Distillation: one LLM call per trend, producing a topic and its dossier."""
 
+import threading
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from zeitgeist.analysis.distil import DistilError, DossierDraft, distil_topics
 from zeitgeist.config import Settings
@@ -17,10 +20,12 @@ from zeitgeist.models import (
     Register,
     Reply,
     Sentiment,
+    Topic,
     TrendEvidence,
     TrendInfo,
     TrendStatus,
 )
+from zeitgeist.progress import Aborted, CancelToken
 
 NOW = datetime(2026, 8, 26, tzinfo=UTC)
 
@@ -369,3 +374,189 @@ def test_distil_carries_the_trend_status_onto_the_topic():
     [topic] = distil_topics([evidence], provider, Settings(_env_file=None))
 
     assert topic.trend_status == "cooling"
+
+
+class _ScriptedProvider:
+    """A provider that runs a per-call hook and returns a per-call draft, so
+    a test can control both the order two concurrent distillations finish in
+    and which draft each one produced.
+
+    `FakeLLMProvider` pops from a shared list with no lock, so it cannot
+    script concurrent calls: two workers popping at once is a race, and the
+    test would be asserting on whichever ordering it happened to get.
+
+    The unmatched-prompt branch raises rather than returning a default: a
+    double that accepts anything would let a mis-scripted test pass while
+    verifying nothing.
+    """
+
+    name = "scripted"
+
+    def __init__(
+        self, script: dict[str, tuple[Callable[[], None] | None, DossierDraft]]
+    ) -> None:
+        self._script = script
+
+    def complete(
+        self,
+        prompt: str,
+        schema: type[BaseModel],
+        *,
+        system: str | None = None,
+        max_tokens: int | None = None,
+    ) -> Any:
+        for marker, (hook, draft) in self._script.items():
+            if marker in prompt:
+                if hook is not None:
+                    hook()
+                return draft
+        raise AssertionError("no script entry matched this prompt")
+
+
+def test_a_topic_is_reported_while_later_trends_are_still_running():
+    """This is the whole point of the callback: the mid-analyse screen appends
+    ranking rows as they arrive. An implementation that collected every result
+    and then called `on_topic` in a loop at the end would satisfy every other
+    test in this file — same topics, same order, same count — and show the
+    user nothing until the stage finished.
+
+    So the assertion is an ordering across threads: the callback for the first
+    trend must fire before the second trend's model call returns.
+    """
+    reported_cats = threading.Event()
+    order: list[str] = []
+
+    def dogs_call() -> None:
+        order.append("dogs-call-start")
+        reported_cats.wait(timeout=5)
+        order.append("dogs-call-end")
+
+    provider = _ScriptedProvider(
+        {"Cats": (None, _draft()), "Dogs": (dogs_call, _draft())}
+    )
+
+    def on_topic(topic: Topic) -> None:
+        order.append(f"reported:{topic.id}")
+        if topic.id == "cats":
+            reported_cats.set()
+
+    distil_topics(
+        [_evidence("Cats"), _evidence("Dogs")],
+        provider,
+        _settings(distil_concurrency=2),
+        on_topic=on_topic,
+    )
+
+    assert order.index("reported:cats") < order.index("dogs-call-end")
+
+
+def test_topic_ids_do_not_depend_on_which_trend_finishes_first():
+    """Ids come from `unique_slug`, which suffixes on collision using a set
+    that accumulates in iteration order. Reporting as futures *complete*
+    rather than in submission order would give this input `a-trend` and
+    `a-trend-2` in whichever order the pool happened to finish — so the same
+    evidence would produce different ids run to run, and resume, which keys
+    on the id, would break.
+
+    Both trends share a label, because that is the only shape in which the
+    bug is observable: with distinct display names `unique_slug` never
+    collides, the ids are fixed by the names alone, and a half-fix that
+    iterated by completion and then sorted the *list* back into evidence
+    order would pass while assigning the ids the wrong way round.
+
+    Here the second trend finishes first. The first must still get `a-trend`,
+    and the drafts prove which topic is which.
+    """
+    second_done = threading.Event()
+    first = _draft(what_happened="the first one")
+    second = _draft(what_happened="the second one")
+
+    def wait_for_second() -> None:
+        second_done.wait(timeout=5)
+
+    provider = _ScriptedProvider(
+        {
+            "marker-first": (wait_for_second, first),
+            "marker-second": (second_done.set, second),
+        }
+    )
+
+    topics = distil_topics(
+        [
+            _evidence("A trend", replies=[_reply("marker-first")]),
+            _evidence("A trend", replies=[_reply("marker-second")]),
+        ],
+        provider,
+        _settings(distil_concurrency=2),
+    )
+
+    assert [(topic.id, topic.summary) for topic in topics] == [
+        ("a-trend", "the first one"),
+        ("a-trend-2", "the second one"),
+    ]
+
+
+def test_a_failed_trend_consumes_no_id():
+    """`used_ids` must only record ids that were actually handed out.
+    Pre-assigning a slug to every trend before distillation — a tempting way
+    to make ids independent of completion order — would let a *failed* trend
+    reserve `a-trend`, pushing the trend that succeeded to `a-trend-2` for no
+    reason a reader of the output could reconstruct.
+
+    Both trends share a label for the same reason as the test above: with
+    distinct names there is no collision, so a pre-assigned id and a lazily
+    assigned one are indistinguishable and the bug is invisible.
+
+    `FakeLLMProvider` is safe here because `distil_concurrency=1` means only
+    one worker ever pops from its response list; the race its own docstring
+    warns about needs two.
+    """
+    provider = FakeLLMProvider(responses=[LLMError("no"), _draft()])
+
+    topics = distil_topics(
+        [_evidence("A trend"), _evidence("A trend")],
+        provider,
+        _settings(distil_concurrency=1),
+    )
+
+    assert [topic.id for topic in topics] == ["a-trend"]
+
+
+def test_an_aborted_token_stops_the_stage_rather_than_failing_every_trend():
+    """`_distil_one` catches bare `Exception` so one bad trend is dropped
+    rather than failing the run. `Aborted` must escape that handler: caught,
+    every trend would report as failed and the caller would see `DistilError`
+    — "all trends failed distillation" — for a run the user deliberately
+    cancelled. The two outcomes are indistinguishable to the worker, which
+    would then record the wrong terminal status.
+    """
+    token = CancelToken()
+    token.abort()
+    provider = _ScriptedProvider({"Cats": (None, _draft())})
+
+    with pytest.raises(Aborted):
+        distil_topics(
+            [_evidence("Cats")],
+            provider,
+            _settings(distil_concurrency=1),
+            token=token,
+        )
+
+
+def test_a_trend_that_fails_is_not_reported():
+    """The callback appends a ranking row. A dropped trend has no topic, so
+    reporting one would put a row on the screen for something that does not
+    exist in the checkpoint.
+    """
+    reported: list[str] = []
+    provider = FakeLLMProvider(responses=[LLMError("no")])
+
+    with pytest.raises(DistilError):
+        distil_topics(
+            [_evidence("Cats")],
+            provider,
+            _settings(distil_concurrency=1),
+            on_topic=lambda topic: reported.append(topic.id),
+        )
+
+    assert reported == []
