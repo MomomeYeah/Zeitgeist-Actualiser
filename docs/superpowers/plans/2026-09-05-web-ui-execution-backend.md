@@ -103,7 +103,7 @@ Create `tests/test_progress.py`:
 ```python
 import inspect
 
-from tests.run_factory import make_render_record, make_topic
+from tests.run_factory import make_topic
 from zeitgeist.progress import NullObserver, RecordingObserver, RunObserver
 from zeitgeist.records import Stage
 
@@ -126,21 +126,6 @@ def test_the_null_observer_matches_the_protocol_method_for_method():
     for name, signature in protocol_methods.items():
         assert hasattr(NullObserver, name), f"NullObserver is missing {name}"
         assert inspect.signature(getattr(NullObserver, name)) == signature, name
-
-
-def test_the_null_observer_accepts_every_call_the_pipeline_makes():
-    """`NullObserver` is the default, so these five calls happen on every run
-    that supplies no observer. A parameter renamed on one of them raises
-    TypeError mid-run and nowhere earlier.
-    """
-    observer = NullObserver()
-
-    observer.stage_started(Stage.INGEST)
-    observer.stage_progress(Stage.ANALYSE, done=1, total=3, detail="cats")
-    observer.stage_finished(Stage.INGEST, 2048)
-    observer.stage_finished(Stage.EVALUATE, None)
-    observer.topic_distilled(make_topic("cats"))
-    observer.render_finished(make_render_record("rnd1"))
 
 
 def test_the_recording_observer_keeps_events_in_call_order():
@@ -315,7 +300,7 @@ class RecordingObserver:
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `uv run pytest tests/test_progress.py -v`
-Expected: PASS, 5 tests.
+Expected: PASS, 4 tests.
 
 - [ ] **Step 5: Run the full gate**
 
@@ -518,7 +503,7 @@ class CancelToken:
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `uv run pytest tests/test_progress.py -v`
-Expected: PASS, 10 tests.
+Expected: PASS, 9 tests.
 
 - [ ] **Step 5: Run the full gate**
 
@@ -1557,6 +1542,24 @@ def _store(tmp_path) -> Store:
     return store
 
 
+class _CountingStore(Store):
+    """Records the size of each batch handed to `write_log_lines`.
+
+    A subclass rather than an assignment over the instance method: assigning
+    needs a `type: ignore[method-assign]` that the project's suppression rule
+    would then have to justify, and the override still calls `super()`, so
+    every row really is written and the rows themselves stay assertable.
+    """
+
+    def __init__(self, path) -> None:
+        super().__init__(path)
+        self.batches: list[int] = []
+
+    def write_log_lines(self, run_id: str, lines) -> None:
+        self.batches.append(len(lines))
+        super().write_log_lines(run_id, lines)
+
+
 def _line(seq: int, message: str = "hello") -> CapturedLine:
     return CapturedLine(
         seq=seq,
@@ -1630,24 +1633,20 @@ def test_lines_are_written_in_batches_rather_than_one_row_at_a_time(tmp_path):
     implementation flushing per record would pass every content assertion
     above while doing 200 transactions.
     """
-    store = _store(tmp_path)
+    store = _CountingStore(tmp_path / "z.db")
+    store.init_schema()
     store.start_run("r1", make_run_config())
-    writes: list[int] = []
-    original = store.write_log_lines
-
-    def counting(run_id, lines):
-        writes.append(len(lines))
-        original(run_id, lines)
-
-    store.write_log_lines = counting  # type: ignore[method-assign]
     log = logging.getLogger("zeitgeist.testing.batch")
 
     with capture_run_log("r1", store, batch_size=5):
         for index in range(12):
             log.info("line %d", index)
 
-    assert max(writes) > 1
-    assert sum(writes) == 12
+    assert max(store.batches) > 1
+    assert sum(store.batches) == 12
+    assert [line.message for line in store.log_lines("r1", verbose=True)] == [
+        f"line {index}" for index in range(12)
+    ]
 
 
 def test_the_handler_detaches_when_the_run_ends(tmp_path):
@@ -3438,34 +3437,6 @@ def test_resuming_a_run_with_no_checkpoints_is_refused(tmp_path):
     assert response.status_code == 409
 
 
-def test_stopping_the_current_run_is_accepted(tmp_path):
-    gate = GatedExecute()
-    client = seeded_client(tmp_path, execute=gate)
-    try:
-        body = client.post("/api/runs", json={}).json()
-        assert gate.entered.wait(timeout=5)
-
-        response = client.post(f"/api/runs/{body['run_id']}/stop")
-
-        assert response.status_code == 202
-    finally:
-        gate.release.set()
-
-
-def test_aborting_the_current_run_is_accepted(tmp_path):
-    gate = GatedExecute()
-    client = seeded_client(tmp_path, execute=gate)
-    try:
-        body = client.post("/api/runs", json={}).json()
-        assert gate.entered.wait(timeout=5)
-
-        response = client.post(f"/api/runs/{body['run_id']}/abort")
-
-        assert response.status_code == 202
-    finally:
-        gate.release.set()
-
-
 def test_stop_trips_stopping_and_abort_trips_aborted(tmp_path):
     """Two buttons, two meanings, and 202 from both. A stop wired to
     `runner.abort` would answer 202 exactly as it does now while unwinding
@@ -3599,7 +3570,7 @@ class ResumeBody(BaseModel):
 - [ ] **Step 5: Run to verify they pass**
 
 Run: `uv run pytest tests/test_api_control.py -v`
-Expected: PASS, 18 tests.
+Expected: PASS, 16 tests.
 
 - [ ] **Step 6: Run the full gate**
 
@@ -3652,6 +3623,7 @@ Add to `tests/test_api_control.py`:
 import json
 
 from tests.api_factory import LoggingGate, SeededRun, seeded_client
+from zeitgeist.records import LogLine
 
 
 def _events(client, url, *, release_after=None, limit=400):
@@ -3792,7 +3764,12 @@ def test_a_streamed_line_carries_everything_the_log_viewer_renders(tmp_path):
         line for name, data in events if name == "log" for line in json.loads(data)
     ]
     [line] = [line for line in lines if line["message"] == gate.message]
-    assert set(line) == {"seq", "logged_at", "level", "logger", "message"}
+    # Parity with `LogLine` rather than a literal key set: the invariant is
+    # that the live stream and the historical endpoint carry the same fields,
+    # so adding one to both should keep this passing and adding it to only
+    # one should not. A hardcoded set would fire on the former, which is a
+    # decision rather than a bug.
+    assert set(line) == set(LogLine.model_fields)
     assert line["level"] == "INFO"
     assert line["logger"] == "zeitgeist.testing.sse"
 
@@ -3904,7 +3881,7 @@ def stream_events(
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `uv run pytest tests/test_api_control.py -v`
-Expected: PASS, 25 tests.
+Expected: PASS, 23 tests.
 
 If a stream test hangs rather than failing, the terminating condition is wrong — fix the generator, **not** the test's bound. The bound is what turns a hang into a failure, and removing it would make this suite hang on CI instead.
 
@@ -4102,9 +4079,11 @@ def available_models(settings: Settings, client: Any = None) -> dict[str, list[s
 Create `tests/test_api_options.py`:
 
 ```python
+import json
+
 import pytest
 
-from tests.api_factory import seeded_client
+from tests.api_factory import api_settings, seeded_client
 
 
 @pytest.fixture(autouse=True)
@@ -4134,15 +4113,6 @@ def test_a_stopped_ollama_leaves_the_dropdown_empty_rather_than_500ing(tmp_path)
 
     assert response.status_code == 200
     assert response.json()["models"]["ollama"] == []
-
-
-def test_the_options_report_both_providers_models(tmp_path):
-    client = seeded_client(tmp_path)
-
-    body = client.get("/api/config/options").json()
-
-    assert "anthropic" in body["models"]
-    assert "ollama" in body["models"]
 
 
 def test_the_api_key_is_reported_as_a_boolean_and_never_returned(
@@ -4186,16 +4156,25 @@ def test_platforms_report_which_are_actually_usable(tmp_path):
     assert platforms["lemmy"] is False
 
 
-def test_templates_report_their_slots(tmp_path):
+def test_templates_report_the_slots_their_manifests_declare(tmp_path):
     """The manual generation panel in phase 4 draws one caption input per
     slot. Reporting ids alone — or the key with an empty list, which
     `"slots" in template` cannot tell apart, because `TemplateOption` declares
     the field and so FastAPI always emits it — would leave that panel unable
     to render a form for a template it had not hardcoded.
 
-    `drake`'s two slots are named in `zeitgeist/media/templates/drake.json`,
-    the library `Settings.templates_dir` points at by default.
+    The expectation is read out of the manifests on disk rather than written
+    here as `["rejected", "preferred"]`. Those names are a manifest author's
+    to change, so a literal would fire on a deliberate edit while catching no
+    bug. It reads `templates_dir` — the same directory the endpoint loads
+    from, so the two cannot drift — but parses it here directly rather than
+    through `load_templates`, which is part of what is under test.
     """
+    library = api_settings(tmp_path).templates_dir
+    manifests = {
+        path.stem: [slot["name"] for slot in json.loads(path.read_text())["slots"]]
+        for path in library.glob("*.json")
+    }
     client = seeded_client(tmp_path)
 
     templates = {
@@ -4203,18 +4182,25 @@ def test_templates_report_their_slots(tmp_path):
         for template in client.get("/api/config/options").json()["templates"]
     }
 
-    assert templates["drake"] == ["rejected", "preferred"]
+    assert manifests, "no shipped manifests found; the assertion is vacuous"
+    assert templates == manifests
 
 
-def test_the_env_defaults_are_reported(tmp_path):
-    """The New run screen pre-fills its cards from these. Without them every
-    field would start blank and the user would have to retype the config
-    they already set in `.env`."""
+def test_the_env_defaults_report_the_configured_value(tmp_path, monkeypatch):
+    """The New run screen pre-fills its cards from these. A field reported
+    with the wrong value is worse than a blank one: the user sees a number
+    that is not what the next run would actually use.
+
+    The value is set here and read back, rather than asserting a key is
+    present — presence is guaranteed by the comprehension over
+    `RUN_OVERRIDE_KEYS` and would pass for a dict of hardcoded zeros.
+    """
+    monkeypatch.setenv("TOPIC_COUNT", "9")
     client = seeded_client(tmp_path)
 
     defaults = client.get("/api/config/options").json()["defaults"]
 
-    assert "topic_count" in defaults
+    assert defaults["topic_count"] == "9"
     assert "anthropic_api_key" not in defaults
 ```
 
@@ -4305,7 +4291,7 @@ Mount `options.router` in `create_app` alongside the others. **Check `TemplateMa
 - [ ] **Step 5: Run to verify they pass**
 
 Run: `uv run pytest tests/test_llm_registry.py tests/test_api_options.py -v`
-Expected: PASS, 11 tests.
+Expected: PASS, 10 tests.
 
 - [ ] **Step 6: Run the full gate**
 
