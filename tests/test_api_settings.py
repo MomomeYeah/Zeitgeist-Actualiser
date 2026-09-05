@@ -105,15 +105,34 @@ def test_a_written_value_is_stored_and_reported_as_set_here(tmp_path):
     assert fields["bluesky_trend_limit"]["source"] == "settings"
 
 
+def test_a_get_after_a_put_reports_the_new_value(tmp_path):
+    """`GET /api/settings` used to report `getattr` on `app.state.settings`
+    — frozen once at startup — rather than the live table, so a `PUT` was
+    invisible to every `GET` after it for the rest of the process's life:
+    the chip would say "settings" while showing the pre-write value, naming
+    the very layer that just won as the source of a value it did not
+    produce. Both requests share the same `TestClient`, and so the same
+    `app.state.settings`, which is exactly what would have served the stale
+    value here.
+    """
+    client = seeded_client(tmp_path)
+
+    client.put("/api/settings", json={"values": {"bluesky_trend_limit": "11"}})
+    body = {field["key"]: field for field in client.get("/api/settings").json()}
+
+    assert body["bluesky_trend_limit"]["value"] == 11
+    assert body["bluesky_trend_limit"]["source"] == "settings"
+
+
 def test_a_written_value_survives_into_a_new_settings_object(tmp_path):
     """The point of the table: the next run picks the value up. A write that
     only touched the response would change the screen and nothing else.
 
-    Asserted on a freshly built `Settings` rather than on `GET /api/settings`,
-    because that is what "the next run" actually is — the worker constructs
-    one per run and `SettingsTableSource` reads the table at construction.
-    The GET reports `getattr` on the app's *startup* `Settings`, which no
-    write reaches, so a GET-based assertion here could never pass.
+    Asserted on a freshly built `Settings` rather than on `GET /api/settings`
+    — which now also reports it, per the test above — because that is what
+    "the next run" actually is: the worker constructs one per run and
+    `SettingsTableSource` reads the table at construction, independently of
+    whatever `GET /api/settings` happens to do.
     """
     client = seeded_client(tmp_path)
 
@@ -174,10 +193,11 @@ def test_a_refused_field_writes_nothing_at_all(tmp_path):
     Applying the valid half would leave the screen showing a partial save
     with a 400 beside it, and no way to tell which half landed.
 
-    Asserted against the settings table rather than `GET /api/settings`: the
-    GET reports `getattr` on the app's startup `Settings`, which no write can
-    change, so a GET-based assertion here reads 3 whether the endpoint wrote
-    nothing, the good half, or both.
+    Asserted against the settings table directly rather than through
+    `GET /api/settings`: the endpoint now builds a fresh `Settings` per
+    request, so it would also fail this test if it wrote the good half, but
+    checking the table is still the more direct assertion of "wrote
+    nothing" and does not depend on that read path at all.
     """
     client = seeded_client(tmp_path)
 
