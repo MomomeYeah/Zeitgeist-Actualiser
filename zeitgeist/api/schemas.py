@@ -3,6 +3,16 @@
 Storage models are returned directly wherever they suffice — `TopicRow`,
 `StageRecord` and `RenderRecord` are already the shape the UI reads. These
 exist only where an endpoint joins several sources into one body.
+
+Enveloping is inconsistent across the nine endpoints on purpose, not by
+accident: `/api/runs` and `/api/topics` return an object carrying aggregates
+(`RunPage`'s `next_cursor`, `TopicIndex`'s totals) alongside the list, while
+`/api/settings`, `/api/runs/{id}/topics` and `/api/runs/{id}/log` return a
+bare array because there is nothing beyond the list to carry. The rule is:
+an envelope only where there are aggregates to carry. Phase 5 generates a
+TypeScript client against all nine at once, so a later phase changing this
+should be a deliberate decision to uphold or overturn the rule above, not
+a drift nobody wrote down.
 """
 
 from datetime import datetime

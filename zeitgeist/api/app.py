@@ -42,7 +42,9 @@ def create_app(settings: Settings) -> FastAPI:
     # operations through a thread pool, and TestClient runs the lifespan's
     # startup/shutdown on its own portal thread — so the connection is
     # legitimately touched from more than one thread. See the parameter's
-    # docstring on Store.__init__ for why that is safe here.
+    # docstring on Store.__init__ for why that is safe for the concurrent
+    # reads this phase does — not a blanket guarantee about writes, which
+    # phase 3's PUT /api/settings will need to reckon with separately.
     store = Store(settings.db_path, check_same_thread=False)
     store.init_schema()
 

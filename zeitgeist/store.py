@@ -57,10 +57,16 @@ class Store:
         servers dispatch sync dependencies and sync path operations through
         a thread pool, and `TestClient` runs the lifespan's startup and
         shutdown on its own portal thread. Passing `False` there is safe
-        because `sqlite3.threadsafety == 3` in this environment — the
-        underlying SQLite library is built in serialized mode, so a single
-        connection is safe to share across threads, concurrently, without
-        external locking.
+        for what phase 2 actually does with it — concurrent reads — because
+        `sqlite3.threadsafety == 3` in this environment: the underlying
+        SQLite library is built in serialized mode, so a single connection
+        cannot be corrupted by two threads touching it at once. That is
+        narrower than safe for concurrent *writes*: a connection has one
+        transaction, so two threads each running a multi-statement write
+        through it can interleave, and one thread's commit can land midway
+        through another's. Phase 3's `PUT /api/settings` will write through
+        this same connection from the threadpool, and will need to reckon
+        with that — not assume this note already covers it.
         """
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
