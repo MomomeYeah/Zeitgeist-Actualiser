@@ -21,6 +21,22 @@ from zeitgeist.store import Store
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
+def _validation_detail(exc: ValidationError) -> str:
+    """`exc.errors()` as one readable string naming every offending field,
+    rather than the list of objects pydantic hands back.
+
+    Every other 400 among the project's fifteen endpoints uses a plain
+    string for `detail` — `"Not writable through settings: ..."` two lines
+    below `write_settings`'s own use of this, for one. A generated
+    TypeScript client sees `detail` as `string` everywhere else and
+    `ValidationError[]` only here, without this.
+    """
+    return "; ".join(
+        f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+        for error in exc.errors()
+    )
+
+
 def _source(key: str, stored: dict[str, str]) -> SettingSource:
     """Which layer supplied this field, in `Settings`' own precedence.
 
@@ -93,7 +109,9 @@ def write_settings(
         try:
             Settings(**(settings.model_dump() | proposed))
         except ValidationError as exc:
-            raise HTTPException(status_code=400, detail=exc.errors()) from exc
+            raise HTTPException(
+                status_code=400, detail=_validation_detail(exc)
+            ) from exc
 
     # Only after every field has been accepted: a request naming one good
     # field and one bad one must write neither, or the screen shows a

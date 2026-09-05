@@ -228,6 +228,25 @@ def test_a_value_that_settings_would_reject_is_refused(tmp_path):
     assert response.status_code == 400
 
 
+def test_a_validation_failures_detail_is_a_string_naming_the_field(tmp_path):
+    """`detail` used to be `exc.errors()` — pydantic's list of error objects
+    — the one 400 among the project's fifteen endpoints that was not a
+    plain string. A generated TypeScript client would see `string |
+    ValidationError[]` for this path alone. It must read as a string, and
+    it must still say which field was rejected — collapsing it to a fixed
+    message would lose the very thing a user needs to fix.
+    """
+    client = seeded_client(tmp_path)
+
+    response = client.put(
+        "/api/settings", json={"values": {"meme_potential_weight": "2.0"}}
+    )
+
+    detail = response.json()["detail"]
+    assert isinstance(detail, str)
+    assert "meme_potential_weight" in detail
+
+
 def test_a_non_numeric_value_is_refused(tmp_path):
     """Same failure mode, cruder input. The form is a text box."""
     client = seeded_client(tmp_path)
