@@ -1,6 +1,9 @@
 import logging
 import threading
+from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 from tests.run_factory import make_run_config
 from zeitgeist.logcapture import CapturedLine, RunLogBuffer, capture_run_log
@@ -11,24 +14,6 @@ def _store(tmp_path) -> Store:
     store = Store(tmp_path / "z.db")
     store.init_schema()
     return store
-
-
-class _CountingStore(Store):
-    """Records the size of each batch handed to `write_log_lines`.
-
-    A subclass rather than an assignment over the instance method: assigning
-    needs a `type: ignore[method-assign]` that the project's suppression rule
-    would then have to justify, and the override still calls `super()`, so
-    every row really is written and the rows themselves stay assertable.
-    """
-
-    def __init__(self, path) -> None:
-        super().__init__(path)
-        self.batches: list[int] = []
-
-    def write_log_lines(self, run_id: str, lines) -> None:
-        self.batches.append(len(lines))
-        super().write_log_lines(run_id, lines)
 
 
 def _line(seq: int, message: str = "hello") -> CapturedLine:
@@ -102,19 +87,38 @@ def test_lines_are_written_in_batches_rather_than_one_row_at_a_time(tmp_path):
     """A DEBUG run emits several hundred lines and a transaction each would
     be gratuitous. This pins the batching by counting writes: an
     implementation flushing per record would pass every content assertion
-    above while doing 200 transactions.
+    above while doing 12 transactions.
+
+    Patches `Store.write_log_lines` at the class level rather than
+    subclassing the `store` handed to `capture_run_log`, the way this test
+    used to: the handler now writes through its own dedicated `Store`,
+    opened internally by `capture_run_log` from `store.path` (see its
+    docstring), never the instance the caller passes in — so a subclass
+    instance handed in here would never be the object whose
+    `write_log_lines` actually runs. Patching the class instead catches
+    the call regardless of which instance makes it, and delegating to the
+    original implementation still runs the real write, so the rows stay
+    assertable exactly as before.
     """
-    store = _CountingStore(tmp_path / "z.db")
-    store.init_schema()
+    store = _store(tmp_path)
     store.start_run("r1", make_run_config())
     log = logging.getLogger("zeitgeist.testing.batch")
+    batches: list[int] = []
+    original = Store.write_log_lines
 
-    with capture_run_log("r1", store, batch_size=5):
+    def counting(self: Store, run_id: str, lines: Sequence[CapturedLine]) -> None:
+        batches.append(len(lines))
+        original(self, run_id, lines)
+
+    with (
+        patch.object(Store, "write_log_lines", counting),
+        capture_run_log("r1", store, batch_size=5),
+    ):
         for index in range(12):
             log.info("line %d", index)
 
-    assert max(store.batches) > 1
-    assert sum(store.batches) == 12
+    assert max(batches) > 1
+    assert sum(batches) == 12
     assert [line.message for line in store.log_lines("r1", verbose=True)] == [
         f"line {index}" for index in range(12)
     ]
@@ -185,17 +189,13 @@ def test_lines_written_from_a_worker_thread_are_visible_to_the_reader(tmp_path):
     every single-threaded test here and stream nothing during a real run.
 
     `capture_run_log` is entered *on* the spawned thread here, not the main
-    one — and so is the `Store` it wraps, for the same reason `RunService`'s
-    worker builds its own rather than reusing one built elsewhere: a
-    `sqlite3` connection is thread-bound, so a `Store` built on the main
-    thread would itself raise when this handler's `flush` reached it from
-    the worker. In production the worker thread does both: it enters the
-    context manager and then runs the pipeline synchronously on itself, and
-    the handler only ever captures records from that one thread. Entering
-    the context manager on the main thread and logging from a second,
-    unrelated thread — as this test used to — is exactly the foreign-thread
-    case the guard drops, and would make this assertion fail for the wrong
-    reason.
+    one — matching how the worker actually uses it: it enters the context
+    manager and then runs the pipeline synchronously on itself. The `store`
+    passed in is still thread-bound to whichever thread built it (here, the
+    spawned one), because it is only used to read `store.path` — the
+    handler writes through its own separate `check_same_thread=False`
+    connection (see `capture_run_log`'s docstring), so which thread built
+    `store` no longer matters to `emit` the way it once did.
     """
     log = logging.getLogger("zeitgeist.testing.threaded")
     entered = threading.Event()
@@ -216,50 +216,92 @@ def test_lines_written_from_a_worker_thread_are_visible_to_the_reader(tmp_path):
     assert entered.wait(timeout=5)
 
     # Read from the main thread while the worker thread still holds the
-    # handler open — the buffer itself must tolerate that, even though the
-    # handler no longer accepts writes from any thread but the worker's.
+    # handler open — the buffer itself must tolerate that.
     assert [line.message for line in buffers[0].since(0)] == ["from the worker"]
 
     release.set()
     thread.join(timeout=5)
 
 
-def test_a_record_from_a_foreign_thread_is_dropped_without_raising(tmp_path):
-    """Critical 1: `llm/registry.py` logs on a request thread while a run's
-    handler happens to be attached to the `zeitgeist` logger. Before the
-    thread guard, `emit` would try to flush that line through the worker's
-    thread-bound `Store` from the foreign thread and raise
-    `sqlite3.ProgrammingError` — a 500 out of a read-only endpoint that has
-    nothing to do with the run. It must instead be silently dropped: not
-    captured, and no exception escapes the foreign thread either.
+def test_a_line_from_another_thread_is_captured_not_dropped(tmp_path):
+    """This used to be
+    `test_a_record_from_a_foreign_thread_is_dropped_without_raising`,
+    pinning Critical 1's thread-identity filter: a line logged from a
+    thread other than the one that entered `capture_run_log` was silently
+    dropped, because the handler wrote through the caller's own
+    `check_same_thread=True` `Store` and a foreign thread touching it would
+    raise `sqlite3.ProgrammingError`.
+
+    That filter is gone. It drew the wrong distinction — "which thread"
+    rather than "writing through a connection that belongs to another
+    thread" — and dropped `distil_topics`'s own `ThreadPoolExecutor`
+    workers along with genuine foreign noise (see `RunLogHandler`'s
+    docstring). This test now proves the opposite of what it used to: a
+    line from another thread is captured, in both sinks, and still raises
+    nothing — proof the handler's own dedicated,
+    `check_same_thread=False` `Store` is what makes that safe rather than
+    a filter that also threw away real diagnostics.
     """
     store = _store(tmp_path)
     store.start_run("r1", make_run_config())
-    log = logging.getLogger("zeitgeist.testing.foreign")
+    log = logging.getLogger("zeitgeist.testing.otherthread")
     raised: list[BaseException] = []
 
     with capture_run_log("r1", store) as buffer:
 
-        def foreign() -> None:
+        def other() -> None:
             try:
-                log.info("from a foreign thread")
+                log.info("from another thread")
             except BaseException as exc:  # noqa: BLE001 - proving nothing escapes
                 raised.append(exc)
 
-        thread = threading.Thread(target=foreign)
+        thread = threading.Thread(target=other)
         thread.start()
         thread.join(timeout=5)
+        assert not thread.is_alive()
 
-        log.info("from the owner")
+        log.info("from the caller")
 
     assert raised == []
-    assert [line.message for line in buffer.since(0)] == ["from the owner"]
-    assert [line.message for line in store.log_lines("r1", verbose=True)] == [
-        "from the owner"
-    ]
+    messages = {"from another thread", "from the caller"}
+    assert {line.message for line in buffer.since(0)} == messages
+    assert {line.message for line in store.log_lines("r1", verbose=True)} == messages
 
 
-def test_concurrent_foreign_noise_leaves_the_owners_seq_unique_and_increasing(
+def test_a_line_from_a_thread_pool_executor_worker_reaches_both_sinks(tmp_path):
+    """Important 1 (follow-up): `distil_topics` dispatches `_distil_one`
+    through a `ThreadPoolExecutor` via `pool.map`, and its two `log.debug`
+    calls — the per-topic "Distilling %r" line and the "Distilled %r in
+    %.1fs" line — are the only visibility
+    `GET /api/runs/{id}/log?verbose=true` has into the analyse stage. They
+    run on pool threads, never the thread that entered `capture_run_log`.
+
+    The old thread-identity filter would have dropped every one of these:
+    exactly the regression this test guards against. A real
+    `ThreadPoolExecutor`, not a bare `Thread` per line, because that is
+    what `distil_topics` actually uses — pool threads are reused across
+    tasks, which a fresh `Thread` per call does not exercise.
+    """
+    store = _store(tmp_path)
+    store.start_run("r1", make_run_config())
+    log = logging.getLogger("zeitgeist.testing.pool")
+    task_count = 8
+
+    def log_from_pool(index: int) -> None:
+        log.debug("pool task %d", index)
+
+    with (
+        capture_run_log("r1", store) as buffer,
+        ThreadPoolExecutor(max_workers=3) as pool,
+    ):
+        list(pool.map(log_from_pool, range(task_count)))
+
+    expected = {f"pool task {index}" for index in range(task_count)}
+    assert {line.message for line in buffer.since(0)} == expected
+    assert {line.message for line in store.log_lines("r1", verbose=True)} == expected
+
+
+def test_concurrent_logging_from_many_threads_produces_a_gapless_unique_sequence(
     tmp_path,
 ):
     """`_seq` is an unguarded read-modify-write and `flush`'s batch swap
@@ -267,41 +309,54 @@ def test_concurrent_foreign_noise_leaves_the_owners_seq_unique_and_increasing(
     `_seq` at once could hand out the same number twice, which is an
     `IntegrityError` against `log_lines`' `(run_id, seq)` primary key.
 
-    Several foreign threads hammer `emit` throughout, concurrently with the
-    owner thread logging its own 200 lines — real contention on the
-    handler's internal state, not simulated. The foreign lines must all be
-    dropped (proven by the exact count and content below) and the owner's
-    own sequence numbers must come out as a gapless, duplicate-free run —
-    proof the lock, and the thread guard ahead of it, both hold up under
-    load rather than merely in the single-threaded case.
+    This used to be
+    `test_concurrent_foreign_noise_leaves_the_owners_seq_unique_and_increasing`,
+    which hammered `emit` from several "foreign" threads the guard then
+    dropped, leaving only the owner thread's own lines to check. With the
+    guard gone every thread's lines are legitimate and must all land, so
+    this now drives real concurrent contention from several threads at
+    once — mirroring a distillation pool rather than one owner plus
+    discarded noise — and checks the union: every line from every thread
+    captured exactly once, with a `seq` sequence that is a gapless,
+    duplicate-free permutation of 1..total. Fixed counts per thread, not an
+    open-ended loop stopped by a flag, so the expected total is exact
+    rather than however much noise happened to land before `stop` was
+    seen.
     """
     store = _store(tmp_path)
     store.start_run("r1", make_run_config())
     log = logging.getLogger("zeitgeist.testing.concurrent")
-    owner_count = 200
-    stop = threading.Event()
+    thread_count = 5
+    per_thread = 50
+    total = thread_count * per_thread
 
-    def foreign_noise() -> None:
-        while not stop.is_set():
-            log.info("noise")
+    def worker(index: int) -> None:
+        for line in range(per_thread):
+            log.info("thread %d line %d", index, line)
 
-    with capture_run_log("r1", store, batch_size=11) as buffer:
-        noise_threads = [threading.Thread(target=foreign_noise) for _ in range(4)]
-        for thread in noise_threads:
+    with capture_run_log("r1", store) as buffer:
+        threads = [
+            threading.Thread(target=worker, args=(index,))
+            for index in range(thread_count)
+        ]
+        for thread in threads:
             thread.start()
-        for index in range(owner_count):
-            log.info("owner %d", index)
-        stop.set()
-        for thread in noise_threads:
+        for thread in threads:
             thread.join(timeout=5)
+            assert not thread.is_alive()
+
+    expected_messages = {
+        f"thread {index} line {line}"
+        for index in range(thread_count)
+        for line in range(per_thread)
+    }
 
     lines = buffer.since(0)
-    assert [line.message for line in lines] == [
-        f"owner {index}" for index in range(owner_count)
-    ]
-    assert [line.seq for line in lines] == list(range(1, owner_count + 1))
+    assert len(lines) == total
+    assert {line.message for line in lines} == expected_messages
+    assert sorted(line.seq for line in lines) == list(range(1, total + 1))
+
     stored = store.log_lines("r1", verbose=True)
-    assert [line.message for line in stored] == [
-        f"owner {index}" for index in range(owner_count)
-    ]
-    assert [line.seq for line in stored] == list(range(1, owner_count + 1))
+    assert len(stored) == total
+    assert {line.message for line in stored} == expected_messages
+    assert sorted(line.seq for line in stored) == list(range(1, total + 1))

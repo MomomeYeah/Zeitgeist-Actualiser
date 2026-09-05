@@ -100,6 +100,15 @@ class Store:
         # in-flight poll hitching.
         self._conn.execute("PRAGMA journal_mode = WAL")
 
+    @property
+    def path(self) -> Path:
+        """Read-only: lets a caller open a second connection to the same
+        database file — `logcapture.capture_run_log` is the one caller that
+        does, for its handler's own `check_same_thread=False` connection —
+        without reaching into `_path` directly.
+        """
+        return self._path
+
     def init_schema(self) -> None:
         # "Is this file fresh?" is asked of the whole database, not of one
         # table's name. Probing for a table this version happens to declare

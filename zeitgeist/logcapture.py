@@ -69,24 +69,50 @@ class RunLogHandler(logging.Handler):
     Attached to the `"zeitgeist"` logger for a run's whole duration (see
     `capture_run_log`), which means *any* code under that namespace logging
     from *any* thread reaches `emit` while a run is in flight — not only the
-    worker thread actually running the pipeline. `llm/registry.py` logging a
-    debug line on a request thread while `GET /api/config/options` checks
-    Ollama is a real example, not a hypothetical one.
+    thread that entered `capture_run_log`. That is not a narrow case:
+    `distil_topics`'s `_distil_one` (`zeitgeist/analysis/distil.py`) runs on
+    a `ThreadPoolExecutor`, so every "Distilling %r" and "Distilled %r in
+    %.1fs" DEBUG line — the only visibility
+    `GET /api/runs/{id}/log?verbose=true` has into the analyse stage — is
+    logged from a pool thread, never the thread that entered
+    `capture_run_log`.
 
-    That matters because this handler closes over the worker's `Store`,
-    opened with the default `check_same_thread=True`: flushing from any
-    thread but the one that constructed this handler raises
-    `sqlite3.ProgrammingError`, and it would also record an unrelated
-    request's line into *this run's* rows and stream it to the browser as
-    this run's own output.
+    An earlier version of this handler dropped every record whose thread
+    did not match the one that constructed it. That guarded against the
+    wrong thing: the actual hazard was writing through a `Store` opened
+    `check_same_thread=True` (sqlite3's default, and what the worker's own
+    `Store` uses) from a thread that did not open it, which raises
+    `sqlite3.ProgrammingError`. Pool threads spawned *by the run* are
+    legitimately part of it; dropping their lines silently discarded real
+    diagnostics rather than fixing the actual problem. The fix is a `Store`
+    of this handler's own, opened `check_same_thread=False`
+    (`capture_run_log` opens it and owns closing it) — the same pattern
+    `zeitgeist/api/app.py` already uses for its long-lived,
+    multi-thread-touched `Store`.
 
-    `_owner_thread` is recorded once, at construction, and `emit` drops
-    every record from any other thread before it touches `_seq`, `_pending`
-    or the store — cheaper and simpler than giving the handler a second,
-    thread-safe `Store` just to accept lines it has no business recording.
-    Safe as a plain handler otherwise, because the queue guarantees one run
-    executing at a time, so a second run's handler is never attached
-    simultaneously.
+    `Store.__init__`'s docstring on `check_same_thread` says why that is
+    safe here: `sqlite3.threadsafety == 3` in this environment means the
+    library is built in serialized mode, so one connection cannot be
+    corrupted by two threads touching it at once. That docstring is also
+    explicit that this is *narrower* than safe for concurrent writes in
+    general — interleaved multi-statement transactions on one connection
+    can still stomp on each other. `flush` stays inside the narrower
+    guarantee on purpose: every write is exactly one
+    `store.write_log_lines` call — one `executemany` plus one commit (see
+    `Store.write_log_lines`) — so there is no second statement for another
+    thread's call to land in the middle of. Two threads calling `flush`
+    concurrently serialize at SQLite's own per-connection mutex instead of
+    interleaving.
+
+    The one real trade-off left by capturing every thread rather than only
+    the owner: a request thread logging under the `zeitgeist` namespace
+    while a run happens to be in flight now has its line captured into
+    *that run's* log. `zeitgeist/llm/registry.py:59` is the one known case
+    — a debug line logged on the request thread handling
+    `GET /api/config/options` when Ollama is unreachable. That is a
+    cosmetic oddity in a log; losing the analyse stage's diagnostics, which
+    is what the thread filter did, was a functional loss. The trade is
+    deliberate.
     """
 
     def __init__(
@@ -107,22 +133,14 @@ class RunLogHandler(logging.Handler):
         # and the live log's ordering has to be total.
         self._seq = 0
         # Guards `_seq` and `_pending` only — never held across the store
-        # write in `flush`. With `emit` already refusing every thread but
-        # this one, nothing should ever actually contend on it; it stays
-        # cheap insurance against a future caller that flushes from
-        # somewhere else, not a substitute for the thread check above.
+        # write in `flush`. Matters more now than it used to: with no
+        # thread filter ahead of it, every thread logging under the
+        # namespace reaches here, so a `_seq` read-modify-write or a
+        # `_pending` swap racing an `append` is real contention, not a
+        # foreign-thread-only theoretical.
         self._lock = threading.Lock()
-        self._owner_thread = threading.get_ident()
 
     def emit(self, record: logging.LogRecord) -> None:
-        if threading.get_ident() != self._owner_thread:
-            # Not this run's business: a request thread logging while this
-            # run's handler happens to be attached. Silently dropping it —
-            # rather than writing it through the worker's thread-bound
-            # `Store` or recording it into this run's rows — is what keeps
-            # an unrelated endpoint's log line from crashing (foreign-thread
-            # write) or contaminating this run's output (wrong rows).
-            return
         with self._lock:
             self._seq += 1
             seq = self._seq
@@ -157,13 +175,25 @@ def capture_run_log(
 ) -> Iterator[RunLogBuffer]:
     """Attach a handler for one run's duration, and detach it after.
 
-    The `finally` is load-bearing: runs fail, and an abort unwinds through
-    here. A handler detached only on the success path would leak onto the
-    `zeitgeist` logger for the life of the process the first time a run
-    failed, and capture the next run's lines into the previous run's rows.
+    `store` is used only to find the database's path (`store.path`) — the
+    handler never writes through the caller's own connection. A second
+    connection is opened here instead, `check_same_thread=False`, because
+    `emit` can now be reached from any thread logging under the
+    `zeitgeist` namespace (see `RunLogHandler`'s docstring), and the
+    caller's `store` is typically the worker's own, opened
+    `check_same_thread=True`.
+
+    The `finally` is load-bearing, in two ways now: runs fail, and an
+    abort unwinds through here, so a handler detached only on the success
+    path would leak onto the `zeitgeist` logger for the life of the
+    process the first time a run failed, and capture the next run's lines
+    into the previous run's rows; and the dedicated connection opened
+    below must be closed on every path, or it leaks one open `sqlite3`
+    connection per run for the life of the process.
     """
     buffer = RunLogBuffer(maxlen=maxlen)
-    handler = RunLogHandler(run_id, buffer, store, batch_size=batch_size)
+    log_store = Store(store.path, check_same_thread=False)
+    handler = RunLogHandler(run_id, buffer, log_store, batch_size=batch_size)
     logger = logging.getLogger(LOGGER_NAME)
     # The server always captures at DEBUG and the toggle filters what is
     # *returned*, which is what lets flipping it work retroactively on lines
@@ -178,3 +208,4 @@ def capture_run_log(
         logger.removeHandler(handler)
         logger.setLevel(previous_level)
         handler.flush()
+        log_store.close()
