@@ -11,6 +11,7 @@ first thing in the pipeline that knows what actually happened.
 """
 
 import logging
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
@@ -210,10 +211,23 @@ def _distil_one(
     prompt = _build_prompt(entry, replies, phrases, settings.distil_char_budget)
     if token is not None:
         token.check()
+    started = time.monotonic()
+    log.debug(
+        "Distilling %r: %d replies, %d prompt chars",
+        entry.trend.display_name,
+        len(replies),
+        len(prompt),
+    )
     try:
-        return provider.complete(
+        draft = provider.complete(
             prompt, DossierDraft, system=DISTIL_SYSTEM, max_tokens=DISTIL_MAX_TOKENS
-        ), phrases
+        )
+        log.debug(
+            "Distilled %r in %.1fs",
+            entry.trend.display_name,
+            time.monotonic() - started,
+        )
+        return draft, phrases
     except Aborted:
         # Before the broad handler below, which exists to drop one failed
         # trend rather than fail the run. That is right for an LLMError and

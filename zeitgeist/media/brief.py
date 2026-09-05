@@ -54,7 +54,7 @@ def generate_brief(
     attempt_prompt = prompt
     last_error: str | None = None
 
-    for _ in range(2):
+    for attempt in range(1, 3):
         try:
             choice = provider.complete(attempt_prompt, BriefChoice, system=BRIEF_SYSTEM)
         except Exception as exc:
@@ -62,6 +62,12 @@ def generate_brief(
 
         problem = _validate(choice, templates)
         if problem is None:
+            log.debug(
+                "Brief for %r: template %s on attempt %d",
+                topic.label,
+                choice.template_id,
+                attempt,
+            )
             return MediaBrief(
                 topic_id=topic.id,
                 template_id=choice.template_id,

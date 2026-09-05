@@ -1,5 +1,6 @@
 """Pillow compositing. Fully deterministic: no model involvement at all."""
 
+import logging
 import textwrap
 from pathlib import Path
 from typing import cast
@@ -8,6 +9,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 from zeitgeist.media.templates import Slot, TemplateManifest
 from zeitgeist.models import MediaBrief
+
+log = logging.getLogger(__name__)
 
 MAX_FONT_SIZE = 64
 MIN_FONT_SIZE = 12
@@ -86,6 +89,8 @@ def _draw_slot(
         line_height = size * LINE_SPACING
         if line_height * len(lines) <= height:
             break
+
+    log.debug("Slot %s fitted at %dpt", slot.name, size)
 
     block_height = line_height * len(lines)
     if block_height > height:

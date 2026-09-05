@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 import pytest
@@ -270,3 +271,26 @@ def test_a_topic_without_a_dossier_falls_back_to_its_summary():
     brief = generate_brief(topic, _templates(), provider)
     assert brief.topic_id == "t"
     assert "Cats knocked something over." in provider.calls[-1].prompt
+
+
+def test_generate_brief_logs_the_chosen_template_and_attempt_at_debug(caplog):
+    """`_brief_one` retries once, so which attempt produced the winning
+    choice is the diagnostic this line exists for: attempt 1 succeeding
+    looks identical to attempt 2 succeeding in every other test in this
+    file, but they are different runs to explain later when captions are
+    poor. Asserted on `record.args`, with the topic label and template id
+    taken from this fixture and the attempt number pinned to the retry this
+    test forces — the mutation this guards against is the two counts
+    swapped, or the same attempt number logged regardless of which one
+    actually won.
+    """
+    provider = FakeLLMProvider([_choice(template_id="invented"), _choice()])
+
+    with caplog.at_level(logging.DEBUG, logger="zeitgeist.media.brief"):
+        generate_brief(_scored_topic(), _templates(), provider)
+
+    assert [
+        record.args
+        for record in caplog.records
+        if record.levelno == logging.DEBUG and record.name == "zeitgeist.media.brief"
+    ] == [("Cats", "drake", 2)]

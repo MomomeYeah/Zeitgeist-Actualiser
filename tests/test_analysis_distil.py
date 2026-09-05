@@ -1,5 +1,6 @@
 """Distillation: one LLM call per trend, producing a topic and its dossier."""
 
+import logging
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -28,6 +29,8 @@ from zeitgeist.models import (
 from zeitgeist.progress import Aborted, CancelToken
 
 NOW = datetime(2026, 8, 26, tzinfo=UTC)
+
+REPLY_TEXT = "UNIQUE-REPLY-BODY-SENTINEL"
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -560,3 +563,71 @@ def test_a_trend_that_fails_is_not_reported():
         )
 
     assert reported == []
+
+
+def test_each_topic_logs_its_reply_count_and_prompt_size_at_debug(caplog):
+    """The verbose toggle's counterpart on the analyse stage: seeing three
+    replies distilled into a several-thousand-character prompt is how a
+    thin trend is told apart from a broken one.
+
+    Asserted on `record.args`, never on the formatted string. The reply
+    count is this fixture's own construction; the prompt-character count is
+    taken from the exact prompt the fixture produces (the same string
+    `provider.calls[0].prompt` already exposes elsewhere in this file), not
+    from the replies' text — the wrong-argument mutation this guards
+    against is the two counts swapped, or one logged twice.
+    """
+    replies = [_reply("what a mess", author=a) for a in ("a", "b", "c")]
+    provider = FakeLLMProvider(responses=[_draft()])
+
+    with caplog.at_level(logging.DEBUG, logger="zeitgeist.analysis.distil"):
+        distil_topics([_evidence(replies=replies)], provider, _settings())
+
+    prompt = provider.calls[0].prompt
+    starting_records = [
+        record.args
+        for record in caplog.records
+        if record.levelno == logging.DEBUG
+        and record.name == "zeitgeist.analysis.distil"
+        and len(record.args) == 3
+    ]
+    assert starting_records == [
+        ("Canada announces retaliatory tariffs", 3, len(prompt))
+    ]
+
+
+def test_distil_logs_elapsed_time_per_topic_at_debug(caplog):
+    """A duration is not hand-derivable, so unlike the line above this only
+    pins the trend name and the type of the second argument.
+    """
+    provider = FakeLLMProvider(responses=[_draft()])
+
+    with caplog.at_level(logging.DEBUG, logger="zeitgeist.analysis.distil"):
+        distil_topics([_evidence()], provider, _settings())
+
+    elapsed_records = [
+        record.args
+        for record in caplog.records
+        if record.levelno == logging.DEBUG
+        and record.name == "zeitgeist.analysis.distil"
+        and len(record.args) == 2
+    ]
+    [(name, elapsed)] = elapsed_records
+    assert name == "Canada announces retaliatory tariffs"
+    assert isinstance(elapsed, float)
+
+
+def test_no_debug_record_carries_reply_text(caplog):
+    """distil is the stage that actually reads reply bodies to build the
+    prompt, so it is the one most at risk of a debug line that echoes one
+    back. This asserts on the rendered message, which only interpolates
+    once a handler is attached, so a lazily-formatted line cannot slip text
+    through unexamined.
+    """
+    provider = FakeLLMProvider(responses=[_draft()])
+
+    with caplog.at_level(logging.DEBUG, logger="zeitgeist.analysis.distil"):
+        distil_topics([_evidence(replies=[_reply(REPLY_TEXT)])], provider, _settings())
+
+    for record in caplog.records:
+        assert REPLY_TEXT not in record.getMessage()
