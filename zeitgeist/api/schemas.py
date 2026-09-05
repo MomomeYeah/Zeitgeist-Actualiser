@@ -64,6 +64,22 @@ class StartRunBody(BaseModel):
     overrides: dict[str, str] = {}
 
 
+class RunActionAck(BaseModel):
+    """Acknowledges `POST /{run_id}/stop` and `/abort`.
+
+    Both endpoints returned a bare `dict[str, str]`, unlike every other
+    endpoint in the project, which declares a `response_model`. Phase 5
+    generates a TypeScript client from this OpenAPI schema, and two
+    undeclared response bodies out of fifteen endpoints is a client-visible
+    hole this closes.
+    """
+
+    model_config = STRICT
+
+    run_id: str
+    requested: Literal["stop", "abort"]
+
+
 class ResumeBody(BaseModel):
     """`stage` omitted means the computed resume point — the button posts no
     stage. `template_ids` narrows the library for this resume only, which is

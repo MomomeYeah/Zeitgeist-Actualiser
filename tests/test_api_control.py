@@ -434,6 +434,35 @@ def test_stop_trips_stopping_and_abort_trips_aborted(tmp_path):
     assert flags[aborted["run_id"]] == (True, True)
 
 
+def test_stop_and_abort_report_a_declared_response_shape(tmp_path):
+    """Both endpoints used to return a bare `dict[str, str]` with no
+    `response_model`, unlike every other endpoint in the project. Phase 5
+    generates a TypeScript client from this OpenAPI schema, and this pins
+    the body's actual shape — not just its status code, which every other
+    test here already covers — so a regression to an undeclared dict would
+    still be caught even though FastAPI would happily serialise one.
+    """
+    entered = threading.Event()
+    released = threading.Event()
+
+    def execute(settings, request, store, observer, token) -> None:
+        run_id = request.run_id or ""
+        store.start_run(run_id, make_run_config())
+        entered.set()
+        assert released.wait(timeout=5)
+
+    client = seeded_client(tmp_path, execute=execute)
+
+    body = client.post("/api/runs", json={}).json()
+    assert entered.wait(timeout=5)
+
+    response = client.post(f"/api/runs/{body['run_id']}/stop")
+    released.set()
+    client.app.state.runner.shutdown(timeout=10)
+
+    assert response.json() == {"run_id": body["run_id"], "requested": "stop"}
+
+
 def test_stopping_a_run_that_is_not_executing_is_a_404(tmp_path):
     """The inline abort confirmation is drawn from a poll that can be a
     moment stale. Reporting success for a run that already finished would

@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 
 from zeitgeist.api.app import get_runner, get_store
 from zeitgeist.api.runs import _run_or_404, resume_stage
-from zeitgeist.api.schemas import ResumeBody, StartRunBody
+from zeitgeist.api.schemas import ResumeBody, RunActionAck, StartRunBody
 from zeitgeist.records import ORDER
 from zeitgeist.runner import (
     ActiveRuns,
@@ -119,24 +119,28 @@ def resume_run(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.post("/{run_id}/stop", status_code=status.HTTP_202_ACCEPTED)
-def stop_run(run_id: str, runner: RunService = Depends(get_runner)) -> dict[str, str]:
+@router.post(
+    "/{run_id}/stop", response_model=RunActionAck, status_code=status.HTTP_202_ACCEPTED
+)
+def stop_run(run_id: str, runner: RunService = Depends(get_runner)) -> RunActionAck:
     """Finish the current stage, write its checkpoint, then end. The run
     stays resumable, which is what the button promises."""
     if not runner.stop(run_id):
         raise HTTPException(status_code=404, detail=f"Run {run_id} is not running")
-    return {"run_id": run_id, "requested": "stop"}
+    return RunActionAck(run_id=run_id, requested="stop")
 
 
-@router.post("/{run_id}/abort", status_code=status.HTTP_202_ACCEPTED)
-def abort_run(run_id: str, runner: RunService = Depends(get_runner)) -> dict[str, str]:
+@router.post(
+    "/{run_id}/abort", response_model=RunActionAck, status_code=status.HTTP_202_ACCEPTED
+)
+def abort_run(run_id: str, runner: RunService = Depends(get_runner)) -> RunActionAck:
     """End now. Ingest is the exception: `fetch_evidence` is one opaque
     `asyncio.run()` with no interior checkpoint, so an abort during it takes
     effect when the fetch returns — which is what the UI's "aborting…" state
     is for."""
     if not runner.abort(run_id):
         raise HTTPException(status_code=404, detail=f"Run {run_id} is not running")
-    return {"run_id": run_id, "requested": "abort"}
+    return RunActionAck(run_id=run_id, requested="abort")
 
 
 @router.get("/{run_id}/events")
