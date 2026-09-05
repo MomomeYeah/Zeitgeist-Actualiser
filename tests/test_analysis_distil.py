@@ -428,7 +428,7 @@ def test_a_topic_is_reported_while_later_trends_are_still_running():
 
     def dogs_call() -> None:
         order.append("dogs-call-start")
-        reported_cats.wait(timeout=5)
+        assert reported_cats.wait(timeout=5), "cats not reported within timeout"
         order.append("dogs-call-end")
 
     provider = _ScriptedProvider(
@@ -472,7 +472,7 @@ def test_topic_ids_do_not_depend_on_which_trend_finishes_first():
     second = _draft(what_happened="the second one")
 
     def wait_for_second() -> None:
-        second_done.wait(timeout=5)
+        assert second_done.wait(timeout=5), "second trend did not finish first"
 
     provider = _ScriptedProvider(
         {
