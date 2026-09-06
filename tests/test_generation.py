@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -609,3 +610,43 @@ def test_a_submitted_job_really_renders_when_nothing_is_injected(tmp_path):
     assert render_paths(
         _settings(tmp_path).output_dir, "run-1", records[0].id
     ).full.is_file()
+
+
+def test_submit_fails_seeded_rows_when_the_pool_refuses_after_shutdown(tmp_path):
+    """Reproduces the `_ensure_pool` / `shutdown` race directly, rather
+    than through actual concurrency: `_ensure_pool` releases `self._lock`
+    before handing the pool reference back to `submit`, so a `shutdown()`
+    landing in that gap can swap `self._pool` to `None` and shut down the
+    very pool `submit` is about to call `.submit()` on. The executor then
+    raises `RuntimeError: cannot schedule new futures after shutdown` —
+    but only *after* `_seed` has already committed the `generating` rows,
+    so without a handler those rows would never be finished.
+
+    Calling `service.shutdown()` first would not reach this state:
+    `shutdown()` sets `self._pool = None`, so the next `submit` just calls
+    `_ensure_pool()` again, gets a fresh live pool, and succeeds — the
+    race needs a *live reference* to a *dead* pool, which only exists
+    during the actual window between `_ensure_pool` returning and
+    `.submit()` running. Assigning `service._pool` directly is white-box,
+    reaching past the public interface, but it is the only way to install
+    that exact state without a mock: a real `ThreadPoolExecutor` that has
+    already been shut down.
+    """
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+    dead_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dead")
+    dead_pool.shutdown(wait=True)
+    service._pool = dead_pool
+
+    with pytest.raises(RuntimeError):
+        service.submit(
+            "run-1",
+            "airport-cat",
+            ManualGeneration(template_id=TEMPLATE, caption_slots=SLOTS),
+        )
+
+    rows = store.renders_for_topic("run-1", "airport-cat")
+    assert len(rows) == 1
+    assert rows[0].status == "failed"
+    assert rows[0].error is not None

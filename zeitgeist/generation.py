@@ -327,7 +327,26 @@ class GenerationService:
             topic_id,
             request.template_id,
         )
-        self._ensure_pool().submit(self._run, job)
+        try:
+            self._ensure_pool().submit(self._run, job)
+        except RuntimeError as exc:
+            # `_ensure_pool` releases `self._lock` before handing back the
+            # pool reference, so `shutdown()` can swap `self._pool` to
+            # `None` and shut the very pool we just got, in the gap between
+            # that return and this `.submit()`. The executor then refuses
+            # with `RuntimeError: cannot schedule new futures after
+            # shutdown` — but `_seed` has already committed the rows above,
+            # so without this handler they would sit in `"generating"`
+            # forever, indistinguishable from real in-flight work. Routing
+            # them through the same `_fail_unfinished` a raised job uses
+            # gives them the honest outcome. `self._store` is correct here,
+            # not a fresh `Store`: `submit` runs on the request thread, and
+            # `self._store` is that thread's connection — the same one
+            # `_seed` just wrote the rows through. Re-raising is still
+            # correct: a 202 for work that will never run would be a lie,
+            # and a 500 during a shutdown race is the honest answer.
+            self._fail_unfinished(self._store, job, exc)
+            raise
         return records
 
     def _seed(
