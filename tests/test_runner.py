@@ -1,5 +1,7 @@
+import os
 import sqlite3
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -7,7 +9,13 @@ from tests.run_factory import make_run_config
 from zeitgeist.config import Settings
 from zeitgeist.progress import Aborted
 from zeitgeist.records import RunConfig, Stage
-from zeitgeist.runner import ActiveRuns, RunAlreadyActive, RunRequest, RunService
+from zeitgeist.runner import (
+    ActiveRuns,
+    RunAlreadyActive,
+    RunRequest,
+    RunService,
+    resolve_settings,
+)
 from zeitgeist.store import Store
 
 
@@ -758,3 +766,36 @@ def test_a_run_picks_up_the_settings_table_for_fields_it_does_not_override(
     service.shutdown(timeout=10)
 
     assert seen == [7]
+
+
+def test_resolve_settings_picks_up_a_value_written_to_the_settings_table(tmp_path):
+    """The base snapshot is fixed when the service is constructed. A field
+    the settings screen writes afterwards must still reach the next run —
+    and the next generation job, which layers the same way."""
+    store = Store(Path(os.environ["DB_PATH"]))
+    store.init_schema()
+    store.set_setting("distil_concurrency", "7")
+
+    resolved = resolve_settings(Settings(_env_file=None), {})
+
+    assert resolved.distil_concurrency == 7
+
+
+def test_resolve_settings_lets_an_override_outrank_the_table(tmp_path):
+    store = Store(Path(os.environ["DB_PATH"]))
+    store.init_schema()
+    store.set_setting("distil_concurrency", "7")
+
+    resolved = resolve_settings(Settings(_env_file=None), {"distil_concurrency": "2"})
+
+    assert resolved.distil_concurrency == 2
+
+
+def test_resolve_settings_keeps_fields_a_run_cannot_set(tmp_path):
+    """`output_dir` and `db_path` may hold programmatic values the API was
+    constructed with. Only the run-settable fields resolve afresh."""
+    base = Settings(_env_file=None, output_dir=tmp_path / "somewhere")
+
+    resolved = resolve_settings(base, {})
+
+    assert resolved.output_dir == tmp_path / "somewhere"

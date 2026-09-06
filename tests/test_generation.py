@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 import pytest
@@ -9,8 +10,11 @@ from zeitgeist.config import Settings
 from zeitgeist.generation import (
     MAX_RENDERS,
     GenerationJob,
+    GenerationRefused,
+    GenerationService,
     LLMGeneration,
     ManualGeneration,
+    UnknownTopic,
     generate_renders,
 )
 from zeitgeist.llm.base import FakeLLMProvider, LLMError
@@ -18,7 +22,7 @@ from zeitgeist.media.brief import BriefChoice
 from zeitgeist.media.templates import load_templates
 from zeitgeist.records import AutoOrigin, ManualOrigin, RenderRecord
 from zeitgeist.renders import render_paths
-from zeitgeist.store import Store
+from zeitgeist.store import MissingCheckpoint, Store
 
 TEMPLATE = "shape_alpha"
 SLOTS = {"rejected": "queueing forever", "preferred": "the airport cat"}
@@ -342,3 +346,266 @@ def test_a_manual_request_has_no_count_field():
     extras, which is what makes that unrepresentable rather than ignored."""
     with pytest.raises(ValidationError):
         ManualGeneration(template_id=TEMPLATE, caption_slots=SLOTS, count=2)
+
+
+def _service(tmp_path, store, **kwargs) -> GenerationService:
+    return GenerationService(_settings(tmp_path), store, **kwargs)
+
+
+def _seed_topics(store: Store, *topics) -> None:
+    store.write_analyse_checkpoint("run-1", list(topics), 0.3)
+
+
+@dataclass
+class RecordingGenerate:
+    """Captures the job instead of doing the work, so a test can assert
+    what the request thread resolved without a model or Pillow."""
+
+    jobs: list[GenerationJob] = field(default_factory=list)
+
+    def __call__(self, job: GenerationJob, store: Store) -> None:
+        self.jobs.append(job)
+
+
+def test_submit_returns_generating_rows_that_are_already_in_the_database(tmp_path):
+    """The tiles the client draws need real ids and must survive a
+    refresh, so the rows exist before the response does."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    records = service.submit(
+        "run-1",
+        "airport-cat",
+        ManualGeneration(template_id=TEMPLATE, caption_slots=SLOTS),
+    )
+    service.shutdown()
+
+    assert [r.status for r in records] == ["generating"]
+    assert store.get_render(records[0].id) is not None
+
+
+def test_submit_writes_one_row_per_requested_render(tmp_path):
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    records = service.submit(
+        "run-1", "airport-cat", LLMGeneration(template_id=TEMPLATE, count=3)
+    )
+    service.shutdown()
+
+    assert len(records) == 3
+    assert len({r.id for r in records}) == 3
+
+
+def test_a_generating_auto_row_carries_no_captions_and_no_rationale_yet(tmp_path):
+    """`generating` is the state in which the brief is not yet written.
+    Consumers must not read either field until it is."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    records = service.submit(
+        "run-1", "airport-cat", LLMGeneration(template_id=TEMPLATE)
+    )
+    service.shutdown()
+
+    assert records[0].caption_slots == {}
+    assert records[0].origin == AutoOrigin(rationale="")
+
+
+def test_a_generating_manual_row_already_carries_its_captions(tmp_path):
+    """Nothing has to be discovered for a hand-written render, so the row
+    is complete from the start except for its status."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    records = service.submit(
+        "run-1",
+        "airport-cat",
+        ManualGeneration(template_id=TEMPLATE, caption_slots=SLOTS),
+    )
+    service.shutdown()
+
+    assert records[0].caption_slots == SLOTS
+    assert records[0].origin == ManualOrigin()
+
+
+def test_submit_briefs_a_topic_that_was_never_ranked(tmp_path):
+    """The below-the-cut `generate` link. The topic is in the analyse
+    checkpoint, which holds every topic, not just the kept ones."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"), make_topic("below-the-cut"))
+    recorder = RecordingGenerate()
+    service = _service(tmp_path, store, generate=recorder)
+
+    service.submit("run-1", "below-the-cut", LLMGeneration(template_id=TEMPLATE))
+    service.shutdown()
+
+    assert recorder.jobs[0].topic.id == "below-the-cut"
+
+
+def test_submit_refuses_a_topic_the_run_never_saw(tmp_path):
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    with pytest.raises(UnknownTopic):
+        service.submit("run-1", "no-such-topic", LLMGeneration(template_id=TEMPLATE))
+
+
+def test_submit_refuses_a_template_that_is_not_in_the_library(tmp_path):
+    """Refused before any row exists, so a typo costs nothing and leaves
+    nothing behind."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    with pytest.raises(GenerationRefused):
+        service.submit("run-1", "airport-cat", LLMGeneration(template_id="nope"))
+
+    assert store.renders_for_topic("run-1", "airport-cat") == []
+
+
+def test_submit_refuses_hand_written_captions_that_do_not_fit_the_template(tmp_path):
+    """The same rule the model's answer is held to. Accepting these would
+    turn a bad request into a failed tile."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    with pytest.raises(GenerationRefused):
+        service.submit(
+            "run-1",
+            "airport-cat",
+            ManualGeneration(template_id=TEMPLATE, caption_slots={"rejected": "only"}),
+        )
+
+    assert store.renders_for_topic("run-1", "airport-cat") == []
+
+
+def test_submit_raises_missing_checkpoint_when_the_run_never_analysed(tmp_path):
+    """A run that died in ingest has nothing to brief from, and the
+    endpoint has to say that rather than 404 the topic."""
+    store = _store(tmp_path)
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    with pytest.raises(MissingCheckpoint):
+        service.submit("run-1", "airport-cat", LLMGeneration(template_id=TEMPLATE))
+
+
+def test_a_manual_job_is_built_with_no_provider(tmp_path):
+    """A hand-written render makes no model call, so it must not need an
+    API key to be accepted."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    recorder = RecordingGenerate()
+    service = _service(tmp_path, store, generate=recorder)
+
+    service.submit(
+        "run-1",
+        "airport-cat",
+        ManualGeneration(template_id=TEMPLATE, caption_slots=SLOTS),
+    )
+    service.shutdown()
+
+    assert recorder.jobs[0].provider is None
+
+
+def test_on_demand_generation_appends_rather_than_replacing(tmp_path):
+    """The opposite of a re-run of the generate stage: this is an additive
+    action somebody took, and clearing would delete what they are
+    comparing against."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    store.add_render(
+        make_render_record("older", run_id="run-1", topic_id="airport-cat")
+    )
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    service.submit("run-1", "airport-cat", LLMGeneration(template_id=TEMPLATE))
+    service.shutdown()
+
+    ids = [r.id for r in store.renders_for_topic("run-1", "airport-cat")]
+    assert "older" in ids
+    assert len(ids) == 2
+
+
+def test_a_job_that_raises_leaves_every_unfinished_row_failed(tmp_path):
+    """A crash in the worker must not leave tiles spinning forever. The
+    backstop reads the database rather than the in-memory records, so a
+    row the job already finished is left alone."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+
+    def explode(job: GenerationJob, store: Store) -> None:
+        raise RuntimeError("the worker fell over")
+
+    service = _service(tmp_path, store, generate=explode)
+    records = service.submit(
+        "run-1", "airport-cat", LLMGeneration(template_id=TEMPLATE, count=2)
+    )
+    service.shutdown()
+
+    finished = [store.get_render(r.id) for r in records]
+    assert all(f is not None and f.status == "failed" for f in finished)
+    assert all(f is not None and f.error is not None for f in finished)
+
+
+def test_a_job_that_raises_leaves_an_already_finished_row_alone(tmp_path):
+    """The backstop reads each row back rather than trusting the in-memory
+    records: a render the job already finished before it fell over must
+    keep its real outcome, not be overwritten to failed.
+
+    Without this, dropping the `status != "generating"` half of the guard
+    in `_fail_unfinished` would break nothing — the test above raises
+    before any record is finished, so every row is still generating when
+    the backstop runs.
+    """
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+
+    def finish_first_then_explode(job: GenerationJob, store: Store) -> None:
+        first, _second = job.records
+        store.update_render(first.model_copy(update={"status": "ready"}))
+        raise RuntimeError("the worker fell over")
+
+    service = _service(tmp_path, store, generate=finish_first_then_explode)
+    records = service.submit(
+        "run-1", "airport-cat", LLMGeneration(template_id=TEMPLATE, count=2)
+    )
+    service.shutdown()
+
+    first, second = (store.get_render(r.id) for r in records)
+    assert first is not None and first.status == "ready"
+    assert second is not None and second.status == "failed"
+
+
+def test_a_submitted_job_really_renders_when_nothing_is_injected(tmp_path):
+    """The one test that wires `submit` to the real `generate_renders`.
+
+    Every other service test injects a fake, so the default in
+    `GenerationService.__init__` — `generate or generate_renders` — is
+    otherwise never exercised: pointing it at a no-op, or forgetting to
+    put `records` on the job, would break nothing in the suite while
+    leaving every tile in the browser generating forever.
+    """
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store)
+
+    records = service.submit(
+        "run-1",
+        "airport-cat",
+        ManualGeneration(template_id=TEMPLATE, caption_slots=SLOTS),
+    )
+    service.shutdown()
+
+    finished = store.get_render(records[0].id)
+    assert finished is not None
+    assert finished.status == "ready"
+    assert render_paths(
+        _settings(tmp_path).output_dir, "run-1", records[0].id
+    ).full.is_file()

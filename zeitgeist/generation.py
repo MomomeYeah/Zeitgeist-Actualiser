@@ -13,20 +13,26 @@ exactly as `RunRequest` does.
 """
 
 import logging
+import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Annotated, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from zeitgeist.config import Settings
 from zeitgeist.llm.base import LLMProvider
-from zeitgeist.media.brief import BriefError, generate_brief
+from zeitgeist.llm.factory import build_provider
+from zeitgeist.media.brief import BriefError, check_slots, generate_brief
 from zeitgeist.media.render import RenderError, render_meme, write_thumbnail
-from zeitgeist.media.templates import TemplateManifest
+from zeitgeist.media.templates import TemplateManifest, load_templates
 from zeitgeist.models import STRICT, MediaBrief, Topic
-from zeitgeist.records import AutoOrigin, ManualOrigin, Origin, RenderRecord
+from zeitgeist.records import AutoOrigin, ManualOrigin, Origin, RenderRecord, Stage
 from zeitgeist.renders import render_paths
+from zeitgeist.runner import resolve_settings
 from zeitgeist.store import Store
 
 log = logging.getLogger(__name__)
@@ -187,3 +193,237 @@ def _origin(request: GenerationRequest, brief: MediaBrief) -> Origin:
     if isinstance(request, ManualGeneration):
         return ManualOrigin()
     return AutoOrigin(rationale=brief.rationale)
+
+
+class UnknownTopic(LookupError):
+    """No topic with that id in the run's `analyse` checkpoint.
+
+    A `LookupError` rather than a `ValueError` so the endpoint can map it
+    to 404 ahead of the 400 that `GenerationRefused` and `build_provider`
+    both raise: a topic that is not there is a different story from a
+    request that is malformed.
+    """
+
+
+class GenerationRefused(ValueError):
+    """The request named a template that is not in the library, or captions
+    that do not fit the template's slots.
+
+    A `ValueError` subclass so an endpoint catching `ValueError` — which is
+    also what `build_provider` raises for a missing API key — gives all of
+    them the 400 they deserve.
+    """
+
+
+class GenerationService:
+    """The on-demand executor and everything it validates first.
+
+    One worker, deliberately. The run worker is the other concurrent caller
+    of the LLM provider, and a second generation thread would make three
+    against a local Ollama that serialises on one GPU. "Small" is the
+    spec's word for it.
+
+    No `start()`, unlike `RunService`. A run worker has to be running
+    before any request arrives because it drains a queue; a generation pool
+    has nothing to do until a request arrives, so the pool is created on
+    first use and `ThreadPoolExecutor` spawns no thread before then. An app
+    that is built and never entered therefore leaves no thread behind,
+    which is the same property `RunService.start` living in the lifespan
+    buys.
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        store: Store,
+        *,
+        generate: GenerateFn | None = None,
+    ) -> None:
+        self._settings = settings
+        self._store = store
+        self._generate = generate or generate_renders
+        self._pool: ThreadPoolExecutor | None = None
+        self._lock = threading.Lock()
+
+    def _ensure_pool(self) -> ThreadPoolExecutor:
+        with self._lock:
+            if self._pool is None:
+                self._pool = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="zeitgeist-generate"
+                )
+            return self._pool
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        """Close the pool, waiting for what is in flight. Called from the
+        app's lifespan, and from tests that need a job to have finished
+        without sleeping for it."""
+        with self._lock:
+            pool, self._pool = self._pool, None
+        if pool is not None:
+            pool.shutdown(wait=wait)
+
+    def submit(
+        self, run_id: str, topic_id: str, request: GenerationRequest
+    ) -> list[RenderRecord]:
+        """Validate, write the `generating` rows, and queue the work.
+
+        Everything that can be refused is refused here, on the request
+        thread, before a single row exists: the topic, the template, the
+        captions and the provider. A request that gets past this line has
+        rows the client can draw, and any failure after it is a per-render
+        outcome the row itself carries.
+
+        `MissingCheckpoint` propagates: a run that never analysed has
+        nothing to brief from, which is a different answer from "no such
+        topic".
+        """
+        settings = resolve_settings(self._settings, {})
+
+        # The analyse checkpoint holds *every* topic, not just the kept
+        # ones, which is exactly what the below-the-cut `generate` link
+        # needs — evaluate's payload would 404 a topic that was ranked and
+        # not selected.
+        topics = self._store.read_checkpoint(run_id, Stage.ANALYSE, Topic)
+        topic = next((t for t in topics if t.id == topic_id), None)
+        if topic is None:
+            raise UnknownTopic(f"No such topic in {run_id}: {topic_id}")
+
+        templates = load_templates(settings.templates_dir)
+        if request.template_id not in templates:
+            raise GenerationRefused(
+                f"template_id {request.template_id!r} is not in the library; "
+                f"choose one of: {', '.join(sorted(templates))}"
+            )
+
+        provider: LLMProvider | None = None
+        if isinstance(request, ManualGeneration):
+            # The same rule the model's answer is held to. Refusing here
+            # turns a bad request into a 400 rather than a failed tile the
+            # user has to open to understand.
+            problem = check_slots(request.template_id, request.caption_slots, templates)
+            if problem is not None:
+                raise GenerationRefused(problem)
+        else:
+            # On the request thread so a missing ANTHROPIC_API_KEY is a
+            # 400 with a message, not a row that silently fails a second
+            # later. Both providers hold thread-safe clients — `distil.py`
+            # already shares one across a thread pool.
+            provider = build_provider(settings)
+
+        records = self._seed(run_id, topic_id, request)
+        job = GenerationJob(
+            settings=settings,
+            request=request,
+            topic=topic,
+            templates=templates,
+            records=records,
+            provider=provider,
+        )
+        log.info(
+            "Queued %d %s render(s) for %s/%s on template %s",
+            len(records),
+            request.mode,
+            run_id,
+            topic_id,
+            request.template_id,
+        )
+        self._ensure_pool().submit(self._run, job)
+        return records
+
+    def _seed(
+        self, run_id: str, topic_id: str, request: GenerationRequest
+    ) -> list[RenderRecord]:
+        """Insert one `generating` row per requested render.
+
+        Written before `submit` returns, not when the job finishes: the
+        database is authoritative for whether a render exists, so a tile
+        with no row behind it would vanish on the next reload.
+
+        For an `llm` request the brief does not exist yet, so the row
+        carries `caption_slots={}` and an empty rationale, both filled in
+        by `_draw`. The record's *kind* is still fixed at creation, which
+        is the invariant the origin union protects; what changes is
+        `status`. A `generating` record's captions and rationale must not
+        be read.
+
+        This *appends*. A re-run of the generate stage clears a topic's
+        prior auto renders (see `zeitgeist.renders.clear_auto_renders`),
+        but an on-demand request is an additive action somebody took, and
+        clearing here would delete the render they asked for this one to
+        be compared against.
+        """
+        count = 1 if isinstance(request, ManualGeneration) else request.count
+        captions = (
+            dict(request.caption_slots) if isinstance(request, ManualGeneration) else {}
+        )
+        origin: Origin = (
+            ManualOrigin()
+            if isinstance(request, ManualGeneration)
+            else AutoOrigin(rationale="")
+        )
+
+        records = [
+            RenderRecord(
+                id=uuid4().hex,
+                run_id=run_id,
+                topic_id=topic_id,
+                template_id=request.template_id,
+                caption_slots=captions,
+                origin=origin,
+                status="generating",
+                error=None,
+                created_at=datetime.now(UTC),
+            )
+            for _ in range(count)
+        ]
+        for record in records:
+            self._store.add_render(record)
+        return records
+
+    def _run(self, job: GenerationJob) -> None:
+        """The worker side. Opens and closes its own `Store`.
+
+        A connection per job rather than one per pool thread: `sqlite3`
+        connections are thread-bound, `ThreadPoolExecutor` gives no hook to
+        open one when it spawns a thread, and a job takes seconds to
+        minutes while opening a connection takes milliseconds. Thread-local
+        storage would buy nothing and would hold a connection open for the
+        process's lifetime.
+
+        `job.settings` rather than `self._settings`: the job carries the
+        settings this work was resolved under, and reaching past it to the
+        service's base snapshot would be a second, quieter source of truth
+        for the same value.
+        """
+        store = Store(job.settings.db_path)
+        try:
+            self._generate(job, store)
+        except Exception as exc:  # noqa: BLE001 - one job's failure is a row
+            log.exception("Generation job for topic %s failed", job.topic.id)
+            self._fail_unfinished(store, job, exc)
+        finally:
+            store.close()
+
+    def _fail_unfinished(
+        self, store: Store, job: GenerationJob, exc: Exception
+    ) -> None:
+        """Backstop for a job that raised out of `generate_renders`.
+
+        Reads each row back rather than trusting the in-memory records: the
+        job may have finished some of them before it fell over, and a row
+        somebody deleted meanwhile must stay deleted. Without this a
+        crashed job leaves tiles spinning forever, with nothing to
+        distinguish them from work still in progress.
+        """
+        for record in job.records:
+            current = store.get_render(record.id)
+            if current is None or current.status != "generating":
+                continue
+            store.update_render(
+                current.model_copy(
+                    update={
+                        "status": "failed",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+            )
