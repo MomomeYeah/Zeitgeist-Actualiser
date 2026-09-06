@@ -32,6 +32,15 @@ __all__ = ["SCHEMA_VERSION", "MissingCheckpoint", "Store", "StoreSchemaError"]
 # counted as a platform contributing to a topic.
 NON_PLATFORM_COMPONENTS = frozenset({"corroboration"})
 
+# The renders columns, in the order `_render` unpacks them. One constant
+# because three accessors select exactly this list, and a fourth added
+# later with a column out of order would deserialise into the wrong fields
+# without raising.
+_RENDER_COLUMNS = (
+    "id, run_id, topic_id, template_id, caption_slots, origin, "
+    "status, error, created_at"
+)
+
 
 class StoreSchemaError(RuntimeError):
     """The database on disk was written by a different schema version."""
@@ -599,20 +608,70 @@ class Store:
 
     def get_render(self, render_id: str) -> RenderRecord | None:
         row = self._conn.execute(
-            "SELECT id, run_id, topic_id, template_id, caption_slots, origin, "
-            "status, error, created_at FROM renders WHERE id = ?",
+            f"SELECT {_RENDER_COLUMNS} FROM renders WHERE id = ?",
             (render_id,),
         ).fetchone()
         return None if row is None else _render(row)
 
     def renders_for_run(self, run_id: str) -> list[RenderRecord]:
         rows = self._conn.execute(
-            "SELECT id, run_id, topic_id, template_id, caption_slots, origin, "
-            "status, error, created_at FROM renders WHERE run_id = ? "
-            "ORDER BY created_at, id",
+            f"SELECT {_RENDER_COLUMNS} FROM renders "
+            "WHERE run_id = ? ORDER BY created_at, id",
             (run_id,),
         ).fetchall()
         return [_render(row) for row in rows]
+
+    def renders_for_topic(self, run_id: str, topic_id: str) -> list[RenderRecord]:
+        """One topic's renders, oldest first. Served by
+        `idx_renders_run_topic`, which schema 3 already creates."""
+        rows = self._conn.execute(
+            f"SELECT {_RENDER_COLUMNS} FROM renders "
+            "WHERE run_id = ? AND topic_id = ? ORDER BY created_at, id",
+            (run_id, topic_id),
+        ).fetchall()
+        return [_render(row) for row in rows]
+
+    def update_render(self, record: RenderRecord) -> bool:
+        """Overwrite an existing render's mutable columns. False means no
+        such row.
+
+        An UPDATE rather than a second `add_render`: `add_render` is
+        INSERT OR REPLACE, so a render deleted while it was still
+        `generating` would come back from the dead when its job finished.
+        `WHERE id = ?` against a deleted row updates nothing and returns
+        False, which is the right outcome — the row is gone because
+        somebody removed it.
+
+        `run_id`, `topic_id` and `created_at` are deliberately not in the
+        SET list. They are fixed when the row is inserted, and a job
+        finishing must not be able to move a render to another run.
+        """
+        cursor = self._conn.execute(
+            "UPDATE renders SET template_id = ?, caption_slots = ?, origin = ?, "
+            "status = ?, error = ? WHERE id = ?",
+            (
+                record.template_id,
+                json.dumps(record.caption_slots),
+                record.origin.model_dump_json(),
+                record.status,
+                record.error,
+                record.id,
+            ),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def delete_render(self, render_id: str) -> bool:
+        """Remove the row. False means no such row.
+
+        The two PNGs are not this method's business — `store.py` knows rows
+        and deliberately nothing about the filesystem.
+        `zeitgeist.renders.delete_render` is the unit that removes both
+        together.
+        """
+        cursor = self._conn.execute("DELETE FROM renders WHERE id = ?", (render_id,))
+        self._conn.commit()
+        return cursor.rowcount > 0
 
     def get_settings(self) -> dict[str, str]:
         return {
