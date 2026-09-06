@@ -1,3 +1,4 @@
+import sqlite3
 import threading
 
 import pytest
@@ -5,8 +6,8 @@ import pytest
 from tests.run_factory import make_run_config
 from zeitgeist.config import Settings
 from zeitgeist.progress import Aborted
-from zeitgeist.records import Stage
-from zeitgeist.runner import RunAlreadyActive, RunRequest, RunService
+from zeitgeist.records import RunConfig, Stage
+from zeitgeist.runner import ActiveRuns, RunAlreadyActive, RunRequest, RunService
 from zeitgeist.store import Store
 
 
@@ -456,6 +457,78 @@ def test_enqueuing_a_run_id_already_waiting_is_refused(tmp_path):
     finally:
         gate.release.set()
         service.shutdown(timeout=10)
+
+
+class _StartRunFailsOnceStore(Store):
+    """A request-thread `Store` whose `start_run` raises for one chosen
+    run_id, the first time only — standing in for `sqlite3.OperationalError:
+    database is locked` (the busy timeout expiring while the worker's own
+    connection holds a write lock) or any other disk error `enqueue`'s own
+    write can hit.
+
+    Raises only once rather than for every call with that run_id, so the
+    test can prove the identical run_id enqueues cleanly on a later
+    attempt — the whole point of R1's fix.
+    """
+
+    def __init__(self, path, *, fails_for: str) -> None:
+        super().__init__(path, check_same_thread=False)
+        self._fails_for = fails_for
+        self._raised = False
+
+    def start_run(self, run_id: str, config: RunConfig) -> None:
+        if run_id == self._fails_for and not self._raised:
+            self._raised = True
+            raise sqlite3.OperationalError("database is locked")
+        super().start_run(run_id, config)
+
+
+def test_a_failed_row_write_during_enqueue_leaves_the_service_clean(tmp_path):
+    """R1: `enqueue` used to register a run_id in `_waiting`/`_tokens` under
+    the lock *before* writing its row, with no `try` around the write. A
+    `sqlite3.OperationalError` from that write (or any other disk error)
+    propagated straight out of `enqueue` as a 500 with the run already
+    registered: `active().queued` would name a run that would never
+    execute, every later `enqueue`'s `position` would be off by one
+    forever, `stop`/`abort` would report success for a run that was never
+    running — and because Critical 2 refuses a duplicate `run_id` already
+    in `_waiting`/`_tokens`, that exact run_id could never be enqueued or
+    resumed again for the life of the process.
+
+    Drives that failure with `_StartRunFailsOnceStore`, standing in for the
+    request-thread `Store` the app passes into `RunService.__init__` and
+    that `enqueue` writes through (not `worker_store`, which is a different
+    seam for the worker's own connection). Asserts the opposite of each
+    symptom above: nothing is queued, stop/abort both report `False`
+    (nothing was ever registered to signal), and — the point of the whole
+    thing — the identical run_id enqueues successfully afterwards.
+    """
+    run_id = "will-fail-once"
+    settings = _settings(tmp_path)
+    failing_store = _StartRunFailsOnceStore(settings.db_path, fails_for=run_id)
+    failing_store.init_schema()
+    service = RunService(settings, failing_store, execute=lambda *a: None)
+
+    with pytest.raises(sqlite3.OperationalError):
+        service.enqueue(RunRequest(run_id=run_id))
+
+    # The leak this test exists to catch: without the fix, this run_id
+    # would already be sitting in _waiting/_tokens, so active() would name
+    # it as queued despite nothing ever having reached the queue.
+    assert service.active() == ActiveRuns(current=None, queued=[])
+    # True here would mean a token survived the failed write - a stale
+    # entry stop/abort could still reach for a run that will never run.
+    assert service.stop(run_id) is False
+    assert service.abort(run_id) is False
+
+    # The point of the whole thing: Critical 2's duplicate refusal must not
+    # have been left permanently tripped by the first attempt's failure.
+    # The worker is never started, so nothing dequeues this and no
+    # shutdown/join is needed.
+    retried = service.enqueue(RunRequest(run_id=run_id))
+    assert retried.run_id == run_id
+    assert retried.position == 0
+    assert service.active().queued == [run_id]
 
 
 def test_start_after_a_timed_out_shutdown_does_not_spawn_a_second_worker(tmp_path):

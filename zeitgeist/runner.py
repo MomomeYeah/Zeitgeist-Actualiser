@@ -210,6 +210,14 @@ class RunService:
             return
         self._thread = None
 
+    def _is_live(self, run_id: str) -> bool:
+        """Whether `run_id` is already `_current`, in `_waiting`, or in
+        `_tokens` — the duplicate condition `enqueue` refuses. Must only
+        ever be called with `self._lock` held."""
+        return (
+            run_id == self._current or run_id in self._waiting or run_id in self._tokens
+        )
+
     def enqueue(self, request: RunRequest) -> QueuedRun:
         unknown = sorted(set(request.overrides) - RUN_OVERRIDE_KEYS)
         if unknown:
@@ -222,24 +230,44 @@ class RunService:
 
         run_id = request.run_id or new_run_id()
         request = request.model_copy(update={"run_id": run_id})
+
+        # Fail fast, before writing anything, for the overwhelmingly common
+        # case: a duplicate resume or a double-clicked Resume button calling
+        # in sequentially. A concurrent duplicate can still slip past this
+        # check (see the second one below) — this one exists only so the
+        # ordinary case never pays for a write it is about to be refused
+        # for anyway.
         with self._lock:
-            if (
-                run_id == self._current
-                or run_id in self._waiting
-                or run_id in self._tokens
-            ):
-                # A duplicate enqueue of a live run: resuming twice, or a
-                # double-clicked Resume button. Refusing here — rather than
-                # the old unconditional self._tokens[run_id] = CancelToken(),
-                # which silently replaced the live token — is what stops two
-                # failures at once: the replacement token orphans the one
-                # stop/abort still reach, so a still-executing run becomes
-                # impossible to stop; and a second dequeue of the same
-                # run_id would find its own entry already removed from
-                # _waiting, its token already gone from _tokens (see
-                # _run_one's finally), and raise KeyError before _run_one's
-                # own try began — leaving _current stuck on this run_id
-                # forever, since the finally that clears it never runs.
+            if self._is_live(run_id):
+                raise RunAlreadyActive(f"Run {run_id} is already queued or executing")
+
+        # Written *before* this run_id is registered in _waiting/_tokens,
+        # and deliberately not wrapped in a try that would roll a prior
+        # registration back: registering first and writing second was
+        # tried and rejected, because it reopens exactly the bug Important
+        # 2 fixed — for however long the write takes, active().queued would
+        # name a run with no row behind it yet, so a client polling
+        # active() and then GET-ing the run in that window would 404 again.
+        # Writing first means a run_id is never visible anywhere (active(),
+        # the returned QueuedRun) until its row already exists, and a
+        # failed write here leaves nothing registered to clean up: no
+        # _waiting/_tokens entry was ever created, so a run_id that fails
+        # here is not left permanently unenqueuable via the duplicate
+        # check above, unlike every other outcome of this method.
+        self._store.start_run(run_id, RunConfig.freeze(settings, request.template_ids))
+
+        with self._lock:
+            # Re-checked rather than assumed: a concurrent enqueue for the
+            # same run_id could have registered while the write above was
+            # in flight, on this thread's uncontended run_id — the first
+            # check above only ever sees this thread's own view of the
+            # world as of before its own write started. Store.start_run is
+            # an idempotent upsert whose ON CONFLICT clause never touches
+            # `started_at` (see the comment below), so a genuine race here
+            # costs one redundant write, never a corrupted row, and the
+            # loser is refused exactly as it would have been without the
+            # race.
+            if self._is_live(run_id):
                 raise RunAlreadyActive(f"Run {run_id} is already queued or executing")
             # Appended unconditionally, and *before* the worker can possibly
             # have caught up to this request: between this put() and the
@@ -251,19 +279,18 @@ class RunService:
             position = (0 if self._current is None else 1) + len(self._waiting)
             self._waiting.append(run_id)
             self._tokens[run_id] = CancelToken()
-        # Opened here, on the request thread, rather than left for _run_one
-        # to open on the worker thread: a client holding this id must be
-        # able to GET /api/runs/{run_id} and open its event stream
+        # Opened above, on the request thread, rather than left for
+        # _run_one to open on the worker thread: a client holding this id
+        # must be able to GET /api/runs/{run_id} and open its event stream
         # immediately, not only once the worker actually dequeues it.
         # RunStatus has no "queued" state, so this uses "running" like
         # every other open row — startup reconciliation already turns a
         # "running" row left over from a dead process into "interrupted",
         # which is the right story for one that never got past the queue
         # either. Store.start_run is an upsert that leaves `started_at`
-        # untouched on a second call (see _run_one), so the two calls
-        # below — this one, then _run_one's, then run_pipeline's own —
-        # all agree on when the run "started" as this first one.
-        self._store.start_run(run_id, RunConfig.freeze(settings, request.template_ids))
+        # untouched on a second call (see _run_one), so the three calls
+        # that follow — this one, then _run_one's, then run_pipeline's
+        # own — all agree on when the run "started" as this first one.
         self._queue.put(request)
         return QueuedRun(run_id=run_id, position=position)
 
