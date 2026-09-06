@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse
 from zeitgeist.api.app import get_settings, get_store
 from zeitgeist.config import Settings
 from zeitgeist.records import RenderRecord
+from zeitgeist.renders import render_paths
 from zeitgeist.store import Store
 
 router = APIRouter(prefix="/api/renders", tags=["renders"])
@@ -26,10 +27,10 @@ ImageSize = Literal["full", "thumb"]
 
 
 def _image_path(settings: Settings, record: RenderRecord, size: ImageSize) -> Path:
-    suffix = ".png" if size == "full" else ".thumb.png"
-    return (
-        Path(settings.output_dir) / record.run_id / "renders" / f"{record.id}{suffix}"
-    )
+    """The layout lives in `zeitgeist.renders`, which the deletion path and
+    the pipeline resolve through too — one definition, several callers."""
+    paths = render_paths(settings.output_dir, record.run_id, record.id)
+    return paths.full if size == "full" else paths.thumb
 
 
 def _render_or_404(store: Store, render_id: str) -> RenderRecord:
