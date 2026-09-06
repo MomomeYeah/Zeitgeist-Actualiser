@@ -4,15 +4,20 @@ The model may only pick from supplied ids and fill named slots, so a
 hallucinated template or a missing slot fails here rather than reaching the
 renderer. The rationale is kept deliberately: reading why the model chose a
 template is the main tool for debugging poor captions.
+
+The topic is a `Topic`, not a `ScoredTopic`: the below-the-cut `generate`
+link briefs a topic `evaluate` never ranked, and nothing here reads a
+ranking.
 """
 
 import logging
+from collections.abc import Sequence
 
 from pydantic import BaseModel
 
 from zeitgeist.llm.base import LLMProvider
 from zeitgeist.media.templates import TemplateManifest
-from zeitgeist.models import MediaBrief, ScoredTopic
+from zeitgeist.models import MediaBrief, Topic
 
 log = logging.getLogger(__name__)
 
@@ -45,8 +50,41 @@ class BriefError(Exception):
     """Raised when no valid brief could be produced for a topic."""
 
 
+def check_slots(
+    template_id: str,
+    caption_slots: dict[str, str],
+    templates: dict[str, TemplateManifest],
+) -> str | None:
+    """Why these captions do not fit that template, or None if they do.
+
+    Shared by the model path and the hand-written one: `generate_brief`
+    calls it on what the model returned, and the on-demand manual render
+    calls it on the slots a person typed. Two copies of "every slot, no
+    extras, none blank" would drift, and the manual path would then accept
+    a brief the renderer goes on to reject — a failed tile for what should
+    have been a 400.
+    """
+    manifest = templates.get(template_id)
+    if manifest is None:
+        return (
+            f"template_id {template_id!r} is not in the library; "
+            f"choose one of: {', '.join(sorted(templates))}"
+        )
+
+    expected = {slot.name for slot in manifest.slots}
+    given = set(caption_slots)
+
+    if missing := sorted(expected - given):
+        return f"missing captions for slots: {', '.join(missing)}"
+    if extra := sorted(given - expected):
+        return f"unknown slots for {manifest.id!r}: {', '.join(extra)}"
+    if blank := sorted(n for n, t in caption_slots.items() if not t.strip()):
+        return f"blank captions for slots: {', '.join(blank)}"
+    return None
+
+
 def generate_brief(
-    topic: ScoredTopic,
+    topic: Topic,
     templates: dict[str, TemplateManifest],
     provider: LLMProvider,
 ) -> MediaBrief:
@@ -60,7 +98,7 @@ def generate_brief(
         except Exception as exc:
             raise BriefError(f"Provider failed for {topic.label!r}: {exc}") from exc
 
-        problem = _validate(choice, templates)
+        problem = check_slots(choice.template_id, choice.caption_slots, templates)
         if problem is None:
             log.debug(
                 "Brief for %r: template %s on attempt %d",
@@ -87,7 +125,7 @@ def generate_brief(
 
 
 def generate_briefs(
-    topics: list[ScoredTopic],
+    topics: Sequence[Topic],
     templates: dict[str, TemplateManifest],
     provider: LLMProvider,
 ) -> list[MediaBrief]:
@@ -101,29 +139,7 @@ def generate_briefs(
     return briefs
 
 
-def _validate(
-    choice: BriefChoice, templates: dict[str, TemplateManifest]
-) -> str | None:
-    manifest = templates.get(choice.template_id)
-    if manifest is None:
-        return (
-            f"template_id {choice.template_id!r} is not in the library; "
-            f"choose one of: {', '.join(sorted(templates))}"
-        )
-
-    expected = {slot.name for slot in manifest.slots}
-    given = set(choice.caption_slots)
-
-    if missing := sorted(expected - given):
-        return f"missing captions for slots: {', '.join(missing)}"
-    if extra := sorted(given - expected):
-        return f"unknown slots for {manifest.id!r}: {', '.join(extra)}"
-    if blank := sorted(n for n, t in choice.caption_slots.items() if not t.strip()):
-        return f"blank captions for slots: {', '.join(blank)}"
-    return None
-
-
-def _build_prompt(topic: ScoredTopic, templates: dict[str, TemplateManifest]) -> str:
+def _build_prompt(topic: Topic, templates: dict[str, TemplateManifest]) -> str:
     library = "\n".join(
         f"- id={manifest.id} | shape: {manifest.shape} | "
         "slots: "
@@ -141,7 +157,7 @@ def _build_prompt(topic: ScoredTopic, templates: dict[str, TemplateManifest]) ->
     )
 
 
-def _context(topic: ScoredTopic) -> str:
+def _context(topic: Topic) -> str:
     """What the caption is actually about.
 
     A topic with no dossier comes from the dormant path or a stale
