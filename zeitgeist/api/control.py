@@ -166,7 +166,15 @@ def stream_events(
         seq = 0
         while True:
             buffer = runner.buffer(run_id)
-            executing = runner.active().current == run_id
+            active = runner.active()
+            executing = active.current == run_id
+            # Important 2 opened a queued run's row on the request thread,
+            # so a run that is merely waiting behind another one now passes
+            # `_run_or_404` above — it has no buffer yet (the worker has not
+            # reached it) and is not `current` either, which used to be
+            # indistinguishable from "finished." `active.queued` is what
+            # tells the two apart: a queued run has not started, not ended.
+            queued = run_id in active.queued
             if buffer is not None:
                 lines = buffer.since(seq)
                 if lines:
@@ -187,11 +195,21 @@ def stream_events(
                         ),
                     )
             yield _sse("tick", json.dumps({"seq": seq}))
-            if not executing and buffer is None:
-                # The worker drops the buffer when the run ends, so this is
-                # the run being over *and* its last lines already drained.
-                # A stream that stayed open would hold a connection per
-                # watched run for the life of the process.
+            if not executing and not queued and buffer is None:
+                # Neither running nor waiting to run, and the worker has
+                # already dropped its buffer (or never opened one, for a run
+                # that had already finished before this stream's first
+                # poll) — genuinely over, not merely not-yet-started. A
+                # stream that stayed open forever would hold a connection
+                # per watched run for the life of the process; a run that is
+                # refused outright never reaches this generator at all (no
+                # id is ever returned to hold it open with), and one that
+                # fails or is aborted mid-flight still has `_current`
+                # cleared, its id dropped from `_waiting`, and its buffer
+                # removed — all together, under one lock, in
+                # `RunService._run_one`'s `finally` — so this condition
+                # still becomes true for every run that ends, exactly as
+                # before.
                 return
             await asyncio.sleep(POLL_SECONDS)
 

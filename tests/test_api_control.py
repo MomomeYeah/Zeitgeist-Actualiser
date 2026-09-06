@@ -1,4 +1,5 @@
 import json
+import logging
 import threading
 
 from tests.api_factory import GatedExecute, LoggingGate, SeededRun, seeded_client
@@ -674,3 +675,81 @@ def test_streaming_a_finished_run_ends_immediately(tmp_path):
     events = _events(client, "/api/runs/20260901T120000Z/events")
 
     assert _logged(events) == []
+
+
+def test_a_queued_runs_stream_waits_for_it_to_start_then_closes(tmp_path):
+    """R2: Important 2 opened a queued run's row on the request thread, so
+    `_run_or_404` above now passes for a run still strictly behind another
+    one — before that fix, this state 404'd and `generate`'s exit condition
+    never had to consider it. A queued run has no buffer yet and is not
+    `current`, which is exactly the state the old `if not executing and
+    buffer is None: return` treated as "over": the stream would emit one
+    tick and close immediately, before the run had even begun.
+
+    Drives a run queued behind a live one, opens its stream while it is
+    still only queued, and proves three things in sequence: the stream
+    stays open across that window (it must reach the release below, not
+    close before it), it picks up the run's own line once the run actually
+    starts, and it still closes once that run ends — the queued case must
+    neither hang nor be silently reported as finished.
+
+    Two runs share one `execute` callable (`RunService` takes only one),
+    indexed by call order rather than using `GatedExecute`/`LoggingGate`
+    from `api_factory`, because this needs each run's own release gate:
+    releasing the first run must not also release the second, unlike the
+    single shared `release` those doubles carry.
+    """
+    releases = [threading.Event(), threading.Event()]
+    entered = [threading.Event(), threading.Event()]
+    calls = {"n": 0}
+
+    def execute(settings, request, store, observer, token) -> None:
+        index = calls["n"]
+        calls["n"] += 1
+        store.start_run(request.run_id or "", make_run_config())
+        logging.getLogger("zeitgeist.testing.sse").info(f"run {index} line")
+        entered[index].set()
+        assert releases[index].wait(timeout=5), f"release {index} was never set"
+
+    client = seeded_client(tmp_path, execute=execute)
+    client.post("/api/runs", json={})
+    assert entered[0].wait(timeout=5)
+
+    second = client.post("/api/runs", json={}).json()
+    assert client.get("/api/runs/active").json()["queued"] == [second["run_id"]]
+
+    saw_queued_tick = False
+    saw_second_runs_line = False
+    with client.stream("GET", f"/api/runs/{second['run_id']}/events") as response:
+        assert response.status_code == 200
+        name = ""
+        for index, line in enumerate(response.iter_lines()):
+            # Bounded exactly like _events: a generator that fails to
+            # terminate fails this test in a few seconds rather than
+            # hanging it. Do not raise this to make the test pass — a
+            # stream that will not close is the bug.
+            if index > 400:
+                raise AssertionError("stream did not end")
+            if line.startswith("event:"):
+                name = line.removeprefix("event:").strip()
+            elif line.startswith("data:"):
+                data = line.removeprefix("data:").strip()
+                if name == "tick" and not saw_queued_tick:
+                    saw_queued_tick = True
+                    # The stream is still open on its very first tick,
+                    # while the second run is still only queued — the old
+                    # exit condition would already have returned before
+                    # this line could ever run. Only now let the first run
+                    # finish, so the second can start.
+                    releases[0].set()
+                elif name == "log" and not saw_second_runs_line:
+                    lines = [entry["message"] for entry in json.loads(data)]
+                    if "run 1 line" in lines:
+                        saw_second_runs_line = True
+                        # The second run has started and its own line has
+                        # been observed through this stream — let it
+                        # finish, so the stream's exit condition can fire.
+                        releases[1].set()
+
+    assert saw_queued_tick
+    assert saw_second_runs_line
