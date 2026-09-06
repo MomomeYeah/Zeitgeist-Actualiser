@@ -218,6 +218,21 @@ def test_a_run_seeded_as_failed_is_reported_as_failed(tmp_path):
     assert body["run"]["status"] == "failed"
 
 
+def test_a_run_seeded_as_aborted_is_reported_as_aborted(tmp_path):
+    """`seed_run` used to raise `NotImplementedError` for "aborted" — its
+    own comment said no writer existed anywhere in this phase, which
+    `Store.abort_run` (added for the stop/abort endpoints) has since made
+    false. This pins that seeding a run straight into this status actually
+    works, the way `test_a_run_seeded_as_failed_is_reported_as_failed`
+    already does for "failed".
+    """
+    client = seeded_client(tmp_path, runs=[SeededRun(status="aborted")])
+
+    body = client.get("/api/runs/20260901T120000Z").json()
+
+    assert body["run"]["status"] == "aborted"
+
+
 def test_an_unknown_run_is_a_404(tmp_path):
     client = seeded_client(tmp_path)
 

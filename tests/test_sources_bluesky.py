@@ -25,6 +25,9 @@ AUTHOR_DID = "did:plc:someauthor"
 
 THREAD_VIEW = "app.bsky.feed.defs#threadViewPost"
 
+REPLY_TEXT = "UNIQUE-REPLY-BODY-SENTINEL"
+AUTHOR_KEY = "did:plc:UNIQUE-AUTHOR-DID-SENTINEL"
+
 
 def _metrics(item: Item) -> BlueskyMetrics:
     """Narrows `Item.metrics` from the platform union down to Bluesky's own
@@ -963,3 +966,61 @@ def test_bluesky_is_a_known_source():
     at startup.
     """
     assert Settings(_env_file=None, sources="bluesky").sources == ["bluesky"]
+
+
+def test_each_trend_logs_its_post_and_reply_counts_at_debug(caplog):
+    """The verbose toggle's whole purpose on the ingest stage: seeing that a
+    trend yielded two posts and three replies is how you tell a thin fetch
+    from a broken one.
+
+    Asserted on `record.args` rather than on a record merely existing, and
+    never on the formatted string. Existence is satisfied by
+    `log.debug("fetched")`; the wrong-argument mutation — the two counts
+    swapped, or the post count logged twice — is the one that makes the line
+    lie while the toggle still appears to work. The two posts, and the 2+1
+    split of replies between them, are this fixture's own construction, not
+    computed from the source under test.
+    """
+    source, _ = _source(
+        {"trends": [_trend("t1", "A trend")]},
+        {"t1": {"feed": [_post("p1"), _post("p2")]}},
+        {
+            "p1": _thread(_reply_node("one"), _reply_node("two")),
+            "p2": _thread(_reply_node("three")),
+        },
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="zeitgeist.sources.bluesky"):
+        source.fetch_evidence(_settings())
+
+    assert [
+        record.args
+        for record in caplog.records
+        if record.levelno == logging.DEBUG
+        and record.name == "zeitgeist.sources.bluesky"
+    ] == [("A trend", 2, 3)]
+
+
+def test_no_debug_record_carries_reply_text(caplog):
+    """The project stores no personal data — `Reply.author_key` exists only
+    to count distinct accounts, and `Item`'s docstring says so. A debug line
+    that dumped reply text would put it on disk in `log_lines` and stream it
+    to the browser, undoing that deliberately and invisibly.
+
+    This asserts on the *arguments* rather than the rendered message so that
+    a lazily-formatted line, which only interpolates when a handler is
+    attached, cannot slip text through unexamined.
+    """
+    source, _ = _source(
+        {"trends": [_trend("t1", "A trend")]},
+        {"t1": {"feed": [_post("p1")]}},
+        {"p1": _thread(_reply_node(REPLY_TEXT, did=AUTHOR_KEY))},
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="zeitgeist.sources.bluesky"):
+        source.fetch_evidence(_settings())
+
+    for record in caplog.records:
+        rendered = record.getMessage()
+        assert REPLY_TEXT not in rendered
+        assert AUTHOR_KEY not in rendered

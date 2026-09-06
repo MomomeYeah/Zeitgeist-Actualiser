@@ -41,6 +41,57 @@ class SettingField(BaseModel):
     source: SettingSource
 
 
+class SettingsUpdate(BaseModel):
+    """An empty string clears that field's row so the `.env` fallback
+    applies again, which is what "Reset to .env" does."""
+
+    model_config = STRICT
+
+    values: dict[str, str]
+
+
+class StartRunBody(BaseModel):
+    """What `POST /api/runs` accepts.
+
+    `overrides` is `str`-valued because the values come from a form and are
+    validated by `Settings` when the worker freezes the run's config — the
+    one place that knows each field's real type.
+    """
+
+    model_config = STRICT
+
+    template_ids: list[str] | None = None
+    overrides: dict[str, str] = {}
+
+
+class RunActionAck(BaseModel):
+    """Acknowledges `POST /{run_id}/stop` and `/abort`.
+
+    Both endpoints returned a bare `dict[str, str]`, unlike every other
+    endpoint in the project, which declares a `response_model`. Phase 5
+    generates a TypeScript client from this OpenAPI schema, and two
+    undeclared response bodies out of fifteen endpoints is a client-visible
+    hole this closes.
+    """
+
+    model_config = STRICT
+
+    run_id: str
+    requested: Literal["stop", "abort"]
+
+
+class ResumeBody(BaseModel):
+    """`stage` omitted means the computed resume point — the button posts no
+    stage. `template_ids` narrows the library for this resume only, which is
+    the tuning loop: edit a manifest, re-render the same frozen topics.
+    """
+
+    model_config = STRICT
+
+    stage: Stage | None = None
+    template_ids: list[str] | None = None
+
+
 class RunSummary(BaseModel):
     """One row of the Runs list.
 
@@ -171,3 +222,35 @@ class TopicIndex(BaseModel):
     status_totals: dict[str, int]
     sentiment_totals: dict[str, int]
     previous_sentiment_totals: dict[str, int]
+
+
+class PlatformOption(BaseModel):
+    """`enabled` is False for the dormant platforms — Lemmy and Wikipedia
+    have code and tests but no live stage consumes a flat item list, and
+    `Settings` rejects them. Reported rather than hidden so the screen can
+    say why they are unavailable."""
+
+    model_config = STRICT
+
+    name: str
+    enabled: bool
+
+
+class TemplateOption(BaseModel):
+    model_config = STRICT
+
+    id: str
+    slots: list[str]
+
+
+class ConfigOptions(BaseModel):
+    """`anthropic_key_present` is a boolean and the key itself is never
+    returned, in any form."""
+
+    model_config = STRICT
+
+    models: dict[str, list[str]]
+    platforms: list[PlatformOption]
+    templates: list[TemplateOption]
+    defaults: dict[str, str]
+    anthropic_key_present: bool

@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 
 from pydantic import BaseModel
 
@@ -44,6 +45,29 @@ class MissingCheckpoint(Exception):
     """
 
 
+class _LogLineLike(Protocol):
+    """Structural bound for `write_log_lines`, satisfied by both the store's
+    own `LogLine` and `logcapture.CapturedLine` — kept as a Protocol rather
+    than the `LogLine` class itself so the store never imports `logcapture`,
+    which would invert the dependency.
+
+    Read-only accessors rather than plain attributes: a plain-attribute
+    Protocol member demands both a getter and a setter, and `CapturedLine`
+    is a frozen dataclass with neither.
+    """
+
+    @property
+    def seq(self) -> int: ...
+    @property
+    def logged_at(self) -> datetime: ...
+    @property
+    def level(self) -> str: ...
+    @property
+    def logger(self) -> str: ...
+    @property
+    def message(self) -> str: ...
+
+
 class Store:
     def __init__(self, path: Path, *, check_same_thread: bool = True) -> None:
         """`check_same_thread` defaults to sqlite3's own safe default: a
@@ -75,6 +99,15 @@ class Store:
         # blocks behind every checkpoint write, which the UI feels as the
         # in-flight poll hitching.
         self._conn.execute("PRAGMA journal_mode = WAL")
+
+    @property
+    def path(self) -> Path:
+        """Read-only: lets a caller open a second connection to the same
+        database file — `logcapture.capture_run_log` is the one caller that
+        does, for its handler's own `check_same_thread=False` connection —
+        without reaching into `_path` directly.
+        """
+        return self._path
 
     def init_schema(self) -> None:
         # "Is this file fresh?" is asked of the whole database, not of one
@@ -158,6 +191,49 @@ class Store:
             "UPDATE run_records SET status = ?, finished_at = ?, error = ? "
             "WHERE run_id = ?",
             ("failed", _now(), error.model_dump_json(), run_id),
+        )
+        self._conn.commit()
+
+    def reconcile_interrupted(self) -> list[str]:
+        """Mark every run still `running` as `interrupted`, returning the ids.
+
+        Runs on server startup. The queue is in-memory and the worker dies
+        with the process, so a row left at `running` is one the UI would poll
+        forever. The checkpoints are untouched: an interrupted run resumes
+        from its last good one like any other.
+        """
+        with self._conn:
+            rows = self._conn.execute(
+                "SELECT run_id FROM run_records WHERE status = 'running' "
+                "ORDER BY started_at"
+            ).fetchall()
+            if not rows:
+                return []
+            self._conn.execute(
+                "UPDATE run_records SET status = 'interrupted', finished_at = ? "
+                "WHERE status = 'running'",
+                (_now(),),
+            )
+        return [row[0] for row in rows]
+
+    def abort_run(self, run_id: str) -> None:
+        """Record that a run was stopped or aborted by the user.
+
+        Its own method rather than a status argument to `finish_run`, for the
+        reason `fail_run`'s docstring gives: `finish_run` requires the four
+        counts, and a run that ended early has none to record. Stop and abort
+        share this status — `RunStatus` has no separate "stopped" — and differ
+        in what was preserved, not in the label.
+
+        The `status = 'running'` guard makes this idempotent. The worker calls
+        it on both the stop and the abort path, and an abort can land after
+        `run_pipeline` has already written `ok`; a run that reached a terminal
+        status must not be relabelled.
+        """
+        self._conn.execute(
+            "UPDATE run_records SET status = 'aborted', finished_at = ? "
+            "WHERE run_id = ? AND status = 'running'",
+            (_now(), run_id),
         )
         self._conn.commit()
 
@@ -278,6 +354,31 @@ class Store:
             )
             for seq, logged_at, level, logger, message in rows
         ]
+
+    def write_log_lines(self, run_id: str, lines: Sequence[_LogLineLike]) -> None:
+        """One transaction for the whole batch.
+
+        A DEBUG run emits several hundred lines and a transaction each would
+        be gratuitous. `executemany` handles the empty case, which is routine:
+        a run ending just after a batch boundary flushes nothing.
+        """
+        with self._conn:
+            self._conn.executemany(
+                "INSERT INTO log_lines "
+                "(run_id, seq, logged_at, level, logger, message) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        run_id,
+                        line.seq,
+                        line.logged_at.isoformat(),
+                        line.level,
+                        line.logger,
+                        line.message,
+                    )
+                    for line in lines
+                ],
+            )
 
     def _insert_topic_scores(self, run_id: str, topics: Sequence[Topic]) -> None:
         # Keyed on slugify(label), not the raw label: labels are free text

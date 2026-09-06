@@ -11,16 +11,23 @@ about a topic's sentiment passes one; the rest say nothing and get something
 valid.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Literal
 
 from zeitgeist.models import (
+    BlueskyMetrics,
     Dossier,
+    Item,
     Phrase,
+    PostEvidence,
     Register,
+    Reply,
     ScoredTopic,
     Sentiment,
     Topic,
+    TrendEvidence,
+    TrendInfo,
     TrendStatus,
 )
 from zeitgeist.records import (
@@ -196,3 +203,48 @@ def make_scored_topic(
         score_components=score_components,
     )
     return ScoredTopic(**topic.model_dump(), final_rank=rank)
+
+
+def make_evidence(
+    source_ids: list[str],
+    *,
+    name: str = "A trend",
+    replies: Sequence[Reply] = (),
+    status: TrendStatus = "trending",
+) -> TrendEvidence:
+    """One trend's evidence, for tests that need an ingest checkpoint.
+
+    `source_ids` are the post ids the topic's `item_ids` will match against,
+    which is what makes a seeded run's topic detail able to find its replies.
+    """
+    return TrendEvidence(
+        trend=TrendInfo(
+            topic_id=f"id-{name}",
+            display_name=name,
+            description="Something happened.",
+            category="news",
+            post_count=len(source_ids),
+            started_at=FIXED_TIME,
+            status=status,
+        ),
+        posts=[
+            PostEvidence(
+                item=Item(
+                    source_id=source_id,
+                    title="a post",
+                    permalink=f"https://bsky.app/profile/x/post/{source_id}",
+                    fetched_at=FIXED_TIME,
+                    metrics=BlueskyMetrics(
+                        like_count=1,
+                        reply_count=len(replies),
+                        repost_count=0,
+                        trend=name,
+                        status=status,
+                        created_at=FIXED_TIME,
+                    ),
+                ),
+                replies=list(replies),
+            )
+            for source_id in source_ids
+        ],
+    )

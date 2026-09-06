@@ -199,6 +199,12 @@ class BlueskySource:
         replies = await asyncio.gather(
             *(self._replies(client, semaphore, item) for item in items)
         )
+        log.debug(
+            "Trend %s: %d posts, %d replies",
+            trend["displayName"],
+            len(items),
+            sum(len(group) for group in replies),
+        )
         return TrendEvidence(
             trend=_to_trend_info(trend),
             posts=[

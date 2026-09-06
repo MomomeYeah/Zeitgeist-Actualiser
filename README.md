@@ -198,8 +198,49 @@ phase 3 adds runs that can be in flight.
 The API documents itself: `http://127.0.0.1:8000/docs` for the interactive
 schema, `http://127.0.0.1:8000/openapi.json` for the raw one.
 
-This phase serves reads only. Starting a run is still
-`uv run python scripts/run_pipeline.py`, above.
+Phase 2 served reads only. Phase 3 adds starting, watching and stopping a
+run over HTTP:
+
+- **Runs are now startable over HTTP.** `POST /api/runs` queues one.
+  `scripts/run_pipeline.py`, above, still works and is still the harness for
+  a scripted run — the endpoint is an alternative way in, not a replacement.
+- **One run at a time.** A second `POST` queues behind the first; the
+  response's `position` says how far back (`0` means executing now).
+  `GET /api/runs/active` reports the executing run and the queue behind it.
+  The queue is in-memory, so a restart loses what was queued — deliberately,
+  rather than persisting a job table for a single-user tool.
+- **Stop versus abort.** `POST /api/runs/{id}/stop` finishes the current
+  stage, writes its checkpoint, then ends — the run stays resumable.
+  `POST /api/runs/{id}/abort` ends now. Both land on the same status,
+  `aborted`; there is no separate "stopped" status, because they differ in
+  what was preserved, not in the label. Aborting during ingest takes effect
+  when the fetch returns, because `fetch_evidence` is one opaque
+  `asyncio.run()` with no interior checkpoint to interrupt.
+- **Resume, and the tuning loop.** `POST /api/runs/{id}/resume` reuses the
+  run's checkpoints, defaulting to the computed resume stage. Its optional
+  `template_ids` narrows the template library for that resume, which is
+  what replaces the old `--resume-from generate --templates drake` loop.
+- **A run interrupted by a restart** is marked `interrupted` on the next
+  startup and resumes like any other run. This is why `--reload` stays off
+  by default: uvicorn's reloader kills a run in flight.
+- **The live log.** `GET /api/runs/{id}/events` streams `log` and `tick`
+  events over SSE while a run executes; `GET /api/runs/{id}/log?verbose=`
+  serves the history afterwards. The server always captures at DEBUG and
+  `verbose` only filters what is returned, so flipping it works
+  retroactively on lines already recorded.
+- **Settings.** `GET /api/config/options` reports the providers and their
+  models, which platforms are enabled, the template library and its slots,
+  the `.env` defaults, and whether an API key is set — never the key itself.
+  `PUT /api/settings` writes the seven tunables; an empty value clears the
+  row so `.env` applies again. Changes apply to new runs — a run already in
+  flight keeps the config it froze when it started.
+
+Starting a run and watching it, from the shell:
+
+```bash
+RUN=$(curl -s -XPOST localhost:8000/api/runs -H 'content-type: application/json' -d '{}' | jq -r .run_id)
+curl -sN "localhost:8000/api/runs/$RUN/events"
+```
 
 When phase 5 builds the frontend, its TypeScript types are generated from
 the same schema:

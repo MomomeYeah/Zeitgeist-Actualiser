@@ -6,6 +6,7 @@ partial checkpoints to inspect.
 """
 
 import logging
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -19,6 +20,7 @@ from zeitgeist.media.brief import generate_briefs
 from zeitgeist.media.render import RenderError, render_meme, write_thumbnail
 from zeitgeist.media.templates import TemplateManifest, load_templates, select_templates
 from zeitgeist.models import Item, MediaBrief, ScoredTopic, Topic, TrendEvidence
+from zeitgeist.progress import CancelToken, NullObserver, RunObserver
 from zeitgeist.records import (
     ORDER,
     AutoOrigin,
@@ -32,9 +34,33 @@ from zeitgeist.store import Store
 
 log = logging.getLogger(__name__)
 
+_run_id_lock = threading.Lock()
+_last_run_id_ms: int | None = None
+
 
 def new_run_id() -> str:
-    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    """A sortable, filesystem-safe id with millisecond resolution.
+
+    Whole-second resolution let two calls in the same second collide, and
+    `Store.start_run` upserts on `run_id`, so a collision silently reset one
+    run's row onto another's. Milliseconds alone narrow that window but
+    don't close it - a tight loop can issue thousands of calls inside one
+    millisecond. A module-level counter closes it outright: each call is
+    forced to at least one millisecond past the last one this process
+    handed out, so ids stay strictly increasing (hence still sortable) and
+    therefore always distinct, without this module reaching into the store
+    to check.
+    """
+    global _last_run_id_ms
+    with _run_id_lock:
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        if _last_run_id_ms is not None and now_ms <= _last_run_id_ms:
+            now_ms = _last_run_id_ms + 1
+        _last_run_id_ms = now_ms
+
+    seconds, millis = divmod(now_ms, 1000)
+    stamp = datetime.fromtimestamp(seconds, UTC).strftime("%Y%m%dT%H%M%S")
+    return f"{stamp}.{millis:03d}Z"
 
 
 def _count(n: int, noun: str) -> str:
@@ -88,6 +114,16 @@ def _skip(store: Store, run_id: str, stage: Stage) -> None:
     )
 
 
+def _stopping(token: CancelToken | None) -> bool:
+    """Whether to end the run rather than begin another stage.
+
+    Read at stage boundaries only. A stop checked inside a stage would
+    abandon it before its checkpoint was written, which is the resumability
+    the stop button promises.
+    """
+    return token is not None and token.stopping
+
+
 def run_pipeline(
     settings: Settings,
     source: TrendSource,
@@ -96,6 +132,9 @@ def run_pipeline(
     run_id: str,
     start_at: Stage = Stage.INGEST,
     template_ids: list[str] | None = None,
+    *,
+    observer: RunObserver = NullObserver(),
+    token: CancelToken | None = None,
 ) -> str:
     """Run the pipeline, returning the run id.
 
@@ -113,7 +152,10 @@ def run_pipeline(
     store.start_run(run_id, RunConfig.freeze(settings, template_ids))
 
     items: list[Item]
+    if _stopping(token):
+        return run_id
     if resuming <= ORDER.index(Stage.INGEST):
+        observer.stage_started(Stage.INGEST)
         started = datetime.now(UTC)
         evidence = source.fetch_evidence(settings)
         log.info("Fetched %d trends", len(evidence))
@@ -127,14 +169,25 @@ def run_pipeline(
             f"{_count(len(evidence), 'trend')}, {_count(len(items), 'post')}",
             size,
         )
+        observer.stage_finished(Stage.INGEST, size)
     else:
         evidence = store.read_checkpoint(run_id, Stage.INGEST, TrendEvidence)
         items = _posts(evidence)
         _skip(store, run_id, Stage.INGEST)
+        observer.stage_finished(Stage.INGEST, None)
 
+    if _stopping(token):
+        return run_id
     if resuming <= ORDER.index(Stage.ANALYSE):
+        observer.stage_started(Stage.ANALYSE)
         started = datetime.now(UTC)
-        topics = distil_topics(evidence, provider, settings)
+        topics = distil_topics(
+            evidence,
+            provider,
+            settings,
+            on_topic=observer.topic_distilled,
+            token=token,
+        )
         topics = score_topics(
             topics, items, datetime.now(UTC), store.previous_sub_scores(run_id)
         )
@@ -150,10 +203,15 @@ def run_pipeline(
             f"{_count(len(topics), 'topic')} distilled",
             size,
         )
+        observer.stage_finished(Stage.ANALYSE, size)
     else:
         _skip(store, run_id, Stage.ANALYSE)
+        observer.stage_finished(Stage.ANALYSE, None)
 
+    if _stopping(token):
+        return run_id
     if resuming <= ORDER.index(Stage.EVALUATE):
+        observer.stage_started(Stage.EVALUATE)
         started = datetime.now(UTC)
         topics = store.read_checkpoint(run_id, Stage.ANALYSE, Topic)
         ranked = select(topics, settings.topic_count, settings.meme_potential_weight)
@@ -167,16 +225,23 @@ def run_pipeline(
             f"{len(ranked)} of {len(topics)} kept",
             size,
         )
+        observer.stage_finished(Stage.EVALUATE, size)
     else:
         _skip(store, run_id, Stage.EVALUATE)
+        observer.stage_finished(Stage.EVALUATE, None)
 
+    if _stopping(token):
+        return run_id
+    observer.stage_started(Stage.GENERATE)
     ranked = store.read_checkpoint(run_id, Stage.EVALUATE, ScoredTopic)
     started = datetime.now(UTC)
     briefs = generate_briefs(ranked, templates, provider)
     size = store.write_checkpoint(run_id, Stage.GENERATE, briefs)
 
     run_dir = Path(settings.output_dir) / run_id
-    rendered = _render_all(briefs, templates, settings, run_dir, run_id, store)
+    rendered = _render_all(
+        briefs, templates, settings, run_dir, run_id, store, observer, token
+    )
     log.info("Rendered %d memes into %s", rendered, run_dir)
     _stage(
         store,
@@ -186,6 +251,7 @@ def run_pipeline(
         f"{rendered} of {len(briefs)} rendered",
         size,
     )
+    observer.stage_finished(Stage.GENERATE, size)
 
     store.finish_run(
         run_id,
@@ -207,6 +273,8 @@ def _render_all(
     run_dir: Path,
     run_id: str,
     store: Store,
+    observer: RunObserver,
+    token: CancelToken | None,
 ) -> int:
     """Render every brief, recording each outcome.
 
@@ -216,7 +284,12 @@ def _render_all(
     """
     renders_dir = run_dir / "renders"
     count = 0
-    for brief in briefs:
+    for index, brief in enumerate(briefs):
+        if token is not None:
+            token.check()
+        observer.stage_progress(
+            Stage.GENERATE, done=index, total=len(briefs), detail=brief.topic_id
+        )
         render_id = uuid4().hex
         out_path = renders_dir / f"{render_id}.png"
         error: str | None = None
@@ -234,17 +307,17 @@ def _render_all(
             log.warning("Could not render %r: %s", brief.topic_id, exc)
             error = str(exc)
 
-        store.add_render(
-            RenderRecord(
-                id=render_id,
-                run_id=run_id,
-                topic_id=brief.topic_id,
-                template_id=brief.template_id,
-                caption_slots=dict(brief.caption_slots),
-                origin=AutoOrigin(rationale=brief.rationale),
-                status="failed" if error else "ready",
-                error=error,
-                created_at=datetime.now(UTC),
-            )
+        record = RenderRecord(
+            id=render_id,
+            run_id=run_id,
+            topic_id=brief.topic_id,
+            template_id=brief.template_id,
+            caption_slots=dict(brief.caption_slots),
+            origin=AutoOrigin(rationale=brief.rationale),
+            status="failed" if error else "ready",
+            error=error,
+            created_at=datetime.now(UTC),
         )
+        store.add_render(record)
+        observer.render_finished(record)
     return count

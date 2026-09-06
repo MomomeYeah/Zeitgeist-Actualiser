@@ -1,9 +1,12 @@
+import logging
+
 import pytest
 from PIL import Image, ImageChops, ImageStat
 
 from tests.template_factory import make_manifest, make_slot, write_library
 from zeitgeist.config import PACKAGE_ROOT
 from zeitgeist.media.render import (
+    MAX_FONT_SIZE,
     THUMBNAIL_PX,
     RenderError,
     render_meme,
@@ -187,3 +190,24 @@ def test_a_thumbnail_is_never_larger_than_its_source(tmp_path):
 
     with Image.open(out) as image:
         assert image.size == (40, 20)
+
+
+def test_each_slot_logs_its_fitted_font_size_at_debug(tmp_path, template_dir, caplog):
+    """What you need when text overflows a box: which slot, and the size it
+    was fitted at. Asserted on `record.args`, with the size hand-derived
+    from this fixture rather than measured from Pillow: both slots are
+    380x180 boxes and the captions here are two short words, so the very
+    first size tried — `MAX_FONT_SIZE` — already fits on one line, and the
+    fitting loop breaks immediately without narrowing.
+    """
+    directory, manifest = template_dir
+    out = tmp_path / "out.png"
+
+    with caplog.at_level(logging.DEBUG, logger="zeitgeist.media.render"):
+        render_meme(_brief(top="Hi", bottom="Yo"), manifest, directory, out, FONT)
+
+    assert [
+        record.args
+        for record in caplog.records
+        if record.levelno == logging.DEBUG and record.name == "zeitgeist.media.render"
+    ] == [("top", MAX_FONT_SIZE), ("bottom", MAX_FONT_SIZE)]

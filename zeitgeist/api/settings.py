@@ -9,15 +9,32 @@ screen.
 
 import os
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import ValidationError
 
 from zeitgeist.api.app import get_settings, get_store
-from zeitgeist.api.schemas import SettingField, SettingSource
+from zeitgeist.api.schemas import SettingField, SettingSource, SettingsUpdate
 from zeitgeist.config import Settings
 from zeitgeist.settings_source import WRITABLE_KEYS, _dotenv_value
 from zeitgeist.store import Store
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+
+def _validation_detail(exc: ValidationError) -> str:
+    """`exc.errors()` as one readable string naming every offending field,
+    rather than the list of objects pydantic hands back.
+
+    Every other 400 among the project's fifteen endpoints uses a plain
+    string for `detail` — `"Not writable through settings: ..."` two lines
+    below `write_settings`'s own use of this, for one. A generated
+    TypeScript client sees `detail` as `string` everywhere else and
+    `ValidationError[]` only here, without this.
+    """
+    return "; ".join(
+        f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+        for error in exc.errors()
+    )
 
 
 def _source(key: str, stored: dict[str, str]) -> SettingSource:
@@ -36,11 +53,24 @@ def _source(key: str, stored: dict[str, str]) -> SettingSource:
 
 
 @router.get("", response_model=list[SettingField])
-def read_settings(
-    store: Store = Depends(get_store),
-    settings: Settings = Depends(get_settings),
-) -> list[SettingField]:
+def read_settings(store: Store = Depends(get_store)) -> list[SettingField]:
+    """Built from a fresh `Settings()`, not `app.state.settings`.
+
+    `app.state.settings` is frozen at startup (`create_app`'s parameter),
+    and `init_settings` outranks the table in `Settings.settings_customise_
+    sources` — so `getattr` on that frozen object would never see a value a
+    `PUT` had since written, no matter how recently. The chip beside it
+    would say "settings" while the value shown was the old one: the worst
+    possible presentation, because it names the very layer that just won as
+    the source of a value that layer did not produce. A fresh `Settings()`
+    re-resolves every field through the normal precedence chain — including
+    `SettingsTableSource`, which reads the table at construction — so a
+    `PUT` is visible to the very next `GET`. `write_settings` already built
+    one of these to answer its own response before this existed as its own
+    read path; this makes that the only place that ever needs to.
+    """
     stored = store.get_settings()
+    settings = Settings()
     return [
         SettingField(
             key=key,
@@ -49,3 +79,50 @@ def read_settings(
         )
         for key in sorted(WRITABLE_KEYS)
     ]
+
+
+@router.put("", response_model=list[SettingField])
+def write_settings(
+    body: SettingsUpdate,
+    store: Store = Depends(get_store),
+    settings: Settings = Depends(get_settings),
+) -> list[SettingField]:
+    """Write the seven tunables, then report every field's new state.
+
+    Same response shape as the `GET`, so the screen re-renders its source
+    chips from this reply rather than issuing a second request.
+    """
+    unknown = sorted(set(body.values) - WRITABLE_KEYS)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Not writable through settings: {', '.join(unknown)}",
+        )
+
+    # Validate before writing anything. Stored unvalidated, a
+    # meme_potential_weight of 2.0 would be accepted here and fail when the
+    # *next run* built its Settings — a broken run rather than a rejected
+    # save. Validating a candidate object is also how the endpoint stays
+    # ignorant of each field's type.
+    proposed = {key: value for key, value in body.values.items() if value != ""}
+    if proposed:
+        try:
+            Settings(**(settings.model_dump() | proposed))
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=400, detail=_validation_detail(exc)
+            ) from exc
+
+    # Only after every field has been accepted: a request naming one good
+    # field and one bad one must write neither, or the screen shows a
+    # partial save with a 400 beside it.
+    for key, value in body.values.items():
+        if value == "":
+            # "Reset to .env" deletes the row so the fallback applies again.
+            # Writing the default back would pin the value and make a later
+            # .env edit invisible.
+            store.clear_setting(key)
+        else:
+            store.set_setting(key, value)
+
+    return read_settings(store=store)

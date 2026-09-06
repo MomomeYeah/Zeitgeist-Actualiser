@@ -1,13 +1,14 @@
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from tests.template_factory import make_manifest, make_slot, write_library
 from zeitgeist.analysis.distil import DossierDraft
 from zeitgeist.config import Settings
-from zeitgeist.llm.base import FakeLLMProvider, LLMError
+from zeitgeist.llm.base import FakeLLMProvider, LLMError, LLMProvider
 from zeitgeist.media.brief import BriefChoice
 from zeitgeist.media.templates import TemplateError
 from zeitgeist.models import (
@@ -23,8 +24,10 @@ from zeitgeist.models import (
     TrendEvidence,
     TrendInfo,
 )
-from zeitgeist.pipeline import Stage, run_pipeline
-from zeitgeist.records import AutoOrigin
+from zeitgeist.pipeline import Stage, new_run_id, run_pipeline
+from zeitgeist.progress import Aborted, CancelToken, RecordingObserver
+from zeitgeist.records import ORDER, AutoOrigin, RenderRecord
+from zeitgeist.sources.base import TrendSource
 from zeitgeist.store import MissingCheckpoint, Store
 
 NOW = datetime(2026, 8, 26, tzinfo=UTC)
@@ -152,6 +155,52 @@ def _choice(**overrides: Any) -> BriefChoice:
         rationale="Fits.",
     )
     return BriefChoice(**(base | overrides))
+
+
+def _full_run_args(
+    tmp_path, **overrides: Any
+) -> tuple[Settings, TrendSource, LLMProvider, Store, str]:
+    """The five positional arguments `run_pipeline` takes, for a run that
+    goes the distance: one trend, one topic, one rendered meme.
+
+    Every existing test in this module builds these by hand; the new tests
+    below only ever need `run_id` and `store` overridden, so those are
+    accepted by name rather than duplicating the construction again.
+    """
+    base: dict[str, Any] = dict(
+        settings=_settings(tmp_path),
+        source=_FakeTrendSource([_evidence()]),
+        provider=FakeLLMProvider(responses=[_draft(), _choice()]),
+        store=_store(tmp_path),
+        run_id="r1",
+    )
+    args = base | overrides
+    return (
+        args["settings"],
+        args["source"],
+        args["provider"],
+        args["store"],
+        args["run_id"],
+    )
+
+
+def _failing_render_args(
+    tmp_path,
+) -> tuple[Settings, TrendSource, LLMProvider, Store, str]:
+    """Same shape as `_full_run_args`, but the chosen template's image is
+    missing, so `render_meme` raises `RenderError` (see
+    `test_missing_image_raises` in test_media_render.py) and the render is
+    recorded as failed rather than ready.
+    """
+    settings = _settings(tmp_path)
+    (settings.templates_dir / f"{TEMPLATE_A}.png").unlink()
+    return (
+        settings,
+        _FakeTrendSource([_evidence()]),
+        FakeLLMProvider(responses=[_draft(), _choice()]),
+        _store(tmp_path),
+        "r1",
+    )
 
 
 def test_ingest_writes_evidence_and_analyse_reads_it(tmp_path):
@@ -553,3 +602,240 @@ def test_run_topics_covers_every_topic_not_just_the_kept_ones(tmp_path):
     # Two trends, so this run is also the plural branch of _count.
     summaries = {s.stage: s.summary for s in store.stages_for_run(run_id)}
     assert summaries[Stage.INGEST] == "2 trends, 2 posts"
+
+
+def test_every_stage_reports_started_and_finished(tmp_path):
+    """The in-flight screen draws one card per stage and fills it from these
+    two events. A stage that reported neither would render as pending for the
+    whole run and then jump to done.
+    """
+    observer = RecordingObserver()
+
+    run_pipeline(*_full_run_args(tmp_path), observer=observer)
+
+    started = [event.payload[0] for event in observer.named("stage_started")]
+    finished = [event.payload[0] for event in observer.named("stage_finished")]
+    assert started == list(ORDER)
+    assert finished == list(ORDER)
+
+
+def test_every_stage_reports_the_size_of_the_checkpoint_it_wrote(tmp_path):
+    """`stage_finished` carries payload bytes rather than a path because
+    checkpoints are rows. `is not None and > 0` would pass for a hardcoded 1
+    on every stage — which is exactly the "every stage card claims the same
+    size" bug — so each reported number is checked against the row it
+    describes, read out of the checkpoints table rather than back through the
+    pipeline that reported it.
+    """
+    observer = RecordingObserver()
+    run_id = "20260905T150000Z"
+
+    run_pipeline(*_full_run_args(tmp_path, run_id=run_id), observer=observer)
+
+    reported = {
+        event.payload[0]: event.payload[1] for event in observer.named("stage_finished")
+    }
+    conn = sqlite3.connect(tmp_path / "data" / "z.db")
+    try:
+        written = {
+            Stage(stage): len(payload.encode("utf-8"))
+            for stage, payload in conn.execute(
+                "SELECT stage, payload FROM checkpoints WHERE run_id = ?",
+                (run_id,),
+            )
+        }
+    finally:
+        conn.close()
+
+    assert set(written) == set(ORDER), "a stage wrote no checkpoint"
+    assert {stage: reported[stage] for stage in written} == written
+
+
+def test_a_skipped_stage_reports_no_payload(tmp_path):
+    """`None` is the documented meaning of "wrote no payload". A resumed run
+    skips the stages before its start point, and a skipped stage reporting a
+    stale size would show the resumed run re-writing checkpoints it did not
+    touch.
+    """
+    run_id = "20260905T120000Z"
+    run_pipeline(*_full_run_args(tmp_path, run_id=run_id))
+    observer = RecordingObserver()
+
+    run_pipeline(
+        *_full_run_args(tmp_path, run_id=run_id),
+        start_at=Stage.GENERATE,
+        observer=observer,
+    )
+
+    sizes = {
+        event.payload[0]: event.payload[1] for event in observer.named("stage_finished")
+    }
+    assert sizes[Stage.INGEST] is None
+    assert sizes[Stage.ANALYSE] is None
+
+
+def test_topics_are_reported_during_analyse_not_after_it(tmp_path):
+    """The mid-analyse screen appends ranking rows as they arrive. Reporting
+    them after `stage_finished(ANALYSE)` — which a batch at the end of the
+    stage would do — puts every row on screen at the moment the stage
+    completes, which is the behaviour this event exists to avoid.
+    """
+    observer = RecordingObserver()
+
+    run_pipeline(*_full_run_args(tmp_path), observer=observer)
+
+    names = [event.name for event in observer.events]
+    analyse_finished = [
+        index
+        for index, event in enumerate(observer.events)
+        if event.name == "stage_finished" and event.payload[0] is Stage.ANALYSE
+    ][0]
+    first_topic = names.index("topic_distilled")
+    assert first_topic < analyse_finished
+
+
+def test_every_render_is_reported_including_one_that_failed(tmp_path):
+    """`render_finished` carries the whole record so a failed render reaches
+    the UI as a tile with a message. Reporting only successes is how a
+    per-meme failure vanishes — the exact outcome the record's `status` and
+    `error` fields exist to prevent.
+    """
+    observer = RecordingObserver()
+
+    run_pipeline(*_failing_render_args(tmp_path), observer=observer)
+
+    # `payload` is `tuple[object, ...]` because ObservedEvent carries every
+    # event kind; `named("render_finished")` is what actually guarantees
+    # `payload[0]` is a RenderRecord.
+    statuses = [
+        cast(RenderRecord, event.payload[0]).status
+        for event in observer.named("render_finished")
+    ]
+    assert "failed" in statuses
+
+
+def test_stopping_after_a_stage_leaves_that_stages_checkpoint_written(tmp_path):
+    """The promise of the stop button: the current stage finishes and the run
+    stays resumable. A stop honoured *inside* a stage would leave no
+    checkpoint for it, and resume would have to redo work the user already
+    paid for.
+    """
+    token = CancelToken()
+    store = _store(tmp_path)
+
+    # Subclassed rather than proxied through `__getattr__`: `ty` cannot see
+    # that a proxy satisfies `RunObserver`, and the gate covers tests.
+    class _StopAfterIngest(RecordingObserver):
+        def stage_finished(self, stage: Stage, payload_bytes: int | None) -> None:
+            if stage is Stage.INGEST:
+                token.stop_after_stage()
+            super().stage_finished(stage, payload_bytes)
+
+    run_pipeline(
+        *_full_run_args(tmp_path, store=store, run_id="20260905T130000Z"),
+        observer=_StopAfterIngest(),
+        token=token,
+    )
+
+    assert Stage.INGEST in store.written_stages("20260905T130000Z")
+    assert Stage.ANALYSE not in store.written_stages("20260905T130000Z")
+
+
+def test_a_stopped_run_is_not_marked_finished(tmp_path):
+    """The worker decides the terminal status, because only it can tell stop
+    from abort. If `run_pipeline` called `finish_run(status="ok")` on the way
+    out of a stop, a half-finished run would show as a successful one and its
+    counts would be wrong.
+    """
+    token = CancelToken()
+    token.stop_after_stage()
+    store = _store(tmp_path)
+    run_id = "20260905T140000Z"
+
+    run_pipeline(*_full_run_args(tmp_path, store=store, run_id=run_id), token=token)
+
+    record = store.get_run(run_id)
+    assert record is not None
+    assert record.status == "running"
+
+
+def test_aborting_during_a_stage_propagates_out_of_the_pipeline(tmp_path):
+    """The worker catches `Aborted` to write the terminal status. Swallowed
+    inside `run_pipeline`, an aborted run would return normally and be
+    recorded as a success.
+
+    The abort is raised from inside the generate stage rather than before the
+    run, because `abort()` also sets `stopping` — a token aborted up front is
+    consumed by the stage boundary, which *returns* rather than raising, so a
+    test written that way would assert on a path abort never takes and could
+    never pass.
+    """
+    token = CancelToken()
+
+    class _AbortOnGenerate(RecordingObserver):
+        def stage_started(self, stage: Stage) -> None:
+            if stage is Stage.GENERATE:
+                token.abort()
+            super().stage_started(stage)
+
+    with pytest.raises(Aborted):
+        run_pipeline(
+            *_full_run_args(tmp_path),
+            observer=_AbortOnGenerate(),
+            token=token,
+        )
+
+
+def test_generate_reports_progress_before_each_brief(tmp_path):
+    """The in-flight screen's generate card counts memes as they render, and
+    `stage_progress` is the only event carrying that count. Deleting the call
+    — or reporting `done` as one-based, or a constant total — leaves every
+    other test in this module green while the card sits still until the stage
+    ends.
+
+    `done` is checked against the render events rather than a literal, because
+    the number of briefs is a property of the fixture rather than of the
+    behaviour under test; what matters is that it counts up from zero, once
+    per brief, with the total fixed.
+    """
+    observer = RecordingObserver()
+
+    run_pipeline(*_full_run_args(tmp_path), observer=observer)
+
+    progress = [event.payload for event in observer.named("stage_progress")]
+    # See the comment in test_every_render_is_reported_including_one_that_failed
+    # about why payload[0] needs a cast here.
+    rendered = [
+        cast(RenderRecord, event.payload[0])
+        for event in observer.named("render_finished")
+    ]
+
+    assert rendered, "the fixture rendered nothing; the assertion is vacuous"
+    assert [payload[0] for payload in progress] == [Stage.GENERATE] * len(rendered)
+    assert [payload[1] for payload in progress] == list(range(len(rendered)))
+    assert {payload[2] for payload in progress} == {len(rendered)}
+    assert [payload[3] for payload in progress] == [
+        record.topic_id for record in rendered
+    ]
+
+
+def test_new_run_id_is_distinct_on_every_call_even_in_a_tight_loop():
+    """`Store.start_run` upserts on `run_id`: `INSERT ... ON CONFLICT(run_id)
+    DO UPDATE`. Two calls to `new_run_id()` that return the same string
+    therefore don't just label two runs alike - the second `start_run` call
+    resets the first run's row back to `running`, replaces its frozen
+    config, and nulls its outcome columns, while the first run's worker is
+    still executing against it. Both runs then write checkpoints, stage
+    records, renders and log lines under the one surviving id, and one run's
+    result is silently lost.
+
+    The old implementation formatted with whole-second resolution
+    (`%Y%m%dT%H%M%SZ`), so any two calls landing in the same wall-clock
+    second - trivial in a tight loop - returned the identical string. 10,000
+    iterations with no delay would collide many times over under that
+    scheme; asserting the results form a set of the same size as the list
+    catches that collision even though it may not happen on every call.
+    """
+    ids = [new_run_id() for _ in range(10_000)]
+
+    assert len(set(ids)) == len(ids)

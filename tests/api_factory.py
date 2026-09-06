@@ -8,7 +8,9 @@ and the endpoints would be serving a table layout nothing produces.
 from `DB_PATH`, so a test's renders and database are its own.
 """
 
+import logging
 import os
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +29,7 @@ from zeitgeist.records import (
     Stage,
     StageRecord,
 )
+from zeitgeist.runner import ExecuteFn
 from zeitgeist.store import Store
 
 # Clients `seeded_client` has entered as a context manager, awaiting exit.
@@ -52,6 +55,50 @@ class SeededRun:
     stages: list[StageRecord] = field(default_factory=list)
     renders: list[RenderRecord] = field(default_factory=list)
     evidence: list[TrendEvidence] = field(default_factory=list)
+
+
+@dataclass
+class GatedExecute:
+    """A run that blocks until released, so a test can hold the worker in a
+    known state without sleeping. Lives here rather than in one test module
+    because both the control tests and the SSE tests need it.
+
+    It opens the run row, because the real executor reaches `run_pipeline`
+    and `run_pipeline` is what calls `store.start_run`. Without that, every
+    endpoint guarded by `_run_or_404` — the event stream among them —
+    answers 404 for a run that is executing.
+    """
+
+    entered: threading.Event = field(default_factory=threading.Event)
+    release: threading.Event = field(default_factory=threading.Event)
+    run_ids: list[str] = field(default_factory=list)
+
+    def __call__(self, settings, request, store, observer, token) -> None:
+        run_id = request.run_id or ""
+        store.start_run(run_id, make_run_config())
+        self.run_ids.append(run_id)
+        self.entered.set()
+        assert self.release.wait(timeout=5), "release was never set"
+
+
+@dataclass
+class LoggingGate:
+    """A run that opens its row, logs one line, then blocks until released.
+
+    The line has to be emitted while the run is still executing, because the
+    worker drops the buffer the moment it ends — so a stream opened after the
+    run finished can never carry it.
+    """
+
+    message: str = "hello from the run"
+    entered: threading.Event = field(default_factory=threading.Event)
+    release: threading.Event = field(default_factory=threading.Event)
+
+    def __call__(self, settings, request, store, observer, token) -> None:
+        store.start_run(request.run_id or "", make_run_config())
+        logging.getLogger("zeitgeist.testing.sse").info(self.message)
+        self.entered.set()
+        assert self.release.wait(timeout=5), "release was never set"
 
 
 def api_settings(tmp_path: Path) -> Settings:
@@ -113,19 +160,30 @@ def seed_run(store: Store, spec: SeededRun) -> None:
             ),
         )
         return
-    # "aborted" and "interrupted" have no writer anywhere in this phase —
-    # see records.RunStatus's docstring: phase 3's execution service is what
-    # will honour the stop button and reconcile a dead process into these,
-    # and no accessor exists yet that produces either. A test that needs one
-    # would be testing a state this phase cannot actually write, so this
-    # fails loudly rather than silently leaving the row "running".
+    if spec.status == "aborted":
+        # Store.abort_run is exactly the writer the "no writer anywhere in
+        # this phase" comment used to say did not exist — it does now,
+        # phase 3's stop/abort endpoints are what call it, and Critical 2's
+        # tests want a run seeded straight into this status.
+        store.abort_run(spec.run_id)
+        return
+    # "interrupted" still has no writer this factory can safely use for one
+    # run in isolation: Store.reconcile_interrupted is the only accessor
+    # that produces it, and it marks *every* row still "running" across the
+    # whole store, not just this one — reconciling it here would also flip
+    # any other "running" run a test happened to seed alongside it. A test
+    # that needs "interrupted" would be testing a state this factory cannot
+    # write for a single run, so this fails loudly rather than silently
+    # leaving the row "running" or reconciling rows the test never asked
+    # about.
     raise NotImplementedError(
-        f"seed_run has no way to write status={spec.status!r} yet — phase 3's "
-        "execution service is what writes it"
+        f"seed_run has no way to write status={spec.status!r} for one run in isolation"
     )
 
 
-def seeded_client(tmp_path: Path, *, runs: Sequence[SeededRun] = ()) -> TestClient:
+def seeded_client(
+    tmp_path: Path, *, runs: Sequence[SeededRun] = (), execute: ExecuteFn | None = None
+) -> TestClient:
     """An app over a store holding `runs`, with its lifespan already running.
 
     The store is seeded before `create_app` opens its own connection, so the
@@ -137,6 +195,9 @@ def seeded_client(tmp_path: Path, *, runs: Sequence[SeededRun] = ()) -> TestClie
     `_open_clients` for `conftest`'s autouse fixture to exit later — means
     every caller gets a client whose lifespan has actually started, without
     having to become a `with` block itself.
+
+    `execute` threads a fake executor into the app's `RunService`, so a test
+    can drive the queue without a real pipeline.
     """
     settings = api_settings(tmp_path)
     store = Store(settings.db_path)
@@ -144,7 +205,7 @@ def seeded_client(tmp_path: Path, *, runs: Sequence[SeededRun] = ()) -> TestClie
     for spec in runs:
         seed_run(store, spec)
     store.close()
-    client = TestClient(create_app(settings))
+    client = TestClient(create_app(settings, execute=execute))
     client.__enter__()
     _open_clients.append(client)
     return client

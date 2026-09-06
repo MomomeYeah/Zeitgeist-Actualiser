@@ -11,6 +11,8 @@ first thing in the pipeline that knows what actually happened.
 """
 
 import logging
+import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 from pydantic import BaseModel, Field, field_validator
@@ -32,6 +34,7 @@ from zeitgeist.models import (
     Topic,
     TrendEvidence,
 )
+from zeitgeist.progress import Aborted, CancelToken
 
 log = logging.getLogger(__name__)
 
@@ -134,50 +137,70 @@ class DossierDraft(BaseModel):
 
 
 def distil_topics(
-    evidence: list[TrendEvidence], provider: LLMProvider, settings: Settings
+    evidence: list[TrendEvidence],
+    provider: LLMProvider,
+    settings: Settings,
+    *,
+    on_topic: Callable[[Topic], None] | None = None,
+    token: CancelToken | None = None,
 ) -> list[Topic]:
     """Distil every trend. A single trend whose call fails is dropped, not
     fatal — but if every trend fails, that is a failed run, not an empty
     result; see `DistilError`.
+
+    `on_topic` fires as each topic is built, so ranking rows can append
+    during the stage rather than all at once when it ends.
     """
     if not evidence:
         return []
 
-    with ThreadPoolExecutor(max_workers=settings.distil_concurrency) as pool:
-        drafts = list(
-            pool.map(lambda one: _distil_one(one, provider, settings), evidence)
-        )
-
-    if all(result is None for result in drafts):
-        raise DistilError(
-            f"All {len(evidence)} trend(s) failed distillation; see the "
-            "warnings above for each trend's error."
-        )
-
     topics: list[Topic] = []
     used_ids: set[str] = set()
-    for entry, result in zip(evidence, drafts, strict=True):
-        if result is None:
-            continue
-        draft, phrases = result
-        topics.append(
-            Topic(
+    failures = 0
+
+    with ThreadPoolExecutor(max_workers=settings.distil_concurrency) as pool:
+        # `map` yields in submission order as results arrive, and consuming
+        # it lazily *inside* the `with` is what lets a topic be reported
+        # while later trends are still running — `list(...)` here would drain
+        # the pool first and turn `on_topic` into a batch at the end.
+        #
+        # Deliberately not `as_completed`: `unique_slug` assigns ids from a
+        # set that accumulates as we go, so completion-order iteration would
+        # give identical evidence different topic ids from one run to the
+        # next, and resume keys on the id.
+        results = pool.map(
+            lambda one: _distil_one(one, provider, settings, token), evidence
+        )
+        for entry, result in zip(evidence, results, strict=True):
+            if result is None:
+                failures += 1
+                continue
+            draft, phrases = result
+            topic = Topic(
                 id=unique_slug(entry.trend.display_name, used_ids),
                 label=entry.trend.display_name,
                 summary=draft.what_happened,
                 item_ids=[post.item.source_id for post in entry.posts],
                 trend_status=entry.trend.status,
-                dossier=Dossier(
-                    **draft.model_dump(),
-                    recurring_phrases=phrases,
-                ),
+                dossier=Dossier(**draft.model_dump(), recurring_phrases=phrases),
             )
+            topics.append(topic)
+            if on_topic is not None:
+                on_topic(topic)
+
+    if failures == len(evidence):
+        raise DistilError(
+            f"All {len(evidence)} trend(s) failed distillation; see the "
+            "warnings above for each trend's error."
         )
     return topics
 
 
 def _distil_one(
-    entry: TrendEvidence, provider: LLMProvider, settings: Settings
+    entry: TrendEvidence,
+    provider: LLMProvider,
+    settings: Settings,
+    token: CancelToken | None = None,
 ) -> tuple[DossierDraft, list[Phrase]] | None:
     replies = [reply for post in entry.posts for reply in post.replies]
     phrases = mine_phrases(
@@ -186,10 +209,31 @@ def _distil_one(
     # Built outside the try: a bug here must crash loudly, not be misreported
     # as a failed trend and silently skipped.
     prompt = _build_prompt(entry, replies, phrases, settings.distil_char_budget)
+    if token is not None:
+        token.check()
+    started = time.monotonic()
+    log.debug(
+        "Distilling %r: %d replies, %d prompt chars",
+        entry.trend.display_name,
+        len(replies),
+        len(prompt),
+    )
     try:
-        return provider.complete(
+        draft = provider.complete(
             prompt, DossierDraft, system=DISTIL_SYSTEM, max_tokens=DISTIL_MAX_TOKENS
-        ), phrases
+        )
+        log.debug(
+            "Distilled %r in %.1fs",
+            entry.trend.display_name,
+            time.monotonic() - started,
+        )
+        return draft, phrases
+    except Aborted:
+        # Before the broad handler below, which exists to drop one failed
+        # trend rather than fail the run. That is right for an LLMError and
+        # exactly wrong for a cancellation: swallowed here, an abort would
+        # surface as "all trends failed distillation".
+        raise
     except Exception as exc:
         log.warning(
             "Distillation failed for %r; dropping: %s",
