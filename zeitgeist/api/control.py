@@ -1,7 +1,9 @@
 """Starting, watching and stopping runs.
 
 Split from `runs.py`, which is five endpoints of read-only history: these
-mutate execution, fail differently, and phase 4 adds two more of its own.
+mutate execution and fail differently. Phase 4's two mutating endpoints
+went elsewhere — `api/generate.py` drives a different service, and
+`DELETE /api/renders/{id}` belongs under its own prefix.
 """
 
 import asyncio
