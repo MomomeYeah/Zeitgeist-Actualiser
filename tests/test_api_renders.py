@@ -111,3 +111,74 @@ def test_an_unknown_size_is_rejected(tmp_path):
         client.get("/api/renders/rnd1/image", params={"size": "enormous"}).status_code
         == 422
     )
+
+
+def test_deleting_a_render_removes_the_row(tmp_path):
+    client = seeded_client(
+        tmp_path, runs=[SeededRun(renders=[make_render_record("rnd1")])]
+    )
+
+    response = client.delete("/api/renders/rnd1")
+
+    assert response.status_code == 204
+    assert client.get("/api/renders/rnd1").status_code == 404
+
+
+def test_deleting_a_render_removes_both_files(tmp_path):
+    """Row and files go together. An orphaned PNG is invisible; an
+    orphaned row draws as a broken tile forever."""
+    client = seeded_client(
+        tmp_path, runs=[SeededRun(renders=[make_render_record("rnd1")])]
+    )
+    _write_png(tmp_path, "20260901T120000Z", "rnd1")
+    _write_png(tmp_path, "20260901T120000Z", "rnd1", suffix=".thumb")
+
+    client.delete("/api/renders/rnd1")
+
+    directory = tmp_path / "output" / "20260901T120000Z" / "renders"
+    assert not (directory / "rnd1.png").exists()
+    assert not (directory / "rnd1.thumb.png").exists()
+
+
+def test_deleting_a_render_whose_png_is_already_gone_still_succeeds(tmp_path):
+    """The row is what makes a render exist, so a missing file cannot turn
+    a delete into a 500."""
+    client = seeded_client(
+        tmp_path, runs=[SeededRun(renders=[make_render_record("rnd1")])]
+    )
+
+    assert client.delete("/api/renders/rnd1").status_code == 204
+
+
+def test_deleting_an_unknown_render_is_a_404(tmp_path):
+    client = seeded_client(tmp_path, runs=[SeededRun()])
+
+    assert client.delete("/api/renders/nope").status_code == 404
+
+
+def test_a_deleted_render_leaves_the_topics_others_alone(tmp_path):
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(renders=[make_render_record("keep"), make_render_record("drop")])
+        ],
+    )
+
+    client.delete("/api/renders/drop")
+
+    detail = client.get("/api/runs/20260901T120000Z/topics/airport-cat").json()
+    assert [r["id"] for r in detail["renders"]] == ["keep"]
+
+
+def test_deleting_a_render_lowers_the_topics_meme_count(tmp_path):
+    """The count is COUNT(*) over renders at query time, which is the
+    whole reason it is not a column somebody has to keep correct here."""
+    client = seeded_client(
+        tmp_path,
+        runs=[SeededRun(renders=[make_render_record("a"), make_render_record("b")])],
+    )
+
+    client.delete("/api/renders/a")
+
+    rows = client.get("/api/runs/20260901T120000Z/topics").json()
+    assert rows[0]["render_count"] == 1
