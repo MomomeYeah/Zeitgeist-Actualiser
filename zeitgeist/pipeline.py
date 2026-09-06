@@ -29,6 +29,7 @@ from zeitgeist.records import (
     Stage,
     StageRecord,
 )
+from zeitgeist.renders import clear_auto_renders, render_paths
 from zeitgeist.sources.base import TrendSource
 from zeitgeist.store import Store
 
@@ -239,9 +240,7 @@ def run_pipeline(
     size = store.write_checkpoint(run_id, Stage.GENERATE, briefs)
 
     run_dir = Path(settings.output_dir) / run_id
-    rendered = _render_all(
-        briefs, templates, settings, run_dir, run_id, store, observer, token
-    )
+    rendered = _render_all(briefs, templates, settings, run_id, store, observer, token)
     log.info("Rendered %d memes into %s", rendered, run_dir)
     _stage(
         store,
@@ -270,7 +269,6 @@ def _render_all(
     briefs: list[MediaBrief],
     templates: dict[str, TemplateManifest],
     settings: Settings,
-    run_dir: Path,
     run_id: str,
     store: Store,
     observer: RunObserver,
@@ -282,7 +280,6 @@ def _render_all(
     vanishing: the renderer fails per meme, so three of five is a real
     outcome the UI has to be able to show.
     """
-    renders_dir = run_dir / "renders"
     count = 0
     for index, brief in enumerate(briefs):
         if token is not None:
@@ -291,17 +288,17 @@ def _render_all(
             Stage.GENERATE, done=index, total=len(briefs), detail=brief.topic_id
         )
         render_id = uuid4().hex
-        out_path = renders_dir / f"{render_id}.png"
+        paths = render_paths(settings.output_dir, run_id, render_id)
         error: str | None = None
         try:
             render_meme(
                 brief,
                 templates[brief.template_id],
                 settings.templates_dir,
-                out_path,
+                paths.full,
                 settings.font_path,
             )
-            write_thumbnail(out_path, renders_dir / f"{render_id}.thumb.png")
+            write_thumbnail(paths.full, paths.thumb)
             count += 1
         except RenderError as exc:
             log.warning("Could not render %r: %s", brief.topic_id, exc)
@@ -318,6 +315,28 @@ def _render_all(
             error=error,
             created_at=datetime.now(UTC),
         )
+        # The tuning loop re-runs generate against frozen topics, and the
+        # old CLI's fixed `{position:02d}-{topic_id}.png` filename meant a
+        # second pass replaced the first. `uuid4` ids do not, so this does
+        # it explicitly.
+        #
+        # Only a *successful* render replaces its predecessor. Clearing
+        # unconditionally would mean a bad prompt edit — the single most
+        # likely thing to happen in a tuning loop — destroys the last good
+        # output and leaves a failed row in its place, which is the worst
+        # outcome available. Failing this way instead leaves the previous
+        # render beside the failure, so you can see both what you had and
+        # what broke.
+        #
+        # It also runs after the new PNG is on disk, so the surviving row
+        # always has files behind it and an abort in between costs
+        # nothing that was not already replaced.
+        #
+        # Hand-written renders are never touched — see clear_auto_renders.
+        # `generate_briefs` produces at most one brief per topic, so no
+        # brief in this loop can clear another's output.
+        if error is None:
+            clear_auto_renders(store, settings.output_dir, run_id, brief.topic_id)
         store.add_render(record)
         observer.render_finished(record)
     return count
