@@ -1,0 +1,107 @@
+.page {
+  max-width: var(--content-width);
+}
+
+.header {
+  margin-bottom: var(--gap-section);
+}
+
+.title {
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1.12;
+  letter-spacing: -0.03em;
+}
+
+.chips {
+  margin: 10px 0 6px;
+  display: flex;
+  gap: var(--gap-tight);
+}
+
+.body {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: var(--gap-section);
+  align-items: start;
+}
+
+.frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: var(--surface-log);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+
+/* Never upscaled past its natural size: these are 1180px templates, and a
+   stretched meme looks broken. */
+.image {
+  max-width: 100%;
+  max-height: 70vh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+.brief {
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.slots {
+  margin: 0 0 14px;
+}
+
+.slot + .slot {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--divider);
+}
+
+.slotName {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-40);
+}
+
+.caption {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.rationale {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-70);
+}
+
+.byHand {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-35);
+}
+
+.footer {
+  margin-top: 16px;
+}
+
+.download {
+  display: inline-flex;
+  align-items: center;
+  padding: 9px 14px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
