@@ -16,3 +16,4 @@ tests/fixtures/bluesky/
 web/node_modules/
 web/dist/
 web/coverage/
+*.tsbuildinfo
