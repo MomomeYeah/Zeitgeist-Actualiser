@@ -1,0 +1,29 @@
+.pill {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  padding: 6px 10px;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+}
+
+.ok {
+  background: var(--accent-tint);
+  color: var(--accent);
+}
+
+.running {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* failed, aborted and interrupted share one treatment: all three are a run
+   that did not produce what it set out to, and the design draws one. */
+.bad {
+  background: var(--contrast-fill);
+  color: var(--contrast-light);
+}

@@ -1,0 +1,30 @@
+.tile,
+.failed {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tile);
+  height: var(--tile);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  flex: none;
+}
+
+.tile {
+  background: var(--stripe);
+  border: 1px solid var(--border);
+}
+
+.image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.failed {
+  border: 1px dashed var(--contrast-border);
+  color: var(--contrast-light);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+}
