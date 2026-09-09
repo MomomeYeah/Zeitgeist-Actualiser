@@ -41,15 +41,15 @@ export default tseslint.config(
   {
     // The generated schema and the node scripts are not part of the app's
     // type-checked project, and the drift checker is plain JS. `process`
-    // is declared explicitly (rather than pulling in the `globals`
-    // package for one identifier) because `js.configs.recommended`'s
-    // `no-undef` applies to every file and Node's globals are otherwise
-    // unknown to it.
+    // and `console` are declared explicitly (rather than pulling in the
+    // `globals` package for two identifiers) because
+    // `js.configs.recommended`'s `no-undef` applies to every file and
+    // Node's globals are otherwise unknown to it.
     files: ["scripts/**/*.mjs"],
     ...tseslint.configs.disableTypeChecked,
     languageOptions: {
       ...tseslint.configs.disableTypeChecked.languageOptions,
-      globals: { process: "readonly" },
+      globals: { process: "readonly", console: "readonly" },
     },
   },
   {
