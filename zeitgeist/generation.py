@@ -243,10 +243,25 @@ class GenerationService:
         self._store = store
         self._generate = generate or generate_renders
         self._pool: ThreadPoolExecutor | None = None
+        self._closed = False
         self._lock = threading.Lock()
 
     def _ensure_pool(self) -> ThreadPoolExecutor:
+        """Build the pool on first use, or hand back the one already built.
+
+        Raises once `shutdown()` has run. Without this check, `shutdown()`
+        setting `self._pool` back to `None` is indistinguishable from "never
+        built yet", so a `submit` arriving after the app's lifespan has
+        closed the service would read `None`, build a fresh non-daemon
+        pool, and the process would then block on exit waiting for a job
+        running against a `Store` the lifespan already closed. `self._closed`
+        is the flag that makes "closed" and "not yet built" different
+        states, checked under the same lock that guards pool creation so
+        the two can never race each other.
+        """
         with self._lock:
+            if self._closed:
+                raise RuntimeError("GenerationService is shut down")
             if self._pool is None:
                 self._pool = ThreadPoolExecutor(
                     max_workers=1, thread_name_prefix="zeitgeist-generate"
@@ -254,11 +269,18 @@ class GenerationService:
             return self._pool
 
     def shutdown(self, *, wait: bool = True) -> None:
-        """Close the pool, waiting for what is in flight. Called from the
-        app's lifespan, and from tests that need a job to have finished
-        without sleeping for it."""
+        """Close the pool, waiting for what is in flight, and mark the
+        service closed for good. Called from the app's lifespan, and from
+        tests that need a job to have finished without sleeping for it.
+
+        Final rather than resettable: a `GenerationService` is a
+        lifespan-scoped object, and a `submit` arriving after shutdown must
+        be refused, not quietly given a second pool built against settings
+        and a `Store` the app has already torn down.
+        """
         with self._lock:
             pool, self._pool = self._pool, None
+            self._closed = True
         if pool is not None:
             pool.shutdown(wait=wait)
 
@@ -277,6 +299,15 @@ class GenerationService:
         nothing to brief from, which is a different answer from "no such
         topic".
         """
+        # Before anything else, including the checkpoint read below: a
+        # closed service must refuse on the request thread before a single
+        # row is written, not after `_seed` has already committed them.
+        # `_ensure_pool` raises `RuntimeError` here if `shutdown()` has run;
+        # the pool it returns is not used until the very end of this
+        # method, but obtaining it early is what makes the refusal happen
+        # early.
+        pool = self._ensure_pool()
+
         settings = resolve_settings(self._settings, {})
 
         # The analyse checkpoint holds *every* topic, not just the kept
@@ -328,19 +359,24 @@ class GenerationService:
             request.template_id,
         )
         try:
-            self._ensure_pool().submit(self._run, job)
+            pool.submit(self._run, job)
         except RuntimeError as exc:
-            # `_ensure_pool` releases `self._lock` before handing back the
-            # pool reference, so `shutdown()` can swap `self._pool` to
-            # `None` and shut the very pool we just got, in the gap between
-            # that return and this `.submit()`. The executor then refuses
-            # with `RuntimeError: cannot schedule new futures after
-            # shutdown` — but `_seed` has already committed the rows above,
-            # so without this handler they would sit in `"generating"`
-            # forever, indistinguishable from real in-flight work. Routing
-            # them through the same `_fail_unfinished` a raised job uses
-            # gives them the honest outcome. `self._store` is correct here,
-            # not a fresh `Store`: `submit` runs on the request thread, and
+            # The closed-flag check in `_ensure_pool`, above, now catches
+            # the common case: a request arriving after `shutdown()` has
+            # already run. This handler is not dead code even so — it
+            # remains for the genuine interleaving this comment originally
+            # described: `_ensure_pool` releases `self._lock` before
+            # handing back the pool reference, so another thread's
+            # `shutdown()` can swap `self._pool` to `None` and shut the
+            # very pool we just got, in the gap between that return and
+            # this `.submit()`. The executor then refuses with
+            # `RuntimeError: cannot schedule new futures after shutdown` —
+            # but `_seed` has already committed the rows above, so without
+            # this handler they would sit in `"generating"` forever,
+            # indistinguishable from real in-flight work. Routing them
+            # through the same `_fail_unfinished` a raised job uses gives
+            # them the honest outcome. `self._store` is correct here, not a
+            # fresh `Store`: `submit` runs on the request thread, and
             # `self._store` is that thread's connection — the same one
             # `_seed` just wrote the rows through. Re-raising is still
             # correct: a 202 for work that will never run would be a lie,
@@ -370,6 +406,15 @@ class GenerationService:
         but an on-demand request is an additive action somebody took, and
         clearing here would delete the render they asked for this one to
         be compared against.
+
+        Written with `Store.add_renders` — one transaction for the whole
+        batch — rather than one `add_render` call per record. A `count=4`
+        seed as four independent commits means a failure on the third
+        (a lock the busy timeout could not outlast, a disk-full `OSError`)
+        would propagate out of `submit` with two rows already committed as
+        `"generating"`, and nothing left that will ever finish them.
+        All-or-nothing means a failure here leaves nothing behind to clean
+        up.
         """
         count = 1 if isinstance(request, ManualGeneration) else request.count
         captions = (
@@ -395,8 +440,7 @@ class GenerationService:
             )
             for _ in range(count)
         ]
-        for record in records:
-            self._store.add_render(record)
+        self._store.add_renders(records)
         return records
 
     def _run(self, job: GenerationJob) -> None:

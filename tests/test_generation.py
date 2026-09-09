@@ -612,6 +612,29 @@ def test_a_submitted_job_really_renders_when_nothing_is_injected(tmp_path):
     ).full.is_file()
 
 
+def test_submit_after_shutdown_is_refused_before_any_row_is_written(tmp_path):
+    """A closed service must say no on the request thread, not accept the
+    request and spawn a fresh non-daemon pool behind a `Store` the app's
+    lifespan already closed. Without a closed flag, `_ensure_pool` reads
+    the `None` that `shutdown()` leaves behind as 'not built yet' and
+    builds a new one — this is the case that flag exists to catch, as
+    distinct from the live-reference-to-a-dead-pool race the try/except
+    around the handoff still guards below."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+    service.shutdown()
+
+    with pytest.raises(RuntimeError):
+        service.submit(
+            "run-1",
+            "airport-cat",
+            ManualGeneration(template_id=TEMPLATE, caption_slots=SLOTS),
+        )
+
+    assert store.renders_for_topic("run-1", "airport-cat") == []
+
+
 def test_submit_fails_seeded_rows_when_the_pool_refuses_after_shutdown(tmp_path):
     """Reproduces the `_ensure_pool` / `shutdown` race directly, rather
     than through actual concurrency: `_ensure_pool` releases `self._lock`

@@ -141,6 +141,10 @@ class RankedTopic(BaseModel):
     model_config = STRICT
 
     topic: TopicRow
+    # Ready renders only — see `Store.render_counts`. A generating or
+    # failed row carries no image, so it is not counted here even though
+    # it exists as a row; the field name alone would not tell a consumer
+    # of a generated TypeScript client that.
     render_count: int
     above_cut: bool
 
@@ -204,6 +208,9 @@ class IndexedTopic(BaseModel):
 
     topic: TopicRow
     run_count: int
+    # Ready renders only — see `Store.render_counts`. Same caveat as
+    # `RankedTopic.render_count`: a generating or failed row does not
+    # raise this number, and the field name alone does not say so.
     render_count: int
 
 
