@@ -2298,6 +2298,20 @@ class GenerationService:
             )
 ```
 
+**Note added after review, not part of the original plan.** The `submit`
+above has a shutdown/submit race: `_ensure_pool` returns the pool reference
+under `self._lock`, but `.submit(self._run, job)` on line 2197 runs after
+that lock is released, so a concurrent `shutdown()` can close the very pool
+just handed back in the gap between the two. The executor then raises
+`RuntimeError: cannot schedule new futures after shutdown` — after `_seed`
+has already committed the `generating` rows, leaving them stuck in that
+status forever with nothing to distinguish them from real in-flight work.
+A reviewer caught this before the branch merged. The shipped `submit` wraps
+the `.submit()` call in a `try/except RuntimeError`, routes the seeded
+records through `_fail_unfinished` on that path, and re-raises so the
+caller still sees an honest error rather than a 202 for work that will
+never run. Copy the fix, not the block above, into new code.
+
 - [ ] **Step 7: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/test_generation.py tests/test_runner.py -v`

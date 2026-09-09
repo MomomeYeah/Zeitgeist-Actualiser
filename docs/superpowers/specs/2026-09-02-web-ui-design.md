@@ -297,6 +297,18 @@ work (see `DELETE /api/renders/{id}` above). When that phase lands, it must
 decide whether a re-run first clears the run's prior `auto` renders for the
 topic, and it must leave `manual` renders untouched regardless.
 
+**Answered in phase 4.** It does clear them, on one condition. A re-run of
+`generate` removes each topic's prior `auto` renders — row, PNG and
+thumbnail — once the replacement is on disk *and rendered successfully*,
+and never touches a `manual` render. A pass whose render fails clears
+nothing, so a prompt edit that overflows a caption box leaves the previous
+render in place beside the failure rather than destroying the output being
+tuned against. On-demand generation through `POST .../renders` is the other
+exception and always appends, because it is an additive action somebody
+took rather than a stage re-running. See
+`zeitgeist/renders.py:clear_auto_renders` and
+`docs/superpowers/plans/2026-09-06-web-ui-generation-backend.md`.
+
 ### Models
 
 `RunConfig` is the frozen settings subset that run detail's config line and

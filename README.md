@@ -235,6 +235,37 @@ run over HTTP:
   row so `.env` applies again. Changes apply to new runs — a run already in
   flight keeps the config it froze when it started.
 
+Phase 4 completes the API. Memes can now be generated for a topic on
+demand, long after its run ended:
+
+- **Two ways to make a meme.** `POST /api/runs/{id}/topics/{topic_id}/renders`
+  takes either `{"mode": "llm", "template_id": ..., "count": N}` — the model
+  writes the captions for the template you name, up to four at a time — or
+  `{"mode": "manual", "template_id": ..., "caption_slots": {...}}`, which
+  draws captions you wrote yourself. It answers 202 with the render rows
+  already created and `status: "generating"`; poll the topic to watch them
+  finish.
+- **Any topic, not just the ranked ones.** A topic the evaluate stage left
+  below the cut can still be generated for: the request reads the run's
+  `analyse` checkpoint, which holds every topic.
+- **Generation runs off the run worker.** A second, single-threaded
+  executor, so a meme can be generated while a run is in flight. On
+  Anthropic that is free; against a local Ollama the two contend for one
+  GPU and simply take longer.
+- **Deleting a render.** `DELETE /api/renders/{id}` removes the row, the
+  PNG and the thumbnail. Meme counts are a `COUNT(*)` at query time, so
+  they follow immediately.
+- **Re-running `generate` now replaces rather than appends.** A resume from
+  the generate stage clears each topic's previous *model-written* renders
+  once the new one is on disk, which is what the old CLI's fixed filenames
+  used to do. Renders you wrote by hand are never touched — the model's
+  output is reproducible by running again, and yours is not.
+- **A re-render that fails clears nothing.** If your edited prompt produces
+  a caption too long for its box, the previous render stays where it is and
+  the failure appears beside it, so you can see both. On-demand generation
+  is the other exception and always appends, because it is something you
+  asked for on top of what is already there.
+
 Starting a run and watching it, from the shell:
 
 ```bash
@@ -242,8 +273,8 @@ RUN=$(curl -s -XPOST localhost:8000/api/runs -H 'content-type: application/json'
 curl -sN "localhost:8000/api/runs/$RUN/events"
 ```
 
-When phase 5 builds the frontend, its TypeScript types are generated from
-the same schema:
+The API contract is complete as of this phase. Phase 5 generates its
+TypeScript types from the same schema:
 
 ```bash
 npx openapi-typescript http://127.0.0.1:8000/openapi.json -o web/src/api/schema.ts
