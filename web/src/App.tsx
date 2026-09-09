@@ -1,3 +1,10 @@
+import { AppRoutes } from "@/app/routes";
+import { Providers } from "@/app/providers";
+
 export function App() {
-  return <div>Zeitgeist</div>;
+  return (
+    <Providers>
+      <AppRoutes />
+    </Providers>
+  );
 }
