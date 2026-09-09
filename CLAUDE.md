@@ -5,20 +5,29 @@ about it. See README.md for setup and usage.
 
 ## Definition of Done
 
-A task is not complete until all four of these pass:
+A task is not complete until all seven of these pass:
 
 ```bash
 uv run ruff check .
 uv run ruff format --check .
 uv run ty check
 uv run pytest
+npm --prefix web run lint
+npm --prefix web run typecheck
+npm --prefix web test
 ```
 
 Do not report a task as finished, and do not open a pull request, until you
 have run them and seen them pass. A Stop hook enforces this, and CI runs the
-same four commands on pushes to `main` and on every pull request. Both the
-Stop hook and CI run `uv sync --locked` before the four commands, so a stale
-lockfile fails fast.
+same seven commands on pushes to `main` and on every pull request. Both the
+Stop hook and CI run `uv sync --locked` and `npm --prefix web ci` before the
+seven commands, so a stale lockfile on either side fails fast.
+
+`npm --prefix web run typecheck` also regenerates `web/src/api/schema.ts`
+from `web/openapi.json` and fails if the checked-in file differs, and
+`uv run pytest` asserts `web/openapi.json` still matches the FastAPI app.
+Between them, a backend contract change that has not been carried across to
+the client turns the gate red rather than surfacing in the browser.
 
 ## Test quality
 

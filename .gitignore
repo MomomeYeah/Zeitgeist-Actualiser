@@ -12,3 +12,7 @@ data/
 
 # Captured live payloads (real posts) from scripts/capture_bluesky_fixtures.py.
 tests/fixtures/bluesky/
+
+web/node_modules/
+web/dist/
+web/coverage/
