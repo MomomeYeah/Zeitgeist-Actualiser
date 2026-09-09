@@ -1,0 +1,29 @@
+.section {
+  margin-top: var(--gap-page);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--gap-card);
+}
+
+.cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-tight);
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+  background: var(--surface);
+}
+
+.footer {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-35);
+}
+
+.footer:hover {
+  color: var(--text-70);
+}

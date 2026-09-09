@@ -1,0 +1,46 @@
+.card {
+  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.phrase {
+  display: block;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.first {
+  font-size: 15px;
+  color: var(--accent);
+}
+
+.second {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.rest {
+  font-size: 12px;
+  color: var(--text-70);
+}
+
+.meta {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-35);
+}
+
+.footer {
+  margin-top: 12px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-30);
+}

@@ -267,7 +267,8 @@ export function makeTopicDetail(
     renders: options.renders ?? [makeRenderRecord()],
     recurrence: {
       run_count: options.runCount ?? 3,
-      first_seen_run_id: options.firstSeenRunId ?? "20260826T090000Z",
+      first_seen_run_id:
+        options.firstSeenRunId === undefined ? "20260826T090000Z" : options.firstSeenRunId,
     },
   };
 }

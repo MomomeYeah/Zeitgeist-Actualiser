@@ -1,0 +1,60 @@
+.page {
+  max-width: var(--content-width);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-section);
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--gap-page);
+}
+
+.title {
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1.12;
+  letter-spacing: -0.03em;
+}
+
+.chips {
+  margin-top: 10px;
+  display: flex;
+  gap: var(--gap-tight);
+  flex-wrap: wrap;
+}
+
+.stats {
+  display: flex;
+  gap: 22px;
+  text-align: right;
+  flex: none;
+}
+
+.stats dt {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--text-40);
+}
+
+.stats dd {
+  margin: 4px 0 0;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.meme {
+  color: var(--accent);
+}
+
+.conversation {
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  gap: var(--gap-section);
+  align-items: start;
+}
