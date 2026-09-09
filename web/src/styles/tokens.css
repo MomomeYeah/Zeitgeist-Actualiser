@@ -1,0 +1,92 @@
+/*
+ * The handoff's colour, typography and geometry tables, verbatim.
+ * Source: design_handoff_zeitgeist_ui/README.md, "Design Tokens".
+ *
+ * Several tokens below are not rows in that table. They are here because
+ * the handoff names their values inline, in more than one place, and a
+ * value repeated across four stylesheets is a value that drifts:
+ *
+ *   --on-accent        #17140e — text on an accent fill. The same hex as
+ *                      --bg, named for its role: the hero card inverts the
+ *                      palette, and "the page colour" and "the colour text
+ *                      takes on an accent fill" are different ideas that
+ *                      happen to agree.
+ *   --contrast-border  rgba(61,99,230,.35) — the failed run row's border,
+ *                      the failed render tile, the queue notice.
+ *   --contrast-fill    rgba(61,99,230,.2) — the FAILED status pill's fill.
+ *   --chip-fill        white 8% — the secondary chip, per "Chip".
+ *   --mood-tail /      white 16% / 8% — the mood bar's third segment and
+ *   --mood-rest        its tail.
+ *   --border-hover     white 16% — the handoff's suggested hover.
+ *
+ * Ranged tokens in the handoff (radius-panel 11-12px, gap-page 20-22px)
+ * take the value the mockups use most; a range describes the design and is
+ * not something CSS can hold.
+ */
+:root {
+  --bg: #17140e;
+  --bg-sidebar: #141109;
+  --surface: #1d1a12;
+  --surface-log: #100e09;
+
+  --accent: #ffd93d;
+  --accent-wash: rgba(255, 217, 61, 0.06);
+  --accent-tint: rgba(255, 217, 61, 0.14);
+  --accent-border: rgba(255, 217, 61, 0.3);
+  --accent-border-strong: rgba(255, 217, 61, 0.35);
+  --accent-half: rgba(255, 217, 61, 0.5);
+  --on-accent: #17140e;
+
+  --contrast: #3d63e6;
+  --contrast-light: #8aa4ff;
+  --contrast-border: rgba(61, 99, 230, 0.35);
+  --contrast-wash: rgba(61, 99, 230, 0.08);
+  --contrast-fill: rgba(61, 99, 230, 0.2);
+
+  --text: #f5f1e6;
+  --text-70: rgba(245, 241, 230, 0.7);
+  --text-55: rgba(245, 241, 230, 0.55);
+  --text-50: rgba(245, 241, 230, 0.5);
+  --text-40: rgba(245, 241, 230, 0.4);
+  --text-35: rgba(245, 241, 230, 0.35);
+  --text-30: rgba(245, 241, 230, 0.3);
+
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --border-hover: rgba(255, 255, 255, 0.16);
+  --divider: rgba(255, 255, 255, 0.07);
+  --chip-fill: rgba(255, 255, 255, 0.08);
+  --chip-fill-strong: rgba(255, 255, 255, 0.15);
+  --mood-tail: rgba(255, 255, 255, 0.16);
+  --mood-rest: rgba(255, 255, 255, 0.08);
+
+  --stripe-a: #211d14;
+  --stripe-b: #272216;
+  --stripe: repeating-linear-gradient(
+    135deg,
+    var(--stripe-a) 0 8px,
+    var(--stripe-b) 8px 16px
+  );
+
+  --font-ui: "Outfit Variable", "Outfit", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  --radius-pill: 20px;
+  --radius-card: 14px;
+  --radius-panel: 12px;
+  --radius-tile: 8px;
+  --radius-sm: 6px;
+
+  --gap-page: 20px;
+  --gap-section: 14px;
+  --gap-card: 12px;
+  --gap-tight: 6px;
+
+  --sidebar-width: 180px;
+  --content-width: 1000px;
+  --app-width: 1180px;
+
+  /* 120-150ms ease-out, per the handoff's hover note. One duration, so the
+     whole app agrees about how fast it moves. */
+  --transition: 140ms ease-out;
+}
