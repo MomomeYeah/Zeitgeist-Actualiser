@@ -1,0 +1,35 @@
+.page {
+  max-width: var(--content-width);
+}
+
+.header {
+  margin-bottom: var(--gap-page);
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.runId {
+  font-family: var(--font-mono);
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.error {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--contrast-light);
+}
+
+.noRanking {
+  margin-top: var(--gap-page);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-35);
+}

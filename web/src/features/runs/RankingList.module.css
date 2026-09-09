@@ -1,0 +1,24 @@
+.section {
+  margin-top: var(--gap-page);
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.noMemes {
+  margin-bottom: 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--contrast-light);
+}
+
+.cut {
+  margin-top: 12px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-30);
+}
