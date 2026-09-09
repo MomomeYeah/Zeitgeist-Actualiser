@@ -26,7 +26,8 @@
 }
 
 .mood,
-.block {
+.block,
+.filters {
   margin-top: 6px;
 }
 

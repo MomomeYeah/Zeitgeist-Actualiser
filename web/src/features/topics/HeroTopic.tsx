@@ -36,9 +36,7 @@ export function HeroTopic({ entry }: { entry: IndexedTopic }) {
         {topic.conversation_register != null && (
           <Chip tone="inverted">{topic.conversation_register}</Chip>
         )}
-        {entry.render_count > 0 && (
-          <Chip tone="inverted">{`${entry.render_count} memes`}</Chip>
-        )}
+        <Chip tone="inverted">{`${entry.render_count} memes`}</Chip>
       </span>
     </Link>
   );
