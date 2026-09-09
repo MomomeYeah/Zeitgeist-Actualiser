@@ -1,0 +1,44 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-section);
+}
+
+.header {
+  margin-bottom: 6px;
+}
+
+.title {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+
+/* `1.55fr 1fr` in the handoff, where the second column is the latest meme
+   tile. That tile needs a render id, which `TopicIndex` does not carry;
+   phase 6's run strip lands in the same bottom row and phase 7 owns the
+   meme grid, so the hero spans the width here rather than sitting beside an
+   empty column. */
+.heroRow {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.mood,
+.block {
+  margin-top: 6px;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 11px;
+}
+
+.filtered {
+  padding: 24px 0;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-35);
+}

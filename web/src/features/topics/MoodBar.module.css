@@ -1,0 +1,51 @@
+.bar {
+  display: flex;
+  gap: 3px;
+  height: 28px;
+}
+
+.segment {
+  flex: 0 0 var(--share);
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.top {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.second {
+  background: var(--accent-half);
+  color: var(--on-accent);
+}
+
+.schadenfreude {
+  background: var(--contrast);
+  color: var(--text);
+}
+
+.tail {
+  background: var(--mood-tail);
+  color: var(--text-70);
+}
+
+.rest {
+  background: var(--mood-rest);
+  color: var(--text-55);
+}
+
+.line {
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-35);
+}
