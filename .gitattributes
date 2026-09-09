@@ -1,0 +1,7 @@
+.gitattributes     eol=lf
+web/openapi.json    eol=lf
+web/src/api/schema.ts eol=lf
+
+# web/openapi.json and web/src/api/schema.ts are byte-compared by
+# web/scripts/check-types.mjs. CRLF conversion on checkout would cause
+# spurious failures, so pin them to LF.
