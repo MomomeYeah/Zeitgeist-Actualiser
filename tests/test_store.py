@@ -896,6 +896,47 @@ def test_a_failed_render_keeps_its_error(tmp_path):
     assert restored.error == "caption does not fit"
 
 
+def test_add_renders_writes_every_record_in_one_transaction(tmp_path):
+    """The happy path: a `count=4` seed lands as four rows from one call,
+    exactly as four calls to `add_render` would, but through one commit."""
+    store = _store(tmp_path)
+    records = [
+        make_render_record("a", status="generating"),
+        make_render_record("b", status="generating"),
+        make_render_record("c", status="generating"),
+    ]
+
+    store.add_renders(records)
+
+    ids = {r.id for r in store.renders_for_run("20260901T120000Z")}
+    assert ids == {"a", "b", "c"}
+
+
+def test_add_renders_leaves_nothing_behind_when_one_insert_fails(tmp_path):
+    """All-or-nothing is the whole point: a `count=4` seed where the third
+    row fails must not strand the first two as permanently-`generating`
+    rows nobody will ever finish. `executemany` plus a single `commit`
+    means a `PRIMARY KEY` collision partway through rolls the lot back,
+    rather than committing what came before it."""
+    store = _store(tmp_path)
+    store.add_render(make_render_record("dup", status="ready"))
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store.add_renders(
+            [
+                make_render_record("new1", status="generating"),
+                make_render_record("dup", status="generating"),
+            ]
+        )
+
+    assert store.get_render("new1") is None
+    # The pre-existing row must be untouched, not overwritten by the
+    # colliding insert before the transaction rolled back.
+    survivor = store.get_render("dup")
+    assert survivor is not None
+    assert survivor.status == "ready"
+
+
 def test_renders_for_a_run_come_back_oldest_first(tmp_path):
     store = _store(tmp_path)
     store.add_render(
@@ -965,6 +1006,20 @@ def test_render_counts_are_scoped_to_the_run(tmp_path):
     store.add_render(make_render_record("b", run_id="r2", topic_id="cats"))
 
     assert store.render_counts("r1") == {"cats": 1}
+
+
+def test_render_counts_excludes_generating_and_failed_rows(tmp_path):
+    """The count means 'memes that exist' — what the grid draws thumbnails
+    for. A row still `generating` has no image yet, and a `failed` one
+    never will; neither should inflate the number, and a topic with only
+    such rows must not appear in the mapping at all."""
+    store = _store(tmp_path)
+    store.add_render(make_render_record("a", topic_id="cats", status="ready"))
+    store.add_render(make_render_record("b", topic_id="cats", status="generating"))
+    store.add_render(make_render_record("c", topic_id="cats", status="failed"))
+    store.add_render(make_render_record("d", topic_id="dogs", status="generating"))
+
+    assert store.render_counts("20260901T120000Z") == {"cats": 1}
 
 
 def test_topic_recurrence_counts_runs_and_names_the_earliest(tmp_path):
@@ -1128,3 +1183,98 @@ def test_topics_for_no_runs_is_empty(tmp_path):
     """An empty window must not become `WHERE run_id IN ()`, which is a
     syntax error in SQLite."""
     assert _store(tmp_path).topics_for_runs([]) == []
+
+
+def test_update_render_replaces_the_mutable_columns(tmp_path):
+    """A generating render is finished in place: the brief arrives after
+    the row does."""
+    store = _store(tmp_path)
+    store.add_render(make_render_record("rnd1", status="generating", caption_slots={}))
+
+    updated = store.update_render(
+        make_render_record(
+            "rnd1",
+            status="ready",
+            caption_slots={"rejected": "a", "preferred": "b"},
+            origin=AutoOrigin(rationale="the shape matches"),
+        )
+    )
+
+    assert updated is True
+    record = store.get_render("rnd1")
+    assert record is not None
+    assert record.status == "ready"
+    assert record.caption_slots == {"rejected": "a", "preferred": "b"}
+    assert record.origin == AutoOrigin(rationale="the shape matches")
+
+
+def test_update_render_does_not_resurrect_a_deleted_row(tmp_path):
+    """`add_render` is INSERT OR REPLACE, so finishing a job with it would
+    bring back a render somebody deleted while it was still generating.
+    That is why the finishing path is an UPDATE."""
+    store = _store(tmp_path)
+    store.add_render(make_render_record("rnd1", status="generating"))
+    store.delete_render("rnd1")
+
+    updated = store.update_render(make_render_record("rnd1", status="ready"))
+
+    assert updated is False
+    assert store.get_render("rnd1") is None
+
+
+def test_update_render_cannot_move_a_render_to_another_run(tmp_path):
+    """run_id, topic_id and created_at are fixed at insert. A job
+    finishing writes the brief, not the identity."""
+    store = _store(tmp_path)
+    store.add_render(
+        make_render_record("rnd1", run_id="run-1", topic_id="cat", status="generating")
+    )
+
+    store.update_render(
+        make_render_record("rnd1", run_id="run-2", topic_id="dog", status="ready")
+    )
+
+    record = store.get_render("rnd1")
+    assert record is not None
+    assert (record.run_id, record.topic_id) == ("run-1", "cat")
+
+
+def test_delete_render_removes_the_row(tmp_path):
+    store = _store(tmp_path)
+    store.add_render(make_render_record("rnd1"))
+
+    assert store.delete_render("rnd1") is True
+    assert store.get_render("rnd1") is None
+
+
+def test_delete_render_reports_an_unknown_id(tmp_path):
+    """The endpoint 404s on it, so a silent success would be a lie."""
+    store = _store(tmp_path)
+
+    assert store.delete_render("nope") is False
+
+
+def test_renders_for_topic_excludes_other_topics_and_other_runs(tmp_path):
+    store = _store(tmp_path)
+    store.add_render(make_render_record("a", run_id="r1", topic_id="cat"))
+    store.add_render(make_render_record("b", run_id="r1", topic_id="dog"))
+    store.add_render(make_render_record("c", run_id="r2", topic_id="cat"))
+
+    records = store.renders_for_topic("r1", "cat")
+
+    assert [record.id for record in records] == ["a"]
+
+
+def test_renders_for_topic_returns_oldest_first(tmp_path):
+    """Topic detail's grid reads in creation order, so the newest tile is
+    last rather than wherever SQLite happened to put it."""
+    store = _store(tmp_path)
+    store.add_render(
+        make_render_record("second", created_at=datetime(2026, 9, 2, tzinfo=UTC))
+    )
+    store.add_render(
+        make_render_record("first", created_at=datetime(2026, 9, 1, tzinfo=UTC))
+    )
+
+    ids = [r.id for r in store.renders_for_topic("20260901T120000Z", "airport-cat")]
+    assert ids == ["first", "second"]

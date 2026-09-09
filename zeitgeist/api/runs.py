@@ -156,11 +156,7 @@ def read_topic(
         dossier=None if topic is None else topic.dossier,
         score_components={} if topic is None else topic.score_components,
         replies=_replies_for(store, run_id, set(topic.item_ids) if topic else set()),
-        renders=[
-            render
-            for render in store.renders_for_run(run_id)
-            if render.topic_id == topic_id
-        ],
+        renders=store.renders_for_topic(run_id, topic_id),
         recurrence=TopicRecurrence(run_count=count, first_seen_run_id=first_seen),
     )
 

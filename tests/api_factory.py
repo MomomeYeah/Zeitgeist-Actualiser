@@ -14,12 +14,14 @@ import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
 from tests.run_factory import make_run_config, make_topic
 from zeitgeist.api import create_app
 from zeitgeist.config import Settings
+from zeitgeist.generation import GenerateFn
 from zeitgeist.models import Topic, TrendEvidence
 from zeitgeist.records import (
     RenderRecord,
@@ -101,7 +103,12 @@ class LoggingGate:
         assert self.release.wait(timeout=5), "release was never set"
 
 
-def api_settings(tmp_path: Path) -> Settings:
+def api_settings(
+    tmp_path: Path,
+    *,
+    templates_dir: Path | None = None,
+    anthropic_api_key: str | None = None,
+) -> Settings:
     """Build the `Settings` a test's `TestClient` runs against.
 
     `db_path` is read from `DB_PATH` rather than chosen here, because
@@ -113,12 +120,40 @@ def api_settings(tmp_path: Path) -> Settings:
     before every test body runs, so reading it here makes this factory and
     the settings source agree by construction, with no environment mutation
     and nothing to clean up.
+
+    `templates_dir` lets a test own its template library outright, the way
+    `test_pipeline.py` already does: a generation test that named a shipped
+    template would break when the library changed, for reasons that have
+    nothing to do with generation.
+
+    `anthropic_api_key` exists because `GenerationService.submit` builds a
+    provider on the request thread, and `llm_provider` defaults to
+    "anthropic", whose factory raises on an empty key — which this suite
+    guarantees, since `conftest` strips `ANTHROPIC_API_KEY` for every test.
+    A test posting `mode: "llm"` without it gets a 400 from the endpoint's
+    `except ValueError` branch rather than the 202 it is asserting on. It
+    stays hermetic: `AnthropicProvider.__init__` only constructs the SDK
+    client and makes no network call, and such tests inject a `generate`
+    seam so nothing ever calls through it.
     """
-    return Settings(
-        _env_file=None,
-        db_path=Path(os.environ["DB_PATH"]),
-        output_dir=tmp_path / "output",
-    )
+    # Built as a plain dict rather than the brief's inline `**({} if ... )`
+    # splats: ty infers each conditional dict literal's value type from
+    # both branches together, so a `Path`-only branch and a `str`-only
+    # branch each widen to a type the *other* keyword-only parameter
+    # rejects, and it reports one such mismatch per field on `Settings`.
+    # `dict[str, Any]` sidesteps that — the values really are heterogeneous
+    # here, `Settings` still validates them, and the resulting call passes
+    # identical arguments either way.
+    kwargs: dict[str, Any] = {
+        "_env_file": None,
+        "db_path": Path(os.environ["DB_PATH"]),
+        "output_dir": tmp_path / "output",
+    }
+    if templates_dir is not None:
+        kwargs["templates_dir"] = templates_dir
+    if anthropic_api_key is not None:
+        kwargs["anthropic_api_key"] = anthropic_api_key
+    return Settings(**kwargs)
 
 
 def seed_run(store: Store, spec: SeededRun) -> None:
@@ -182,7 +217,13 @@ def seed_run(store: Store, spec: SeededRun) -> None:
 
 
 def seeded_client(
-    tmp_path: Path, *, runs: Sequence[SeededRun] = (), execute: ExecuteFn | None = None
+    tmp_path: Path,
+    *,
+    runs: Sequence[SeededRun] = (),
+    execute: ExecuteFn | None = None,
+    generate: GenerateFn | None = None,
+    templates_dir: Path | None = None,
+    anthropic_api_key: str | None = None,
 ) -> TestClient:
     """An app over a store holding `runs`, with its lifespan already running.
 
@@ -198,14 +239,23 @@ def seeded_client(
 
     `execute` threads a fake executor into the app's `RunService`, so a test
     can drive the queue without a real pipeline.
+
+    `generate` does the same for the `GenerationService`, so a test can
+    drive the endpoint without Pillow or a model. `templates_dir` and
+    `anthropic_api_key` pass straight through to `api_settings`; see its
+    docstring for why the second one is needed.
     """
-    settings = api_settings(tmp_path)
+    settings = api_settings(
+        tmp_path,
+        templates_dir=templates_dir,
+        anthropic_api_key=anthropic_api_key,
+    )
     store = Store(settings.db_path)
     store.init_schema()
     for spec in runs:
         seed_run(store, spec)
     store.close()
-    client = TestClient(create_app(settings, execute=execute))
+    client = TestClient(create_app(settings, execute=execute, generate=generate))
     client.__enter__()
     _open_clients.append(client)
     return client

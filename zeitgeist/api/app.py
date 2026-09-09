@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 
 from zeitgeist.config import Settings
+from zeitgeist.generation import GenerateFn, GenerationService
 from zeitgeist.runner import ExecuteFn, RunService
 from zeitgeist.store import Store
 
@@ -39,7 +40,16 @@ def get_runner(request: Request) -> RunService:
     return request.app.state.runner
 
 
-def create_app(settings: Settings, *, execute: ExecuteFn | None = None) -> FastAPI:
+def get_generator(request: Request) -> GenerationService:
+    return request.app.state.generator
+
+
+def create_app(
+    settings: Settings,
+    *,
+    execute: ExecuteFn | None = None,
+    generate: GenerateFn | None = None,
+) -> FastAPI:
     # Opened here rather than inside the lifespan: `TestClient` runs the
     # lifespan only when used as a context manager, and two of this task's
     # tests call `create_app` without a client at all. The lifespan's only
@@ -69,6 +79,11 @@ def create_app(settings: Settings, *, execute: ExecuteFn | None = None) -> FastA
     # the client is ever handed the id — see RunService's docstring.
     runner = RunService(settings, store, execute=execute)
 
+    # The app's own Store, like RunService's, so `submit` can write a run's
+    # `generating` rows on the request thread before the ids are handed
+    # back. The pool's worker opens its own connection.
+    generator = GenerationService(settings, store, generate=generate)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # The worker thread starts here rather than in `create_app`, unlike
@@ -80,14 +95,17 @@ def create_app(settings: Settings, *, execute: ExecuteFn | None = None) -> FastA
             yield
         finally:
             runner.shutdown()
+            generator.shutdown()
             store.close()
 
     app = FastAPI(title="Zeitgeist", lifespan=lifespan)
     app.state.store = store
     app.state.settings = settings
     app.state.runner = runner
+    app.state.generator = generator
 
     from zeitgeist.api import control as control_router
+    from zeitgeist.api import generate as generate_router
     from zeitgeist.api import options as options_router
     from zeitgeist.api import renders as renders_router
     from zeitgeist.api import runs as runs_router
@@ -99,6 +117,7 @@ def create_app(settings: Settings, *, execute: ExecuteFn | None = None) -> FastA
     # path parameter that would otherwise capture "active" and 404 it as an
     # unknown run.
     app.include_router(control_router.router)
+    app.include_router(generate_router.router)
     app.include_router(settings_router.router)
     app.include_router(runs_router.router)
     app.include_router(renders_router.router)

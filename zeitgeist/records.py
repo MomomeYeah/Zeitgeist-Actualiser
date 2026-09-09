@@ -167,6 +167,11 @@ Origin = Annotated[AutoOrigin | ManualOrigin, Field(discriminator="provenance")]
 class RenderRecord(BaseModel):
     """One rendered meme. The database is authoritative for whether it exists;
     the PNG and its thumbnail live at `output/<run_id>/renders/<id>.png`.
+
+    While `status` is `"generating"`, `caption_slots` and `origin`'s
+    `rationale` (on `AutoOrigin`) are not yet written — they hold
+    placeholder values until the job finishes drawing this render — and
+    must not be read as its real captions or the model's real reasoning.
     """
 
     model_config = STRICT

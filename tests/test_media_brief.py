@@ -3,11 +3,13 @@ from typing import Any
 
 import pytest
 
+from tests.run_factory import make_topic
 from tests.template_factory import make_manifest, make_slot
 from zeitgeist.llm.base import FakeLLMProvider, LLMError
 from zeitgeist.media.brief import (
     BriefChoice,
     BriefError,
+    check_slots,
     generate_brief,
     generate_briefs,
 )
@@ -294,3 +296,85 @@ def test_generate_brief_logs_the_chosen_template_and_attempt_at_debug(caplog):
         for record in caplog.records
         if record.levelno == logging.DEBUG and record.name == "zeitgeist.media.brief"
     ] == [("Cats", "drake", 2)]
+
+
+def _library():
+    return {
+        "shape_alpha": make_manifest(
+            "shape_alpha",
+            slots=[make_slot("rejected"), make_slot("preferred")],
+        )
+    }
+
+
+def test_a_topic_that_was_never_ranked_can_still_be_briefed():
+    """A bare `Topic` — no `final_rank`, no `final_score` — briefs.
+
+    The break this catches is a future edit reading a ScoredTopic-only
+    field inside `generate_brief` or its helpers, which would raise
+    `AttributeError` for exactly the below-the-cut topics the on-demand
+    `generate` link exists to serve.
+
+    It does *not* catch the annotation change this task makes: Python does
+    not enforce annotations at runtime, so `generate_brief` already
+    accepts a `Topic` today and this test would pass before the widening
+    as well as after. `ty` is the gate for the annotation — see Step 5,
+    where it is the command that fails if `generate_briefs` is left as
+    `list[Topic]` against `run_pipeline`'s `list[ScoredTopic]`.
+    """
+    topic = make_topic("airport-cat")
+    provider = FakeLLMProvider(
+        responses=[
+            BriefChoice(
+                template_id="shape_alpha",
+                caption_slots={"rejected": "queueing", "preferred": "the cat"},
+                rationale="it fits",
+            )
+        ]
+    )
+
+    brief = generate_brief(topic, _library(), provider)
+
+    assert brief.topic_id == "airport-cat"
+    assert brief.caption_slots == {"rejected": "queueing", "preferred": "the cat"}
+
+
+def test_check_slots_accepts_exactly_the_templates_slots():
+    assert (
+        check_slots("shape_alpha", {"rejected": "a", "preferred": "b"}, _library())
+        is None
+    )
+
+
+def test_check_slots_names_the_missing_slot():
+    problem = check_slots("shape_alpha", {"rejected": "a"}, _library())
+
+    assert problem is not None
+    assert "preferred" in problem
+
+
+def test_check_slots_names_a_slot_the_template_does_not_have():
+    problem = check_slots(
+        "shape_alpha", {"rejected": "a", "preferred": "b", "middle": "c"}, _library()
+    )
+
+    assert problem is not None
+    assert "middle" in problem
+
+
+def test_check_slots_rejects_a_caption_that_is_only_whitespace():
+    """A blank caption renders as an empty box, so it is a bad request
+    rather than a render to attempt and fail."""
+    problem = check_slots(
+        "shape_alpha", {"rejected": "a", "preferred": "   "}, _library()
+    )
+
+    assert problem is not None
+    assert "preferred" in problem
+
+
+def test_check_slots_lists_the_library_when_the_template_is_unknown():
+    problem = check_slots("no_such_template", {}, _library())
+
+    assert problem is not None
+    assert "shape_alpha" in problem

@@ -32,6 +32,15 @@ __all__ = ["SCHEMA_VERSION", "MissingCheckpoint", "Store", "StoreSchemaError"]
 # counted as a platform contributing to a topic.
 NON_PLATFORM_COMPONENTS = frozenset({"corroboration"})
 
+# The renders columns, in the order `_render` unpacks them. One constant
+# because three accessors select exactly this list, and a fourth added
+# later with a column out of order would deserialise into the wrong fields
+# without raising.
+_RENDER_COLUMNS = (
+    "id, run_id, topic_id, template_id, caption_slots, origin, "
+    "status, error, created_at"
+)
+
 
 class StoreSchemaError(RuntimeError):
     """The database on disk was written by a different schema version."""
@@ -87,10 +96,19 @@ class Store:
         cannot be corrupted by two threads touching it at once. That is
         narrower than safe for concurrent *writes*: a connection has one
         transaction, so two threads each running a multi-statement write
-        through it can interleave, and one thread's commit can land midway
-        through another's. Phase 3's `PUT /api/settings` will write through
-        this same connection from the threadpool, and will need to reckon
-        with that — not assume this note already covers it.
+        through it could in principle interleave, with one thread's commit
+        landing midway through another's. The invariant that makes that
+        theoretical rather than real: every write through this connection
+        is a single statement followed immediately by `commit()` (or,
+        where more than one statement has to land together — `add_renders`
+        and `write_log_lines` — a single `executemany()` inside `with
+        self._conn:`, which is one transaction and one commit). There is
+        never a second statement waiting on the same connection between a
+        write's first statement and its commit, so there is no midway for
+        another thread's commit to land in. `PUT /api/settings` (phase 3)
+        and the on-demand generation endpoints (this phase) both write
+        through this same shared connection from the threadpool, and both
+        hold to this rule — it is why they can.
         """
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -267,7 +285,15 @@ class Store:
         return [_run_record(row) for row in rows]
 
     def render_counts(self, run_id: str) -> dict[str, int]:
-        """Renders per topic for one run.
+        """Ready renders per topic for one run — memes that actually exist.
+
+        Filtered to `status = 'ready'` rather than a bare `COUNT(*)`: a
+        `generating` row has no image behind it yet, and a `failed` one
+        never will, so counting either would raise a topic's number before
+        anything exists to show for it, or leave it permanently inflated
+        by renders nobody can see. In-flight and failed renders still
+        reach the UI through topic detail's `renders` list, which carries
+        per-render status.
 
         A COUNT at query time rather than a column on `run_topics`: a
         denormalised count would have to be kept correct on every render
@@ -275,7 +301,8 @@ class Store:
         executor.
         """
         rows = self._conn.execute(
-            "SELECT topic_id, COUNT(*) FROM renders WHERE run_id = ? GROUP BY topic_id",
+            "SELECT topic_id, COUNT(*) FROM renders "
+            "WHERE run_id = ? AND status = 'ready' GROUP BY topic_id",
             (run_id,),
         ).fetchall()
         return {topic_id: count for topic_id, count in rows}
@@ -597,22 +624,109 @@ class Store:
         )
         self._conn.commit()
 
+    def add_renders(self, records: Sequence[RenderRecord]) -> None:
+        """Insert several rows as one transaction — all or nothing.
+
+        `GenerationService._seed` is the caller: a `count=4` request seeds
+        four `generating` rows, and four independent `add_render` commits
+        would leave whichever ones landed before a mid-batch failure —
+        a locked database the busy timeout could not outlast, a disk-full
+        `OSError` — stranded in `"generating"` forever, with nothing that
+        will ever finish them. `executemany` plus the single `commit()`
+        below means a failure partway through rolls the whole batch back,
+        so there is nothing left to clean up.
+
+        Plain `INSERT`, not `add_render`'s `INSERT OR REPLACE`: every
+        caller seeds brand-new ids from `uuid4().hex`, so a collision here
+        is a bug worth raising on, not a row worth silently overwriting.
+        """
+        with self._conn:
+            self._conn.executemany(
+                "INSERT INTO renders (id, run_id, topic_id, template_id, "
+                "caption_slots, origin, status, error, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        record.id,
+                        record.run_id,
+                        record.topic_id,
+                        record.template_id,
+                        json.dumps(record.caption_slots),
+                        record.origin.model_dump_json(),
+                        record.status,
+                        record.error,
+                        record.created_at.isoformat(),
+                    )
+                    for record in records
+                ],
+            )
+
     def get_render(self, render_id: str) -> RenderRecord | None:
         row = self._conn.execute(
-            "SELECT id, run_id, topic_id, template_id, caption_slots, origin, "
-            "status, error, created_at FROM renders WHERE id = ?",
+            f"SELECT {_RENDER_COLUMNS} FROM renders WHERE id = ?",
             (render_id,),
         ).fetchone()
         return None if row is None else _render(row)
 
     def renders_for_run(self, run_id: str) -> list[RenderRecord]:
         rows = self._conn.execute(
-            "SELECT id, run_id, topic_id, template_id, caption_slots, origin, "
-            "status, error, created_at FROM renders WHERE run_id = ? "
-            "ORDER BY created_at, id",
+            f"SELECT {_RENDER_COLUMNS} FROM renders "
+            "WHERE run_id = ? ORDER BY created_at, id",
             (run_id,),
         ).fetchall()
         return [_render(row) for row in rows]
+
+    def renders_for_topic(self, run_id: str, topic_id: str) -> list[RenderRecord]:
+        """One topic's renders, oldest first. Served by
+        `idx_renders_run_topic`, which schema 3 already creates."""
+        rows = self._conn.execute(
+            f"SELECT {_RENDER_COLUMNS} FROM renders "
+            "WHERE run_id = ? AND topic_id = ? ORDER BY created_at, id",
+            (run_id, topic_id),
+        ).fetchall()
+        return [_render(row) for row in rows]
+
+    def update_render(self, record: RenderRecord) -> bool:
+        """Overwrite an existing render's mutable columns. False means no
+        such row.
+
+        An UPDATE rather than a second `add_render`: `add_render` is
+        INSERT OR REPLACE, so a render deleted while it was still
+        `generating` would come back from the dead when its job finished.
+        `WHERE id = ?` against a deleted row updates nothing and returns
+        False, which is the right outcome — the row is gone because
+        somebody removed it.
+
+        `run_id`, `topic_id` and `created_at` are deliberately not in the
+        SET list. They are fixed when the row is inserted, and a job
+        finishing must not be able to move a render to another run.
+        """
+        cursor = self._conn.execute(
+            "UPDATE renders SET template_id = ?, caption_slots = ?, origin = ?, "
+            "status = ?, error = ? WHERE id = ?",
+            (
+                record.template_id,
+                json.dumps(record.caption_slots),
+                record.origin.model_dump_json(),
+                record.status,
+                record.error,
+                record.id,
+            ),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def delete_render(self, render_id: str) -> bool:
+        """Remove the row. False means no such row.
+
+        The two PNGs are not this method's business — `store.py` knows rows
+        and deliberately nothing about the filesystem.
+        `zeitgeist.renders.delete_render` is the unit that removes both
+        together.
+        """
+        cursor = self._conn.execute("DELETE FROM renders WHERE id = ?", (render_id,))
+        self._conn.commit()
+        return cursor.rowcount > 0
 
     def get_settings(self) -> dict[str, str]:
         return {

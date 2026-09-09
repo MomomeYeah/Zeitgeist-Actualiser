@@ -5,6 +5,7 @@ from typing import Any, cast
 
 import pytest
 
+from tests.run_factory import make_render_record, make_topic
 from tests.template_factory import make_manifest, make_slot, write_library
 from zeitgeist.analysis.distil import DossierDraft
 from zeitgeist.config import Settings
@@ -26,7 +27,8 @@ from zeitgeist.models import (
 )
 from zeitgeist.pipeline import Stage, new_run_id, run_pipeline
 from zeitgeist.progress import Aborted, CancelToken, RecordingObserver
-from zeitgeist.records import ORDER, AutoOrigin, RenderRecord
+from zeitgeist.records import ORDER, AutoOrigin, ManualOrigin, RenderRecord
+from zeitgeist.renders import render_paths
 from zeitgeist.sources.base import TrendSource
 from zeitgeist.store import MissingCheckpoint, Store
 
@@ -839,3 +841,183 @@ def test_new_run_id_is_distinct_on_every_call_even_in_a_tight_loop():
     ids = [new_run_id() for _ in range(10_000)]
 
     assert len(set(ids)) == len(ids)
+
+
+def test_re_running_generate_replaces_the_previous_auto_render(tmp_path):
+    """The tuning loop re-renders frozen topics. Three passes must leave
+    one render behind the topic, not three — which is what the meme count
+    on every screen reads."""
+    settings = _settings(tmp_path)
+    store = _store(tmp_path)
+    provider = FakeLLMProvider(
+        responses=[
+            BriefChoice(
+                template_id=TEMPLATE_A,
+                caption_slots={"rejected": "first", "preferred": "pass"},
+                rationale="first",
+            ),
+            BriefChoice(
+                template_id=TEMPLATE_A,
+                caption_slots={"rejected": "second", "preferred": "pass"},
+                rationale="second",
+            ),
+        ]
+    )
+    topic = ScoredTopic(**make_topic("airport-cat").model_dump(), final_rank=1)
+    run_id = "20260901T120000Z"
+    # run_pipeline always reads back an INGEST checkpoint, even when
+    # resuming past it, so resuming at GENERATE needs one on record.
+    store.write_checkpoint(run_id, Stage.INGEST, [])
+    store.write_checkpoint(run_id, Stage.EVALUATE, [topic])
+    store.write_analyse_checkpoint(run_id, [topic], settings.meme_potential_weight)
+
+    for _ in range(2):
+        run_pipeline(
+            settings,
+            _FakeTrendSource([]),
+            provider,
+            store,
+            run_id,
+            start_at=Stage.GENERATE,
+        )
+
+    renders = store.renders_for_topic(run_id, "airport-cat")
+    assert len(renders) == 1
+    assert renders[0].caption_slots["rejected"] == "second"
+
+
+def test_re_running_generate_leaves_a_hand_written_render_alone(tmp_path):
+    """Hand-written renders survive every re-run. Nothing else can
+    reproduce them."""
+    settings = _settings(tmp_path)
+    store = _store(tmp_path)
+    run_id = "20260901T120000Z"
+    store.add_render(
+        make_render_record(
+            "hand", run_id=run_id, topic_id="airport-cat", origin=ManualOrigin()
+        )
+    )
+    topic = ScoredTopic(**make_topic("airport-cat").model_dump(), final_rank=1)
+    # run_pipeline always reads back an INGEST checkpoint, even when
+    # resuming past it, so resuming at GENERATE needs one on record.
+    store.write_checkpoint(run_id, Stage.INGEST, [])
+    store.write_checkpoint(run_id, Stage.EVALUATE, [topic])
+    store.write_analyse_checkpoint(run_id, [topic], settings.meme_potential_weight)
+
+    run_pipeline(
+        settings,
+        _FakeTrendSource([]),
+        FakeLLMProvider(
+            responses=[
+                BriefChoice(
+                    template_id=TEMPLATE_A,
+                    caption_slots={"rejected": "a", "preferred": "b"},
+                    rationale="r",
+                )
+            ]
+        ),
+        store,
+        run_id,
+        start_at=Stage.GENERATE,
+    )
+
+    ids = [r.id for r in store.renders_for_topic(run_id, "airport-cat")]
+    assert "hand" in ids
+    assert len(ids) == 2
+
+
+def test_a_failed_re_render_leaves_the_previous_good_one_in_place(tmp_path):
+    """A bad prompt edit is the likeliest event in a tuning loop, and it
+    must not destroy the output being tuned against.
+
+    This is what makes the clearing conditional: an unconditional clear
+    passes every other test in this task and loses the last good render
+    exactly when you most want it.
+    """
+    settings = _settings(tmp_path)
+    store = _store(tmp_path)
+    run_id = "20260901T120000Z"
+    topic = ScoredTopic(**make_topic("airport-cat").model_dump(), final_rank=1)
+    # run_pipeline always reads back an INGEST checkpoint, even when
+    # resuming past it, so resuming at GENERATE needs one on record.
+    store.write_checkpoint(run_id, Stage.INGEST, [])
+    store.write_checkpoint(run_id, Stage.EVALUATE, [topic])
+    store.write_analyse_checkpoint(run_id, [topic], settings.meme_potential_weight)
+    provider = FakeLLMProvider(
+        responses=[
+            BriefChoice(
+                template_id=TEMPLATE_A,
+                caption_slots={"rejected": "fits", "preferred": "fine"},
+                rationale="r",
+            ),
+            # Far too long for a 180x80 box at the minimum font size, so
+            # render_meme raises RenderError and this pass produces a
+            # failed row rather than an image.
+            BriefChoice(
+                template_id=TEMPLATE_A,
+                caption_slots={"rejected": "x " * 400, "preferred": "fine"},
+                rationale="r",
+            ),
+        ]
+    )
+
+    for _ in range(2):
+        run_pipeline(
+            settings,
+            _FakeTrendSource([]),
+            provider,
+            store,
+            run_id,
+            start_at=Stage.GENERATE,
+        )
+
+    renders = {r.status: r for r in store.renders_for_topic(run_id, "airport-cat")}
+    assert set(renders) == {"ready", "failed"}
+    assert renders["ready"].caption_slots["rejected"] == "fits"
+    assert render_paths(settings.output_dir, run_id, renders["ready"].id).full.is_file()
+
+
+def test_the_replacement_render_keeps_its_image_on_disk(tmp_path):
+    """Clearing happens after the new PNG is written, so the surviving row
+    always has files behind it.
+
+    The count assertion is load-bearing: without it, a clear that never
+    ran would leave two rows and `[0]` would be the *older* one, whose
+    files are also still present — so the test would pass against the
+    behaviour it exists to reject.
+    """
+    settings = _settings(tmp_path)
+    store = _store(tmp_path)
+    run_id = "20260901T120000Z"
+    topic = ScoredTopic(**make_topic("airport-cat").model_dump(), final_rank=1)
+    # run_pipeline always reads back an INGEST checkpoint, even when
+    # resuming past it, so resuming at GENERATE needs one on record.
+    store.write_checkpoint(run_id, Stage.INGEST, [])
+    store.write_checkpoint(run_id, Stage.EVALUATE, [topic])
+    store.write_analyse_checkpoint(run_id, [topic], settings.meme_potential_weight)
+    provider = FakeLLMProvider(
+        responses=[
+            BriefChoice(
+                template_id=TEMPLATE_A,
+                caption_slots={"rejected": f"pass {n}", "preferred": "x"},
+                rationale="r",
+            )
+            for n in (1, 2)
+        ]
+    )
+
+    for _ in range(2):
+        run_pipeline(
+            settings,
+            _FakeTrendSource([]),
+            provider,
+            store,
+            run_id,
+            start_at=Stage.GENERATE,
+        )
+
+    renders = store.renders_for_topic(run_id, "airport-cat")
+    assert len(renders) == 1
+    paths = render_paths(settings.output_dir, run_id, renders[0].id)
+    assert paths.full.is_file()
+    assert paths.thumb.is_file()
