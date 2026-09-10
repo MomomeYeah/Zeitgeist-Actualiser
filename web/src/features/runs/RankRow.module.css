@@ -1,0 +1,90 @@
+.row {
+  display: grid;
+  grid-template-columns: 30px 1fr 132px 150px 128px;
+  gap: var(--gap-tight);
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  transition: border-color var(--transition);
+}
+
+.row:hover {
+  border-color: var(--border-hover);
+}
+
+.highlighted {
+  border-color: var(--accent-border);
+  background: var(--accent-wash);
+}
+
+.belowCut {
+  border-style: dashed;
+  background: none;
+  opacity: 0.62;
+}
+
+.rank {
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--text-50);
+}
+
+.highlighted .rank {
+  color: var(--accent);
+}
+
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.label {
+  font-size: 14.5px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.subline,
+.components,
+.final,
+.count,
+.generate {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-35);
+}
+
+.chips {
+  display: flex;
+  gap: var(--gap-tight);
+  flex-wrap: wrap;
+}
+
+.scores {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.final {
+  color: var(--text-55);
+}
+
+.highlighted .final {
+  color: var(--accent);
+}
+
+.generate {
+  color: var(--contrast-light);
+}
+
+.memes {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}

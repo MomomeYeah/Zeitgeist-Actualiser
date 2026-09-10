@@ -1,0 +1,46 @@
+.rail {
+  width: var(--sidebar-width);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  padding: var(--gap-page) 12px;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+}
+
+.wordmark {
+  padding: 0 8px;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--text);
+}
+
+.nav {
+  margin-top: 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.item {
+  display: block;
+  padding: 10px 11px;
+  border-radius: var(--radius-tile);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--text-55);
+  transition: background var(--transition), color var(--transition);
+}
+
+.item:hover {
+  color: var(--text);
+}
+
+.active,
+.active:hover {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+}

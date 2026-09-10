@@ -1,0 +1,53 @@
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--gap-section);
+}
+
+.card {
+  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.prose {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-70);
+}
+
+.entities {
+  margin-top: 10px;
+  display: flex;
+  gap: var(--gap-tight);
+  flex-wrap: wrap;
+}
+
+.entity {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-55);
+}
+
+.rule {
+  margin: 12px 0;
+  border: none;
+  border-top: 1px solid var(--divider);
+}
+
+.components {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-35);
+}
+
+.absent {
+  padding: 24px 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-35);
+}

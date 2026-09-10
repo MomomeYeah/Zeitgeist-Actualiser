@@ -1,0 +1,15 @@
+.state,
+.error {
+  padding: 24px 0;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.state {
+  color: var(--text-35);
+}
+
+.error {
+  color: var(--contrast-light);
+}

@@ -995,6 +995,55 @@ log lines and this spec. So the extension goes and the name stays: stage cards r
 `evidence · 1.3 MB`, and the failed row reads `ranked checkpoint intact`. Sizes
 come from the payload length rather than `stat`.
 
+**The ranking row shows a meme count, not thumbnails.** The design draws
+42px tiles in the ranking's fifth column. `GET /api/runs/{id}/topics`
+returns `render_count` — `Store.render_counts`, ready renders only — and no
+render ids, and addressing an image needs an id. Drawing the tiles would
+mean one extra request per row to show what topic detail shows one click
+away, so the row states the count.
+
+**The Runs pill drops the `3 of 5` partial form.** `RunSummary.render_ids`
+comes from `Store.renders_for_run`, which filters on nothing and so counts
+`ready`, `generating` and `failed` alike. Partial failure is shown where the
+contract carries it: run detail's generate stage card renders
+`StageRecord.summary`, which the pipeline already writes as `3 of 5
+rendered`, and a thumbnail whose PNG is missing renders as the designed
+failed tile.
+
+**The mood line reports sentiment only.** The handoff has it cover register
+skew and average meme potential against the previous run. `TopicIndex`
+carries neither, so the line names the leading sentiment, its share of the
+window, and its change against the previous run. The comparison is dropped
+rather than shown as zero when there is no previous run.
+
+**The Runs metadata line counts the page, and names every status.** `GET
+/api/runs` is cursor-paginated and returns no archive totals, so `27 total ·
+24 ok · 3 failed` becomes `25 shown · 22 ok · 2 failed · 1 aborted`. The
+handoff's `ok · failed` pair does not fit a `RunStatus` with five members:
+grouping everything-not-ok under "failed" calls an aborted run a failure,
+and counting only those two prints a total the parts do not add up to.
+Every distinct source across the page is named rather than one claimed.
+
+**The secondary chip shows secondary registers.** The design's `2nd:
+delight, awe` is labelled as secondary sentiments. `Dossier` has no such
+field and does have `secondary_registers`, so the chip shows what the
+pipeline actually records.
+
+**`RenderDetailPage` grows the missing-image state `MemeTile` already
+designed.** The handoff's full-size meme view assumes the PNG behind it
+always exists. A real run walked in a real browser found a render whose PNG
+had been deleted — the half-succeeded case this phase's contract already
+carries — and the raw `<img>` there showed the browser's native
+broken-image icon while still offering a "Download PNG" link for a URL that
+404s. Fixtures could not catch this: every MSW-served render in this phase's
+tests points at an image URL nothing ever asks the browser to resolve. The
+fix gives the full-size image the same `onError` treatment `MemeTile`
+already has — a styled failed state using `--contrast-border` and
+`--contrast-light`, with the download link withdrawn rather than left
+pointing at a 404 — so the one screen designed to be deep-linked is also the
+one most likely to meet a missing file, and now does so without a broken
+image or a dead link.
+
 ## Testing
 
 Backend testing follows the discipline already in the repository: hermetic, no
@@ -1123,6 +1172,15 @@ detail; the full-size meme view; the empty states and the filter-matched-nothing
 line; the partial-failure and source-outage presentations. Ends with any run the
 harness has produced browsable end to end, including one that failed and one
 that half-succeeded.
+
+Every screen was built and reviewed against MSW fixtures, then walked once
+more against a real run — live Bluesky trends distilled by a local Ollama
+model, browsed in an actual browser rather than a test environment. That
+walk is what found the three defects fixtures structurally could not catch:
+`RenderDetailPage`'s missing `onError` fallback, `MemeTile`'s image
+collapsing to a zero-size box while unloaded, and the unpluralised "1
+memes" on the landing screen. Each is fixed with a test that would have
+caught it.
 
 **6 — Run control screens.** The New run screen and its four config cards; the
 two in-flight run-detail states; the live log with its follow behaviour and

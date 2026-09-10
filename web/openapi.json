@@ -1,0 +1,2250 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Zeitgeist",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/runs": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Start Run",
+        "description": "202 rather than 201: the run is queued, and for a queued one there is\nnothing at its URL yet.",
+        "operationId": "start_run_api_runs_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRunBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueuedRun"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "List Runs",
+        "operationId": "list_runs_api_runs_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 25,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/active": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Read Active",
+        "operationId": "read_active_api_runs_active_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveRuns"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/resume": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Resume Run",
+        "operationId": "resume_run_api_runs__run_id__resume_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueuedRun"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/stop": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Stop Run",
+        "description": "Finish the current stage, write its checkpoint, then end. The run\nstays resumable, which is what the button promises.",
+        "operationId": "stop_run_api_runs__run_id__stop_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunActionAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/abort": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Abort Run",
+        "description": "End now. Ingest is the exception: `fetch_evidence` is one opaque\n`asyncio.run()` with no interior checkpoint, so an abort during it takes\neffect when the fetch returns \u2014 which is what the UI's \"aborting\u2026\" state\nis for.",
+        "operationId": "abort_run_api_runs__run_id__abort_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunActionAck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/events": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Stream Events",
+        "description": "Log lines and progress ticks, until the run ends.\n\nPolls the run's buffer rather than being pushed to. A quarter-second of\nlatency on a log line is invisible, and polling keeps the logging handler\nfree of any reference to the event loop \u2014 which is what lets the same\nhandler work under `TestClient` and under the dev harness.\n\nA tick carries no payload. The observer has already written\n`run_records`, `run_stages` and `run_topics` from the worker thread, so\nthe client refetches rather than being handed the same data twice.",
+        "operationId": "stream_events_api_runs__run_id__events_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/topics/{topic_id}/renders": {
+      "post": {
+        "tags": [
+          "generation"
+        ],
+        "summary": "Create Renders",
+        "description": "202, and the rows come back `generating`.\n\nThe rows are written before this returns rather than when the job\nfinishes: the database is authoritative for whether a render exists,\nso a tile with no row behind it would vanish on the next reload. A\n`generating` row's `caption_slots` and \u2014 for an auto render \u2014 its\nrationale are not filled in yet and must not be read.\n\nA bare list rather than an envelope, per `api/schemas.py`: there are no\naggregates to carry.",
+        "operationId": "create_renders_api_runs__run_id__topics__topic_id__renders_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "topic_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Topic Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/LLMGeneration"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ManualGeneration"
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "mode",
+                  "mapping": {
+                    "llm": "#/components/schemas/LLMGeneration",
+                    "manual": "#/components/schemas/ManualGeneration"
+                  }
+                },
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RenderRecord"
+                  },
+                  "title": "Response Create Renders Api Runs  Run Id  Topics  Topic Id  Renders Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/settings": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Read Settings",
+        "description": "Built from a fresh `Settings()`, not `app.state.settings`.\n\n`app.state.settings` is frozen at startup (`create_app`'s parameter),\nand `init_settings` outranks the table in `Settings.settings_customise_\nsources` \u2014 so `getattr` on that frozen object would never see a value a\n`PUT` had since written, no matter how recently. The chip beside it\nwould say \"settings\" while the value shown was the old one: the worst\npossible presentation, because it names the very layer that just won as\nthe source of a value that layer did not produce. A fresh `Settings()`\nre-resolves every field through the normal precedence chain \u2014 including\n`SettingsTableSource`, which reads the table at construction \u2014 so a\n`PUT` is visible to the very next `GET`. `write_settings` already built\none of these to answer its own response before this existed as its own\nread path; this makes that the only place that ever needs to.",
+        "operationId": "read_settings_api_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SettingField"
+                  },
+                  "type": "array",
+                  "title": "Response Read Settings Api Settings Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Write Settings",
+        "description": "Write the seven tunables, then report every field's new state.\n\nSame response shape as the `GET`, so the screen re-renders its source\nchips from this reply rather than issuing a second request.",
+        "operationId": "write_settings_api_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SettingField"
+                  },
+                  "type": "array",
+                  "title": "Response Write Settings Api Settings Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Read Run",
+        "operationId": "read_run_api_runs__run_id__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/topics": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Read Ranking",
+        "operationId": "read_ranking_api_runs__run_id__topics_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RankedTopic"
+                  },
+                  "title": "Response Read Ranking Api Runs  Run Id  Topics Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/topics/{topic_id}": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Read Topic",
+        "operationId": "read_topic_api_runs__run_id__topics__topic_id__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "topic_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Topic Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopicDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/log": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Read Log",
+        "operationId": "read_log_api_runs__run_id__log_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "verbose",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Verbose"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LogLine"
+                  },
+                  "title": "Response Read Log Api Runs  Run Id  Log Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/renders/{render_id}": {
+      "get": {
+        "tags": [
+          "renders"
+        ],
+        "summary": "Read Render",
+        "operationId": "read_render_api_renders__render_id__get",
+        "parameters": [
+          {
+            "name": "render_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Render Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderRecord"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "renders"
+        ],
+        "summary": "Remove Render",
+        "description": "204 and no body. The row goes first, then both files.\n\nA render whose PNG is already missing still deletes cleanly: the row is\nwhat makes it exist, and the end state is the same either way.\n\nThe meme count every screen shows is `COUNT(*)` over `renders` at query\ntime, so nothing else has to be told this happened \u2014 which is the\nreason that count is not a column.",
+        "operationId": "remove_render_api_renders__render_id__delete",
+        "parameters": [
+          {
+            "name": "render_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Render Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/renders/{render_id}/image": {
+      "get": {
+        "tags": [
+          "renders"
+        ],
+        "summary": "Read Image",
+        "operationId": "read_image_api_renders__render_id__image_get",
+        "parameters": [
+          {
+            "name": "render_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Render Id"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "full",
+                "thumb"
+              ],
+              "type": "string",
+              "default": "full",
+              "title": "Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/topics": {
+      "get": {
+        "tags": [
+          "topics"
+        ],
+        "summary": "Read Index",
+        "operationId": "read_index_api_topics_get",
+        "parameters": [
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 6,
+              "title": "Window"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "trending",
+                    "saturating",
+                    "cooling",
+                    "stale"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopicIndex"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config/options": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Read Options",
+        "operationId": "read_options_api_config_options_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigOptions"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ActiveRuns": {
+        "properties": {
+          "current": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current"
+          },
+          "queued": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Queued"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "current",
+          "queued"
+        ],
+        "title": "ActiveRuns"
+      },
+      "AutoOrigin": {
+        "properties": {
+          "provenance": {
+            "type": "string",
+            "const": "auto",
+            "title": "Provenance",
+            "default": "auto"
+          },
+          "rationale": {
+            "type": "string",
+            "title": "Rationale"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "rationale"
+        ],
+        "title": "AutoOrigin",
+        "description": "A render the model briefed: it chose the template and said why."
+      },
+      "ConfigOptions": {
+        "properties": {
+          "models": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Models"
+          },
+          "platforms": {
+            "items": {
+              "$ref": "#/components/schemas/PlatformOption"
+            },
+            "type": "array",
+            "title": "Platforms"
+          },
+          "templates": {
+            "items": {
+              "$ref": "#/components/schemas/TemplateOption"
+            },
+            "type": "array",
+            "title": "Templates"
+          },
+          "defaults": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Defaults"
+          },
+          "anthropic_key_present": {
+            "type": "boolean",
+            "title": "Anthropic Key Present"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "models",
+          "platforms",
+          "templates",
+          "defaults",
+          "anthropic_key_present"
+        ],
+        "title": "ConfigOptions",
+        "description": "`anthropic_key_present` is a boolean and the key itself is never\nreturned, in any form."
+      },
+      "Dossier": {
+        "properties": {
+          "what_happened": {
+            "type": "string",
+            "title": "What Happened"
+          },
+          "key_entities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Key Entities"
+          },
+          "conversation_summary": {
+            "type": "string",
+            "title": "Conversation Summary"
+          },
+          "conversation_register": {
+            "$ref": "#/components/schemas/Register"
+          },
+          "secondary_registers": {
+            "items": {
+              "$ref": "#/components/schemas/Register"
+            },
+            "type": "array",
+            "title": "Secondary Registers"
+          },
+          "event_sentiment": {
+            "$ref": "#/components/schemas/Sentiment"
+          },
+          "meme_potential": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meme Potential"
+          },
+          "recurring_phrases": {
+            "items": {
+              "$ref": "#/components/schemas/Phrase"
+            },
+            "type": "array",
+            "title": "Recurring Phrases"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "what_happened",
+          "conversation_summary",
+          "conversation_register",
+          "event_sentiment"
+        ],
+        "title": "Dossier",
+        "description": "A model-generated, distilled summary of a trend"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "IndexedTopic": {
+        "properties": {
+          "topic": {
+            "$ref": "#/components/schemas/TopicRow"
+          },
+          "run_count": {
+            "type": "integer",
+            "title": "Run Count"
+          },
+          "render_count": {
+            "type": "integer",
+            "title": "Render Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "topic",
+          "run_count",
+          "render_count"
+        ],
+        "title": "IndexedTopic",
+        "description": "One card in the topics index.\n\n`run_count` is how many runs in the window carried this topic, keyed on\nits label slug \u2014 `SEEN IN 3 RUNS` on the card, or `NEW THIS RUN` at one."
+      },
+      "LLMGeneration": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "llm",
+            "title": "Mode",
+            "default": "llm"
+          },
+          "template_id": {
+            "type": "string",
+            "title": "Template Id"
+          },
+          "count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 1.0,
+            "title": "Count",
+            "default": 1
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "template_id"
+        ],
+        "title": "LLMGeneration",
+        "description": "Ask the model to write `count` briefs against one named template.\n\nThe template is named rather than chosen, because the panel already\nmade that choice. The model writes captions for it and explains them."
+      },
+      "LogLine": {
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "title": "Seq"
+          },
+          "logged_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Logged At"
+          },
+          "level": {
+            "type": "string",
+            "title": "Level"
+          },
+          "logger": {
+            "type": "string",
+            "title": "Logger"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "seq",
+          "logged_at",
+          "level",
+          "logger",
+          "message"
+        ],
+        "title": "LogLine",
+        "description": "One line of a run's log.\n\n`seq` orders lines within a run: two lines can share a timestamp at the\nresolution the handler records, and the live log's ordering has to be\ntotal."
+      },
+      "ManualGeneration": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "manual",
+            "title": "Mode",
+            "default": "manual"
+          },
+          "template_id": {
+            "type": "string",
+            "title": "Template Id"
+          },
+          "caption_slots": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Caption Slots"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "template_id",
+          "caption_slots"
+        ],
+        "title": "ManualGeneration",
+        "description": "Render captions a person typed.\n\nNo `count`: the captions describe exactly one meme, and a count beside\nthem would be a representable state with no meaning. No model call, so\nnothing to explain either \u2014 the row's `ManualOrigin` has no rationale\nfield at all."
+      },
+      "ManualOrigin": {
+        "properties": {
+          "provenance": {
+            "type": "string",
+            "const": "manual",
+            "title": "Provenance",
+            "default": "manual"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ManualOrigin",
+        "description": "A render written by hand. No model call, so no choice to explain."
+      },
+      "Phrase": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "occurrences": {
+            "type": "integer",
+            "title": "Occurrences"
+          },
+          "distinct_authors": {
+            "type": "integer",
+            "title": "Distinct Authors"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "text",
+          "occurrences",
+          "distinct_authors"
+        ],
+        "title": "Phrase",
+        "description": "A repeated phrase detected in items relating to a trending topic.\n\nA phrase is stored alongside the number of times it was used and the number of\ndistinct authors that used it. This is calculated deterministically, rather than\nbeing model-generated, to avoid unnecessary hallucinations.\n\nThe more times a phrase is used in a topic, the more likely it is to be a specific\npart of the zeitgeist, and therefore the more likely it is to be either part of a\ncaption, or a meme in its own right."
+      },
+      "PlatformOption": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "enabled"
+        ],
+        "title": "PlatformOption",
+        "description": "`enabled` is False for the dormant platforms \u2014 Lemmy and Wikipedia\nhave code and tests but no live stage consumes a flat item list, and\n`Settings` rejects them. Reported rather than hidden so the screen can\nsay why they are unavailable."
+      },
+      "QueuedRun": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "position": {
+            "type": "integer",
+            "title": "Position"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "position"
+        ],
+        "title": "QueuedRun",
+        "description": "`position` 0 means executing now; higher means waiting behind that\nmany runs, which is what the \"queues it behind\" notice reads."
+      },
+      "RankedTopic": {
+        "properties": {
+          "topic": {
+            "$ref": "#/components/schemas/TopicRow"
+          },
+          "render_count": {
+            "type": "integer",
+            "title": "Render Count"
+          },
+          "above_cut": {
+            "type": "boolean",
+            "title": "Above Cut"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "topic",
+          "render_count",
+          "above_cut"
+        ],
+        "title": "RankedTopic",
+        "description": "One row of the ranking list.\n\n`above_cut` is computed from the run's frozen `top_count` rather than\nleft to the client: the screen draws rows below the cut dashed and\ndimmed with a generate link, so the rule is load-bearing."
+      },
+      "Register": {
+        "type": "string",
+        "enum": [
+          "tribute",
+          "mourning",
+          "delight",
+          "outrage",
+          "dunking",
+          "gallows",
+          "riffing",
+          "awe",
+          "alarm",
+          "debate",
+          "resignation"
+        ],
+        "title": "Register",
+        "description": "The posture people are taking towards an event.\n\nThis is distinct from how the event itself feels. A grim event can be treated with\ngallows humor or with sincere mourning, and the register captures that difference."
+      },
+      "RenderRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "topic_id": {
+            "type": "string",
+            "title": "Topic Id"
+          },
+          "template_id": {
+            "type": "string",
+            "title": "Template Id"
+          },
+          "caption_slots": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Caption Slots"
+          },
+          "origin": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AutoOrigin"
+              },
+              {
+                "$ref": "#/components/schemas/ManualOrigin"
+              }
+            ],
+            "title": "Origin",
+            "discriminator": {
+              "propertyName": "provenance",
+              "mapping": {
+                "auto": "#/components/schemas/AutoOrigin",
+                "manual": "#/components/schemas/ManualOrigin"
+              }
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "generating",
+              "ready",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "run_id",
+          "topic_id",
+          "template_id",
+          "caption_slots",
+          "origin",
+          "status",
+          "error",
+          "created_at"
+        ],
+        "title": "RenderRecord",
+        "description": "One rendered meme. The database is authoritative for whether it exists;\nthe PNG and its thumbnail live at `output/<run_id>/renders/<id>.png`.\n\nWhile `status` is `\"generating\"`, `caption_slots` and `origin`'s\n`rationale` (on `AutoOrigin`) are not yet written \u2014 they hold\nplaceholder values until the job finishes drawing this render \u2014 and\nmust not be read as its real captions or the model's real reasoning."
+      },
+      "ReplyOut": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "like_count": {
+            "type": "integer",
+            "title": "Like Count"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "text",
+          "like_count",
+          "created_at"
+        ],
+        "title": "ReplyOut",
+        "description": "One reply, as the dossier shows it.\n\nNo author, handle or avatar. `Reply.author_key` exists only to count the\ndistinct accounts behind a repeated phrase; the project stores no\npersonal data and an API that returned it would undo that."
+      },
+      "ResumeBody": {
+        "properties": {
+          "stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Stage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "template_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ResumeBody",
+        "description": "`stage` omitted means the computed resume point \u2014 the button posts no\nstage. `template_ids` narrows the library for this resume only, which is\nthe tuning loop: edit a manifest, re-render the same frozen topics."
+      },
+      "RunActionAck": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "requested": {
+            "type": "string",
+            "enum": [
+              "stop",
+              "abort"
+            ],
+            "title": "Requested"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "requested"
+        ],
+        "title": "RunActionAck",
+        "description": "Acknowledges `POST /{run_id}/stop` and `/abort`.\n\nBoth endpoints returned a bare `dict[str, str]`, unlike every other\nendpoint in the project, which declares a `response_model`. Phase 5\ngenerates a TypeScript client from this OpenAPI schema, and two\nundeclared response bodies out of fifteen endpoints is a client-visible\nhole this closes."
+      },
+      "RunConfig": {
+        "properties": {
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
+          "trend_limit": {
+            "type": "integer",
+            "title": "Trend Limit"
+          },
+          "posts_per_trend": {
+            "type": "integer",
+            "title": "Posts Per Trend"
+          },
+          "top_count": {
+            "type": "integer",
+            "title": "Top Count"
+          },
+          "meme_potential_weight": {
+            "type": "number",
+            "title": "Meme Potential Weight"
+          },
+          "phrase_min_authors": {
+            "type": "integer",
+            "title": "Phrase Min Authors"
+          },
+          "distil_char_budget": {
+            "type": "integer",
+            "title": "Distil Char Budget"
+          },
+          "distil_concurrency": {
+            "type": "integer",
+            "title": "Distil Concurrency"
+          },
+          "llm_provider": {
+            "type": "string",
+            "title": "Llm Provider"
+          },
+          "llm_model": {
+            "type": "string",
+            "title": "Llm Model"
+          },
+          "template_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "sources",
+          "trend_limit",
+          "posts_per_trend",
+          "top_count",
+          "meme_potential_weight",
+          "phrase_min_authors",
+          "distil_char_budget",
+          "distil_concurrency",
+          "llm_provider",
+          "llm_model",
+          "template_ids"
+        ],
+        "title": "RunConfig",
+        "description": "The settings a run used, frozen at its start.\n\nA copy rather than a reference: run detail's config line and the \"Re-run\nconfig\" action must show what the run actually used, which is not\nrecoverable from a `.env` that has since been edited."
+      },
+      "RunDetail": {
+        "properties": {
+          "run": {
+            "$ref": "#/components/schemas/RunRecordRow"
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/StageRecord"
+            },
+            "type": "array",
+            "title": "Stages"
+          },
+          "resume_stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Stage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run",
+          "stages",
+          "resume_stage"
+        ],
+        "title": "RunDetail",
+        "description": "One run's header: what it was configured with, how its stages went,\nand where a resume would start."
+      },
+      "RunError": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "stage": {
+            "$ref": "#/components/schemas/Stage"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "message",
+          "stage"
+        ],
+        "title": "RunError",
+        "description": "Why a run failed, and where.\n\n`kind` is the exception class name rather than the instance, because the\nRuns screen renders it as a label \u2014 \"RenderError in generate\"."
+      },
+      "RunPage": {
+        "properties": {
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunSummary"
+            },
+            "type": "array",
+            "title": "Runs"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "runs",
+          "next_cursor"
+        ],
+        "title": "RunPage",
+        "description": "One page of runs. `next_cursor` is None on the last page."
+      },
+      "RunRecordRow": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "ok",
+              "failed",
+              "aborted",
+              "interrupted"
+            ],
+            "title": "Status"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "config": {
+            "$ref": "#/components/schemas/RunConfig"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "item_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Count"
+          },
+          "trends_found": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trends Found"
+          },
+          "topics_kept": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topics Kept"
+          },
+          "phrases_found": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phrases Found"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "status",
+          "started_at",
+          "finished_at",
+          "config",
+          "error",
+          "item_count",
+          "trends_found",
+          "topics_kept",
+          "phrases_found"
+        ],
+        "title": "RunRecordRow",
+        "description": "A row of `run_records`, read back.\n\nThe counts are `| None` because they are written when the run finishes;\na run still in flight has not counted anything yet."
+      },
+      "RunSummary": {
+        "properties": {
+          "run": {
+            "$ref": "#/components/schemas/RunRecordRow"
+          },
+          "topic_labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Topic Labels"
+          },
+          "render_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Render Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run",
+          "topic_labels",
+          "render_ids"
+        ],
+        "title": "RunSummary",
+        "description": "One row of the Runs list.\n\n`topic_labels` and `render_ids` are joins the row needs and the run\nrecord does not carry: column two is the titles, column four the\nthumbnails."
+      },
+      "Sentiment": {
+        "type": "string",
+        "enum": [
+          "cute",
+          "heartwarming",
+          "funny",
+          "awe",
+          "schadenfreude",
+          "outrage",
+          "sad",
+          "scary",
+          "gross",
+          "cringe",
+          "mundane"
+        ],
+        "title": "Sentiment",
+        "description": "How a given topic of event feels, separate from specific reactions to it.\n\nFixed taxonomy so results are comparable across runs."
+      },
+      "SettingField": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "title": "Value"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "settings",
+              "environment",
+              "dotenv",
+              "default"
+            ],
+            "title": "Source"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "source"
+        ],
+        "title": "SettingField",
+        "description": "One tunable field, its effective value, and which layer supplied it."
+      },
+      "SettingsUpdate": {
+        "properties": {
+          "values": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Values"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "values"
+        ],
+        "title": "SettingsUpdate",
+        "description": "An empty string clears that field's row so the `.env` fallback\napplies again, which is what \"Reset to .env\" does."
+      },
+      "Stage": {
+        "type": "string",
+        "enum": [
+          "ingest",
+          "analyse",
+          "evaluate",
+          "generate"
+        ],
+        "title": "Stage"
+      },
+      "StageRecord": {
+        "properties": {
+          "stage": {
+            "$ref": "#/components/schemas/Stage"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "ok",
+              "failed",
+              "skipped"
+            ],
+            "title": "Status"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "payload_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload Bytes"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "stage",
+          "status",
+          "started_at",
+          "finished_at",
+          "payload_bytes",
+          "summary"
+        ],
+        "title": "StageRecord",
+        "description": "One stage of one run.\n\nEvery `| None` here is a real state: a queued stage has not started, a\nrunning one has not finished, and a failed or skipped one wrote no\ncheckpoint."
+      },
+      "StartRunBody": {
+        "properties": {
+          "template_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Ids"
+          },
+          "overrides": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Overrides",
+            "default": {}
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "StartRunBody",
+        "description": "What `POST /api/runs` accepts.\n\n`overrides` is `str`-valued because the values come from a form and are\nvalidated by `Settings` when the worker freezes the run's config \u2014 the\none place that knows each field's real type."
+      },
+      "TemplateOption": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "slots": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Slots"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "slots"
+        ],
+        "title": "TemplateOption"
+      },
+      "TopicDetail": {
+        "properties": {
+          "topic": {
+            "$ref": "#/components/schemas/TopicRow"
+          },
+          "dossier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Dossier"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "score_components": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Score Components"
+          },
+          "replies": {
+            "items": {
+              "$ref": "#/components/schemas/ReplyOut"
+            },
+            "type": "array",
+            "title": "Replies"
+          },
+          "renders": {
+            "items": {
+              "$ref": "#/components/schemas/RenderRecord"
+            },
+            "type": "array",
+            "title": "Renders"
+          },
+          "recurrence": {
+            "$ref": "#/components/schemas/TopicRecurrence"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "topic",
+          "dossier",
+          "score_components",
+          "replies",
+          "renders",
+          "recurrence"
+        ],
+        "title": "TopicDetail",
+        "description": "One topic's dossier: the row, the prose, what people said, and what\nwas rendered from it."
+      },
+      "TopicIndex": {
+        "properties": {
+          "topics": {
+            "items": {
+              "$ref": "#/components/schemas/IndexedTopic"
+            },
+            "type": "array",
+            "title": "Topics"
+          },
+          "status_totals": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Status Totals"
+          },
+          "sentiment_totals": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Sentiment Totals"
+          },
+          "previous_sentiment_totals": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Previous Sentiment Totals"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "topics",
+          "status_totals",
+          "sentiment_totals",
+          "previous_sentiment_totals"
+        ],
+        "title": "TopicIndex",
+        "description": "The topics index and the aggregates drawn beside it.\n\n`status_totals` counts the whole window rather than the filtered list,\nbecause the filter chips show every bucket's total while one of them is\nactive. `previous_sentiment_totals` is the run before the window, which\nis what the mood line's \"versus the previous run\" compares against."
+      },
+      "TopicRecurrence": {
+        "properties": {
+          "run_count": {
+            "type": "integer",
+            "title": "Run Count"
+          },
+          "first_seen_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen Run Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_count",
+          "first_seen_run_id"
+        ],
+        "title": "TopicRecurrence",
+        "description": "How often this topic has been seen, keyed on its label slug.\n\nA floor rather than a total: the slug fixes case and punctuation drift\nacross runs but not wording drift, so a relabelled topic reads as new."
+      },
+      "TopicRow": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "topic_id": {
+            "type": "string",
+            "title": "Topic Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "label_slug": {
+            "type": "string",
+            "title": "Label Slug"
+          },
+          "trend_status": {
+            "type": "string",
+            "enum": [
+              "trending",
+              "saturating",
+              "cooling",
+              "stale"
+            ],
+            "title": "Trend Status"
+          },
+          "event_sentiment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Sentiment"
+          },
+          "conversation_register": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Register"
+          },
+          "meme_potential": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meme Potential"
+          },
+          "trend_score": {
+            "type": "number",
+            "title": "Trend Score"
+          },
+          "final_score": {
+            "type": "number",
+            "title": "Final Score"
+          },
+          "final_rank": {
+            "type": "integer",
+            "title": "Final Rank"
+          },
+          "post_count": {
+            "type": "integer",
+            "title": "Post Count"
+          },
+          "top_phrase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top Phrase"
+          },
+          "top_phrase_authors": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top Phrase Authors"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id",
+          "topic_id",
+          "label",
+          "label_slug",
+          "trend_status",
+          "event_sentiment",
+          "conversation_register",
+          "meme_potential",
+          "trend_score",
+          "final_score",
+          "final_rank",
+          "post_count",
+          "top_phrase",
+          "top_phrase_authors"
+        ],
+        "title": "TopicRow",
+        "description": "One row of `run_topics`."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

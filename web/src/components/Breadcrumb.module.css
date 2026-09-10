@@ -1,0 +1,27 @@
+.trail {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-tight);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-35);
+  margin-bottom: 10px;
+}
+
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-tight);
+}
+
+.crumb a:hover {
+  color: var(--text-70);
+}
+
+.separator {
+  color: var(--text-30);
+}
+
+.current {
+  color: var(--text-55);
+}

@@ -28,3 +28,18 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run ty check
       - run: uv run pytest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # `ci` rather than `install`: it installs exactly what the lockfile
+      # says and fails when package.json has drifted from it, which is the
+      # same guarantee `uv sync --locked` gives on the Python side.
+      - run: npm --prefix web ci
+
+      - run: npm --prefix web run lint
+      - run: npm --prefix web run typecheck
+      - run: npm --prefix web test

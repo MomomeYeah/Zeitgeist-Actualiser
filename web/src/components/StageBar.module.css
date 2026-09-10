@@ -1,0 +1,17 @@
+.bar {
+  height: 3px;
+  border-radius: 2px;
+  width: 100%;
+}
+
+.accent {
+  background: linear-gradient(
+    90deg,
+    var(--accent) var(--fill, 100%),
+    rgba(255, 255, 255, 0.12) var(--fill, 100%)
+  );
+}
+
+.muted {
+  background: var(--border);
+}
