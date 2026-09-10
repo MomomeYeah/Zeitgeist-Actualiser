@@ -1,0 +1,124 @@
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.block {
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-log);
+  /* The browser's own scroll anchoring fights the pin-to-bottom logic
+     exactly when it matters — when lines are being appended. */
+  overflow-anchor: none;
+  /* Deliberately no `scroll-behavior: smooth`: lines can arrive faster
+     than a smooth scroll completes, and the view falls permanently
+     behind. */
+}
+
+.line {
+  display: flex;
+  gap: 10px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.9;
+}
+
+.logger {
+  flex: none;
+  color: inherit;
+  opacity: 0.7;
+}
+
+.message {
+  min-width: 0;
+  word-break: break-word;
+}
+
+.dim {
+  color: var(--text);
+  opacity: 0.4;
+}
+
+.mid {
+  color: var(--text);
+  opacity: 0.55;
+}
+
+.current {
+  color: var(--accent);
+}
+
+.warn {
+  color: var(--accent);
+}
+
+.empty {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.9;
+  color: var(--text-35);
+}
+
+.controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.following {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--accent-tint);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.toggle,
+.toggleOn {
+  padding: 4px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--text-55);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.toggleOn {
+  border-color: var(--accent-border);
+  background: var(--accent-tint);
+  color: var(--accent);
+}
