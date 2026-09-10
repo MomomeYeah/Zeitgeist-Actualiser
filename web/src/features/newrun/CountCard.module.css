@@ -1,0 +1,104 @@
+/* The one card with an accent border: this is the setting that changes
+   the output, so its border says so before anyone reads a single label. */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 17px 19px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-panel);
+  background: var(--accent-wash);
+}
+
+.explain {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-55);
+}
+
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap-tight);
+}
+
+.pill {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--chip-fill);
+  color: var(--text-70);
+  transition: background var(--transition), color var(--transition);
+}
+
+.pillOn {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* The fifth pill, a label wrapping a number input rather than a static
+   button: the presets cover what anyone picks in practice, and this is
+   here for the time they do not. */
+.custom {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  padding: 6px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--chip-fill);
+  color: var(--text-70);
+  transition: background var(--transition), color var(--transition);
+}
+
+.customOn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  padding: 6px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.input {
+  width: 34px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  color: inherit;
+}
+
+.input:focus {
+  outline: none;
+}
+
+.note {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-35);
+}
