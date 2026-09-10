@@ -4,6 +4,7 @@ import {
   formatBytes,
   formatClock,
   formatDuration,
+  formatElapsed,
   formatRelative,
   formatScore,
   shortRunId,
@@ -100,5 +101,28 @@ describe("shortRunId", () => {
 describe("formatClock", () => {
   it("renders the wall clock the Topics header ends with", () => {
     expect(formatClock("2026-08-29T14:02:00Z", "UTC")).toBe("14:02");
+  });
+});
+
+describe("formatElapsed", () => {
+  it("counts up from the start in minutes and seconds", () => {
+    expect(
+      formatElapsed("2026-08-29T09:00:00Z", new Date("2026-08-29T09:06:41Z")),
+    ).toBe("t+06:41");
+  });
+
+  it("keeps counting in minutes past an hour", () => {
+    // Not wrapped into hours on purpose: the whole job of this display is
+    // "how long has this been going", and `t+72:15` answers that faster
+    // than `t+1:12:15` does.
+    expect(
+      formatElapsed("2026-08-29T09:00:00Z", new Date("2026-08-29T10:12:15Z")),
+    ).toBe("t+72:15");
+  });
+
+  it("never counts backwards from a clock that is behind the server", () => {
+    expect(
+      formatElapsed("2026-08-29T09:00:00Z", new Date("2026-08-29T08:59:00Z")),
+    ).toBe("t+00:00");
   });
 });

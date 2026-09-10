@@ -68,3 +68,24 @@ export function formatScore(score: number | null | undefined, digits = 2): strin
 export function shortRunId(runId: string): string {
   return runId.length > 12 ? `…${runId.slice(-11)}` : runId;
 }
+
+/**
+ * `t+06:41` — how long a run has been going.
+ *
+ * Minutes are not wrapped into hours. The whole job of this display is
+ * answering "how long has this been going", and `t+72:15` answers it
+ * faster than `t+1:12:15` does.
+ *
+ * Clamped at zero: the client's clock and the server's need not agree, and
+ * a run that started "in the future" must read `t+00:00` rather than
+ * counting down.
+ */
+export function formatElapsed(startedAt: string, now: Date = new Date()): string {
+  const seconds = Math.max(
+    0,
+    Math.floor((now.getTime() - new Date(startedAt).getTime()) / 1000),
+  );
+  const minutes = Math.floor(seconds / 60);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `t+${pad(minutes)}:${pad(seconds % 60)}`;
+}
