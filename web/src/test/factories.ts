@@ -116,6 +116,8 @@ export function makeStageRecord(
     finishedAt?: string | null;
     payloadBytes?: number | null;
     summary?: string;
+    done?: number | null;
+    total?: number | null;
   } = {},
 ): StageRecord {
   return {
@@ -127,6 +129,8 @@ export function makeStageRecord(
     payload_bytes:
       options.payloadBytes === undefined ? 1_363_148 : options.payloadBytes,
     summary: options.summary ?? "25 trends, 750 posts",
+    done: options.done ?? null,
+    total: options.total ?? null,
   };
 }
 
