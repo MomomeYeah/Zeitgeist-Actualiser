@@ -138,6 +138,7 @@ export function makeRunDetail(
   options: {
     runId?: string;
     status?: RunStatus;
+    finishedAt?: string | null;
     error?: RunError | null;
     stages?: StageRecord[];
     resumeStage?: Stage | null;

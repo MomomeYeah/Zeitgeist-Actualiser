@@ -1,20 +1,39 @@
+import { useState } from "react";
 import { useParams } from "react-router-dom";
 
 import type { RankedTopic, RunDetail, StageRecord } from "@/api/types";
-import { useRanking, useRun } from "@/api/queries";
+import {
+  useActiveRun,
+  useRanking,
+  useRun,
+  useRunEvents,
+  useRunLog,
+} from "@/api/queries";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { MetaLine } from "@/components/MetaLine";
 import { QueryBoundary } from "@/components/QueryBoundary";
 import { StatusPill } from "@/components/StatusPill";
+import { LiveLog } from "@/features/runs/LiveLog";
 import { RankingList } from "@/features/runs/RankingList";
+import { RunActions } from "@/features/runs/RunActions";
 import { StageCards } from "@/features/runs/StageCards";
+import { activeStage } from "@/features/runs/progress";
 import { survivedFor } from "@/features/runs/survived";
-import { formatDuration, shortRunId } from "@/format";
+import { useNow } from "@/features/runs/useNow";
+import { formatClock, formatDuration, formatElapsed, shortRunId } from "@/format";
 
 import styles from "./RunDetailPage.module.css";
 
-/** Sources, the three fan-out numbers, the model, the duration. */
-function configLine(detail: RunDetail): string {
+/**
+ * Sources, the three fan-out numbers, the model, and either how long it
+ * took or when it started.
+ *
+ * A live run has no duration to report, and `formatDuration` correctly
+ * answers `—` for one. An em dash at the end of the config line reads as a
+ * missing value; `started 14:02` is what a run that has not finished
+ * actually knows about its own clock.
+ */
+function configLine(detail: RunDetail, live: boolean): string {
   const { run } = detail;
   const config = run.config;
   return [
@@ -23,7 +42,9 @@ function configLine(detail: RunDetail): string {
     `posts_per_trend ${config.posts_per_trend}`,
     `top_count ${config.top_count}`,
     config.llm_model,
-    formatDuration(run.started_at, run.finished_at),
+    live
+      ? `started ${formatClock(run.started_at)}`
+      : formatDuration(run.started_at, run.finished_at),
   ].join(" · ");
 }
 
@@ -43,65 +64,108 @@ function everyBriefFailed(stages: StageRecord[], ranking: RankedTopic[]): boolea
   ) {
     return false;
   }
-  return (
-    ranking.length > 0 &&
-    ranking.every((entry) => entry.render_count === 0)
-  );
+  return ranking.length > 0 && ranking.every((entry) => entry.render_count === 0);
 }
 
 export function RunDetailPage() {
   const { runId } = useParams();
   const run = useRun(runId);
   const ranking = useRanking(runId);
+  const active = useActiveRun();
+  const [verbose, setVerbose] = useState(false);
+
+  // The run's own row, not `active`: a run that has just ended is no longer
+  // current, and the screen must stop following it the moment its status
+  // settles rather than one poll later. `active` is still read, because a
+  // queued run's row also says `running` and only `active.queued` tells the
+  // two apart for the sidebar — this screen treats both as live, which is
+  // right: a queued run has an open stream and a working abort.
+  const live = run.data?.run.status === "running";
+  const streamed = useRunEvents(runId, live);
+  const history = useRunLog(runId, verbose, !live);
+  const now = useNow(live);
 
   return (
     <QueryBoundary query={run} missing="No such run.">
-      {(detail) => (
-        <div className={styles.page}>
-          <Breadcrumb
-            trail={[
-              { label: "Runs", to: "/runs" },
-              // Shortened rather than the mockup's full id: the header two
-              // lines down already shows it in full, and `findByText` (and
-              // a reader's eye) needs the run id to appear once, not twice,
-              // in identical text.
-              { label: shortRunId(detail.run.run_id) },
-            ]}
-          />
+      {(detail) => {
+        const current = activeStage(detail.stages);
+        const queued = active.data?.queued.includes(detail.run.run_id) ?? false;
+        return (
+          <div className={styles.page}>
+            <Breadcrumb
+              trail={[
+                { label: "Runs", to: "/runs" },
+                // Shortened rather than the mockup's full id: the header
+                // two lines down already shows it in full, and `findByText`
+                // (and a reader's eye) needs the run id to appear once, not
+                // twice, in identical text.
+                { label: shortRunId(detail.run.run_id) },
+              ]}
+            />
 
-          <header className={styles.header}>
-            <div className={styles.identity}>
-              <StatusPill status={detail.run.status} />
-              <span className={styles.runId}>{detail.run.run_id}</span>
-            </div>
-            <MetaLine>{configLine(detail)}</MetaLine>
-            {detail.run.error !== null && (
-              <p className={styles.error}>
-                {detail.run.error.kind} in {detail.run.error.stage} —{" "}
-                {detail.run.error.message} · {survivedFor(detail.run.error.stage)}
-              </p>
-            )}
-          </header>
-
-          <StageCards stages={detail.stages} />
-
-          <QueryBoundary query={ranking} missing="No such run.">
-            {(rows) =>
-              rows.length === 0 ? (
-                <p className={styles.noRanking}>
-                  This run wrote no ranking — it did not reach evaluate.
+            <header className={styles.header}>
+              <div className={styles.headRow}>
+                <div className={styles.identity}>
+                  <StatusPill status={detail.run.status} />
+                  <span className={styles.runId}>{detail.run.run_id}</span>
+                  {live && (
+                    <span className={styles.elapsed}>
+                      {formatElapsed(detail.run.started_at, now)}
+                    </span>
+                  )}
+                </div>
+                <RunActions detail={detail} live={live} />
+              </div>
+              <MetaLine>{configLine(detail, live)}</MetaLine>
+              {queued && (
+                <p className={styles.queued}>
+                  Waiting behind the run in flight. Nothing has started yet.
                 </p>
-              ) : (
-                <RankingList
-                  ranking={rows}
-                  topCount={detail.run.config.top_count}
-                  everyBriefFailed={everyBriefFailed(detail.stages, rows)}
-                />
-              )
-            }
-          </QueryBoundary>
-        </div>
-      )}
+              )}
+              {detail.run.error !== null && (
+                <p className={styles.error}>
+                  {detail.run.error.kind} in {detail.run.error.stage} —{" "}
+                  {detail.run.error.message} · {survivedFor(detail.run.error.stage)}
+                </p>
+              )}
+            </header>
+
+            <StageCards stages={detail.stages} />
+
+            <QueryBoundary query={ranking} missing="No such run.">
+              {(rows) =>
+                rows.length === 0 ? (
+                  live ? (
+                    <RankingList
+                      ranking={[]}
+                      topCount={detail.run.config.top_count}
+                      everyBriefFailed={false}
+                      distilling={current === "ingest" || current === "analyse"}
+                    />
+                  ) : (
+                    <p className={styles.noRanking}>
+                      This run wrote no ranking — it did not reach evaluate.
+                    </p>
+                  )
+                ) : (
+                  <RankingList
+                    ranking={rows}
+                    topCount={detail.run.config.top_count}
+                    everyBriefFailed={everyBriefFailed(detail.stages, rows)}
+                  />
+                )
+              }
+            </QueryBoundary>
+
+            <LiveLog
+              lines={live ? streamed : (history.data ?? [])}
+              live={live}
+              verbose={verbose}
+              onVerboseChange={setVerbose}
+            />
+          </div>
+        );
+      }}
     </QueryBoundary>
   );
 }

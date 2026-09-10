@@ -1,10 +1,15 @@
-import { screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { RankedTopic, RunDetail } from "@/api/types";
 import { RunDetailPage } from "@/features/runs/RunDetailPage";
+import { FakeEventSource } from "@/test/eventsource";
 import {
+  makeActiveRuns,
+  makeLogLine,
+  makeQueuedRun,
   makeRankedTopic,
   makeRunDetail,
   makeStageRecord,
@@ -16,8 +21,13 @@ const RUN_ID = "20260829T090000Z";
 
 function serve(detail: RunDetail, ranking: RankedTopic[]) {
   server.use(
+    // `/api/runs/active` must be registered before `/api/runs/:runId`: MSW
+    // matches handlers in registration order, and `:runId` would otherwise
+    // swallow the literal `active` segment as a run id.
+    http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
     http.get("/api/runs/:runId", () => HttpResponse.json(detail)),
     http.get("/api/runs/:runId/topics", () => HttpResponse.json(ranking)),
+    http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
   );
 }
 
@@ -301,12 +311,14 @@ describe("RunDetailPage", () => {
 
   it("says which run is missing rather than showing an empty page", async () => {
     server.use(
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
       http.get("/api/runs/:runId", () =>
         HttpResponse.json({ detail: "No such run" }, { status: 404 }),
       ),
       http.get("/api/runs/:runId/topics", () =>
         HttpResponse.json({ detail: "No such run" }, { status: 404 }),
       ),
+      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
     );
 
     renderPage();
@@ -324,5 +336,392 @@ describe("RunDetailPage", () => {
       "href",
       "/runs",
     );
+  });
+
+  it("marks the running stage and counts it", async () => {
+    server.use(
+      http.get("/api/runs/active", () =>
+        HttpResponse.json(makeActiveRuns({ current: "20260829T090000Z" })),
+      ),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(
+          makeRunDetail({
+            status: "running",
+            stages: [
+              makeStageRecord({ stage: "ingest" }),
+              makeStageRecord({
+                stage: "analyse",
+                status: "running",
+                finishedAt: null,
+                payloadBytes: null,
+                summary: "airport cat",
+                done: 17,
+                total: 25,
+              }),
+            ],
+          }),
+        ),
+      ),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
+    );
+
+    renderWithProviders(<RunDetailPage />, {
+      route: "/runs/20260829T090000Z",
+      path: "/runs/:runId",
+    });
+
+    expect(await screen.findByText("17 / 25")).toBeInTheDocument();
+    expect(screen.getByText("airport cat")).toBeInTheDocument();
+  });
+
+  it("shows no checkpoint size for a stage that has not written one", async () => {
+    // `evidence · —` reads as a size that went missing. `evidence` alone
+    // reads as a checkpoint not yet written, which is what is true.
+    server.use(
+      http.get("/api/runs/active", () =>
+        HttpResponse.json(makeActiveRuns({ current: "20260829T090000Z" })),
+      ),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(
+          makeRunDetail({
+            status: "running",
+            stages: [
+              makeStageRecord({
+                stage: "ingest",
+                status: "running",
+                finishedAt: null,
+                payloadBytes: null,
+              }),
+            ],
+          }),
+        ),
+      ),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
+    );
+
+    renderWithProviders(<RunDetailPage />, {
+      route: "/runs/20260829T090000Z",
+      path: "/runs/:runId",
+    });
+
+    expect(await screen.findByText("evidence")).toBeInTheDocument();
+    expect(screen.queryByText(/evidence · /)).not.toBeInTheDocument();
+  });
+
+  /** Every handler a live run's detail page asks for. */
+  function liveRun(overrides: Partial<Parameters<typeof makeRunDetail>[0]> = {}) {
+    return [
+      http.get("/api/runs/active", () =>
+        HttpResponse.json(makeActiveRuns({ current: "20260829T140200Z" })),
+      ),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(
+          makeRunDetail({
+            runId: "20260829T140200Z",
+            status: "running",
+            finishedAt: null,
+            stages: [
+              makeStageRecord({ stage: "ingest" }),
+              makeStageRecord({
+                stage: "analyse",
+                status: "running",
+                finishedAt: null,
+                done: 17,
+                total: 25,
+              }),
+            ],
+            ...overrides,
+          }),
+        ),
+      ),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      // Registered even though a live run never reads it: `live` is derived
+      // from `run.data`, which is still undefined on the render that fires
+      // `useRunLog`'s effect, so it briefly mounts enabled before the next
+      // render disables it. Without a handler here that request is
+      // unhandled, and MSW logs and fails it even though the page never
+      // consumes the response.
+      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
+    ];
+  }
+
+  function renderDetail(runId = "20260829T140200Z") {
+    return renderWithProviders(<RunDetailPage />, {
+      route: `/runs/${runId}`,
+      path: "/runs/:runId",
+    });
+  }
+
+  it("counts up while the run is live, and says when it started", async () => {
+    // The fixture's `started_at` is frozen, so the clock it is measured
+    // against has to be too: comparing a fixed date to the real `new Date()`
+    // makes the rendered elapsed time a function of the day the suite runs,
+    // and a `/^t\+\d\d:\d\d$/` shape assertion would pass just as happily for
+    // an elapsed computed off the wrong field or with the sign flipped.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-08-29T09:06:41Z"));
+    try {
+      server.use(...liveRun());
+
+      renderDetail();
+
+      expect(await screen.findByText("RUNNING")).toBeInTheDocument();
+      expect(screen.getByText("t+06:41")).toBeInTheDocument();
+      expect(screen.getByText(/started 09:00/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says a queued run has not started", async () => {
+    // A queued run's row says `running` too — `enqueue` opens it that way —
+    // so `active.queued` is the only thing that separates the two, and this
+    // notice is the only place the screen reads it.
+    server.use(
+      http.get("/api/runs/active", () =>
+        HttpResponse.json(
+          makeActiveRuns({
+            current: "20260829T140200Z",
+            queued: ["20260829T150000Z"],
+          }),
+        ),
+      ),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(
+          makeRunDetail({ runId: "20260829T150000Z", status: "running", stages: [] }),
+        ),
+      ),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      // See `liveRun`'s comment: the log query is briefly enabled before
+      // `live` settles, even here.
+      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
+    );
+
+    renderDetail("20260829T150000Z");
+
+    expect(
+      await screen.findByText(
+        "Waiting behind the run in flight. Nothing has started yet.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("does not call the run in flight queued", async () => {
+    // The negative case, because a notice rendered unconditionally — or from
+    // an inverted condition — would pass the test above while telling
+    // everyone watching a live run that nothing had started.
+    server.use(...liveRun());
+
+    renderDetail();
+    await screen.findByText("RUNNING");
+
+    expect(
+      screen.queryByText(/Waiting behind the run in flight/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("offers stop and abort while live, and neither afterwards", async () => {
+    server.use(...liveRun());
+    renderDetail();
+
+    expect(
+      await screen.findByRole("button", { name: "Stop after this stage" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Abort" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "New run" })).not.toBeInTheDocument();
+  });
+
+  it("stop needs no confirmation, because it is not destructive", async () => {
+    const user = userEvent.setup();
+    let stopped = "";
+    server.use(
+      ...liveRun(),
+      http.post("/api/runs/:runId/stop", ({ params }) => {
+        stopped = String(params.runId);
+        return HttpResponse.json(
+          { run_id: stopped, requested: "stop" },
+          { status: 202 },
+        );
+      }),
+    );
+    renderDetail();
+
+    await user.click(
+      await screen.findByRole("button", { name: "Stop after this stage" }),
+    );
+
+    await waitFor(() => expect(stopped).toBe("20260829T140200Z"));
+  });
+
+  it("abort asks first, and aborts only when told twice", async () => {
+    const user = userEvent.setup();
+    let aborted = "";
+    server.use(
+      ...liveRun(),
+      http.post("/api/runs/:runId/abort", ({ params }) => {
+        aborted = String(params.runId);
+        return HttpResponse.json(
+          { run_id: aborted, requested: "abort" },
+          { status: 202 },
+        );
+      }),
+    );
+    renderDetail();
+
+    await user.click(await screen.findByRole("button", { name: "Abort" }));
+    expect(screen.getByText("Abort run?")).toBeInTheDocument();
+    expect(aborted).toBe("");
+
+    await user.click(screen.getByRole("button", { name: "yes" }));
+    await waitFor(() => expect(aborted).toBe("20260829T140200Z"));
+  });
+
+  it("streams the log while live", async () => {
+    server.use(...liveRun());
+    renderDetail();
+    await screen.findByText("RUNNING");
+
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    act(() =>
+      FakeEventSource.latest().emitLog([
+        makeLogLine({ logger: "zeitgeist.analysis.distil", message: "Distilled 'cat'" }),
+      ]),
+    );
+
+    expect(await screen.findByText("Distilled 'cat'")).toBeInTheDocument();
+  });
+
+  it("says the ranking is not decided yet while analyse is running", async () => {
+    // The order is set in evaluate, so there is nothing honest to draw here
+    // until the stage ends. Saying so beats an empty section.
+    server.use(...liveRun());
+    renderDetail();
+
+    expect(
+      await screen.findByText("Distilling — the ranking appears when analyse finishes."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("final order is set in evaluate")).toBeInTheDocument();
+  });
+
+  it("reads a finished run's log from the server, and opens no stream", async () => {
+    server.use(
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+      http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      http.get("/api/runs/:runId/log", () =>
+        HttpResponse.json([makeLogLine({ message: "Fetched 25 trends" })]),
+      ),
+    );
+
+    renderDetail("20260829T090000Z");
+
+    expect(await screen.findByText("Fetched 25 trends")).toBeInTheDocument();
+    expect(FakeEventSource.instances).toHaveLength(0);
+  });
+
+  it("offers Re-run config and Resume once a run is over", async () => {
+    server.use(
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(makeRunDetail({ resumeStage: "generate" })),
+      ),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
+    );
+
+    renderDetail("20260829T090000Z");
+
+    expect(await screen.findByRole("link", { name: "New run" })).toHaveAttribute(
+      "href",
+      "/runs/new?from=20260829T090000Z",
+    );
+    expect(
+      screen.getByRole("button", { name: "Resume from generate" }),
+    ).toBeInTheDocument();
+  });
+
+  it("hides Resume entirely when there is nothing to resume from", async () => {
+    // A source outage: ingest returned nothing, so no checkpoint exists. The
+    // spec is explicit that the button is absent rather than disabled — a
+    // disabled control still says the action exists.
+    server.use(
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(
+          makeRunDetail({
+            status: "failed",
+            resumeStage: null,
+            error: { kind: "SourceError", message: "no trends returned", stage: "ingest" },
+          }),
+        ),
+      ),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
+    );
+
+    renderDetail("20260829T090000Z");
+
+    await screen.findByText("FAILED");
+    expect(screen.queryByRole("button", { name: /Resume/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "New run" })).toBeInTheDocument();
+  });
+
+  it("resumes from the computed stage without naming one", async () => {
+    // The button posts an empty body: `resume_stage` is the server's own
+    // computation, and a client that echoed it back could send a stale one.
+    const user = userEvent.setup();
+    let body: unknown = null;
+    server.use(
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(makeRunDetail({ resumeStage: "generate" })),
+      ),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
+      http.post("/api/runs/:runId/resume", async ({ request }) => {
+        body = await request.json();
+        return HttpResponse.json(makeQueuedRun({ runId: "20260829T090000Z" }), {
+          status: 202,
+        });
+      }),
+    );
+
+    renderDetail("20260829T090000Z");
+    await user.click(
+      await screen.findByRole("button", { name: "Resume from generate" }),
+    );
+
+    await waitFor(() => expect(body).toEqual({}));
+  });
+
+  it("reports a refused action rather than swallowing it", async () => {
+    // The 409 the server answers a double-clicked Resume with. Silence here
+    // would leave someone clicking a button that has already worked.
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(makeRunDetail({ resumeStage: "generate" })),
+      ),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
+      http.post("/api/runs/:runId/resume", () =>
+        HttpResponse.json(
+          { detail: "Run 20260829T090000Z is already queued or executing" },
+          { status: 409 },
+        ),
+      ),
+    );
+
+    renderDetail("20260829T090000Z");
+    await user.click(
+      await screen.findByRole("button", { name: "Resume from generate" }),
+    );
+
+    expect(
+      await screen.findByText("Run 20260829T090000Z is already queued or executing"),
+    ).toBeInTheDocument();
   });
 });
