@@ -273,15 +273,7 @@ RUN=$(curl -s -XPOST localhost:8000/api/runs -H 'content-type: application/json'
 curl -sN "localhost:8000/api/runs/$RUN/events"
 ```
 
-The API contract is complete as of this phase. Phase 5 generates its
-TypeScript types from the same schema:
-
-```bash
-npx openapi-typescript http://127.0.0.1:8000/openapi.json -o web/src/api/schema.ts
-```
-
-That is deliberately not run yet — there is no `web/` and no gate command
-that would check the result.
+The API contract is complete as of this phase.
 
 Phase 5 adds the browser half. Development is two processes:
 

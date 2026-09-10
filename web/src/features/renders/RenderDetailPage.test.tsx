@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import type { RenderRecord } from "@/api/types";
 import { RenderDetailPage } from "@/features/renders/RenderDetailPage";
+import { shortRunId } from "@/format";
 import { makeRenderRecord, makeTopicDetail } from "@/test/factories";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/server";
@@ -161,6 +162,25 @@ describe("RenderDetailPage", () => {
     expect(
       screen.queryByRole("link", { name: "Download PNG" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("shortens a long render id in the missing-image message", async () => {
+    // This is the one screen built to be deep-linked, so the most likely to
+    // be read by someone who did not arrive from a tile carrying its own
+    // short label — but a full 32-character id is still noise, not an
+    // identifier a person can hold onto.
+    const longId = "78b729fb698648339998828d14f29c45";
+    serve(makeRenderRecord({ id: longId }));
+
+    renderPage();
+
+    const image = await screen.findByRole("img");
+    fireEvent.error(image);
+
+    expect(
+      await screen.findByText(`Render ${shortRunId(longId)} has no image on disk`),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(longId)).not.toBeInTheDocument();
   });
 
   it("says which render is missing rather than showing an empty frame", async () => {

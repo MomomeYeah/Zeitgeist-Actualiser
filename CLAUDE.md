@@ -41,6 +41,11 @@ reviewer over every test in the plan and reports findings for the planner
 to apply. This gate is separate from the Definition of Done above — that
 one is machine-checked, this one is not.
 
+When a test and its component disagree, ask which is wrong on its own
+merits rather than which is easier to change. Scope the assertion only when
+both renderings are correct — if either is wrong for a reader, fix that
+instead.
+
 ## Toolchain
 
 - **uv** manages the environment. `uv.lock` pins exact versions; run

@@ -36,7 +36,13 @@ function configLine(detail: RunDetail): string {
  */
 function everyBriefFailed(stages: StageRecord[], ranking: RankedTopic[]): boolean {
   const generate = stages.find((stage) => stage.stage === "generate");
-  if (generate === undefined || generate.status === "queued") return false;
+  if (
+    generate === undefined ||
+    generate.status === "queued" ||
+    generate.status === "running"
+  ) {
+    return false;
+  }
   return (
     ranking.length > 0 &&
     ranking.every((entry) => entry.render_count === 0)

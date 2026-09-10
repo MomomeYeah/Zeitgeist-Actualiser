@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { AppLayout } from "@/app/AppLayout";
+import { AppRoutes } from "@/app/routes";
 import { renderWithProviders } from "@/test/render";
 
 describe("Sidebar", () => {
@@ -54,5 +55,18 @@ describe("Sidebar", () => {
       "aria-current",
       "page",
     );
+  });
+});
+
+describe("AppRoutes", () => {
+  it("renders an empty state with the sidebar for an unmatched URL", () => {
+    // No `path="*"` used to mean React Router rendered nothing for a
+    // mistyped URL — and because the layout route carries no path of its
+    // own, the sidebar vanished with it, leaving a blank page with no way
+    // back.
+    renderWithProviders(<AppRoutes />, { route: "/nowhere" });
+
+    expect(screen.getByRole("heading", { name: "Nothing here" })).toBeInTheDocument();
+    expect(screen.getByText("Zeitgeist")).toBeInTheDocument();
   });
 });

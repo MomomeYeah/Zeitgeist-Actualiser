@@ -1,6 +1,7 @@
 import { Route, Routes } from "react-router-dom";
 
 import { AppLayout } from "@/app/AppLayout";
+import { EmptyState } from "@/components/EmptyState";
 import { RenderDetailPage } from "@/features/renders/RenderDetailPage";
 import { RunDetailPage } from "@/features/runs/RunDetailPage";
 import { RunsPage } from "@/features/runs/RunsPage";
@@ -26,6 +27,15 @@ export function AppRoutes() {
           element={<RenderDetailPage />}
         />
         <Route path="/topics/:runId/:topicId" element={<TopicDetailPage />} />
+        <Route
+          path="*"
+          element={
+            <EmptyState
+              headline="Nothing here"
+              body="That address does not match any screen in this app."
+            />
+          }
+        />
       </Route>
     </Routes>
   );

@@ -82,3 +82,9 @@
 .generate {
   color: var(--contrast-light);
 }
+
+.memes {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}

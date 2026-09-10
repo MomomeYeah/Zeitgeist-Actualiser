@@ -30,6 +30,10 @@
   color: var(--text-40);
 }
 
+.recurrence {
+  /* No overrides — inherits font, size and colour from .head. */
+}
+
 .score {
   color: var(--accent);
 }

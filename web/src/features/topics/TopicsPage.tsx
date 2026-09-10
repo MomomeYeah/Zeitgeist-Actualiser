@@ -33,8 +33,8 @@ export function TopicsPage() {
         const trending = ordered.filter(
           (entry) => entry.topic.trend_status === "trending",
         );
-        const recent = ordered.filter((entry) =>
-          ["saturating", "cooling"].includes(entry.topic.trend_status),
+        const recent = ordered.filter(
+          (entry) => entry.topic.trend_status !== "trending",
         );
         const latestRun = runs.data?.runs[0];
         const noRunsAtAll = runs.isSuccess && runs.data.runs.length === 0;
@@ -48,9 +48,13 @@ export function TopicsPage() {
                   `${data.status_totals.trending ?? 0} trending`,
                   `${data.status_totals.saturating ?? 0} saturating`,
                   `${data.status_totals.cooling ?? 0} cooling`,
-                  latestRun === undefined
-                    ? "no runs yet"
-                    : `as of ${formatClock(latestRun.run.finished_at ?? latestRun.run.started_at)}`,
+                  ...(runs.isError
+                    ? []
+                    : [
+                        latestRun === undefined
+                          ? "no runs yet"
+                          : `as of ${formatClock(latestRun.run.finished_at ?? latestRun.run.started_at)}`,
+                      ]),
                 ].join(" · ")}
               </MetaLine>
             </header>

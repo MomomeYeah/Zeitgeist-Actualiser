@@ -36,6 +36,26 @@ describe("TopicsPage", () => {
     expect(screen.getByText(/9 trending · 6 saturating · 4 cooling/)).toBeInTheDocument();
   });
 
+  it("does not claim there are no runs when the runs request failed", async () => {
+    // An empty list and a broken server look identical without this, and
+    // "no runs yet" would be a lie about a database that is fine — the
+    // topics below are proof runs have happened.
+    server.use(
+      http.get("/api/topics", () => HttpResponse.json(makeTopicIndex())),
+      http.get("/api/runs", () =>
+        HttpResponse.json({ detail: "database is locked" }, { status: 500 }),
+      ),
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(makeTopicDetail()),
+      ),
+    );
+
+    renderWithProviders(<TopicsPage />);
+
+    expect(await screen.findByRole("heading", { name: "Right now" })).toBeInTheDocument();
+    expect(screen.queryByText(/no runs yet/)).not.toBeInTheDocument();
+  });
+
   it("heroes the highest-scoring topic, not the most recent one", async () => {
     serve(
       makeTopicIndex({
@@ -216,6 +236,28 @@ describe("TopicsPage", () => {
     const recent = screen.getByTestId("recently-trending");
     expect(within(trending).getByText("Trending one")).toBeInTheDocument();
     expect(within(recent).getByText("Cooling one")).toBeInTheDocument();
+  });
+
+  it("renders a stale topic in the second list when filtered for", async () => {
+    // The second list's predicate used to name only "saturating" and
+    // "cooling", so filtering for stale re-queried, got a stale topic back,
+    // and rendered nothing at all — the empty-state line never fired
+    // because `data.topics.length` was not zero.
+    serve(
+      makeTopicIndex({
+        topics: [
+          makeIndexedTopic({ topicId: "a", label: "Old meme", trendStatus: "stale" }),
+        ],
+      }),
+    );
+
+    renderWithProviders(<TopicsPage />);
+    await screen.findByRole("heading", { name: "Right now" });
+
+    await userEvent.click(screen.getByRole("button", { name: /stale 31/ }));
+
+    const recent = await screen.findByTestId("recently-trending");
+    expect(within(recent).getByText("Old meme")).toBeInTheDocument();
   });
 
   it("refetches with the status the filter chip names", async () => {
