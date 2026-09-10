@@ -156,4 +156,51 @@ describe("SettingsPage", () => {
       ),
     ).toBeInTheDocument();
   });
+
+  it("does not enable Save when a draft is only reformatted, not changed", async () => {
+    // "0.30" and 0.3 are the same number; sending it would pin a value
+    // that was never actually edited. Comparing as strings — what the plan
+    // originally specified — would treat this reformatting as a genuine
+    // change and both enable Save and send the field.
+    const user = userEvent.setup();
+    let sent: unknown = null;
+    server.use(
+      http.get("/api/settings", () => HttpResponse.json(makeSettingFields())),
+      http.put("/api/settings", async ({ request }) => {
+        sent = await request.json();
+        return HttpResponse.json(makeSettingFields());
+      }),
+    );
+
+    renderWithProviders(<SettingsPage />, { route: "/settings" });
+
+    const field = await screen.findByLabelText("meme_potential_weight");
+    await user.clear(field);
+    await user.type(field, "0.30");
+
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(sent).toBeNull();
+  });
+
+  it("disables Save until a field genuinely differs from its current value", async () => {
+    // Silent no-ops are worse than a disabled button: if nothing has
+    // changed, Save should say so up front rather than swallow the click.
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/settings", () => HttpResponse.json(makeSettingFields())),
+    );
+
+    renderWithProviders(<SettingsPage />, { route: "/settings" });
+
+    await screen.findByLabelText("phrase_min_authors");
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+
+    const field = screen.getByLabelText("phrase_min_authors");
+    await user.clear(field);
+    await user.type(field, "9");
+
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
 });

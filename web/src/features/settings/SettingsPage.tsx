@@ -10,19 +10,45 @@ import { CARDS, SETTING_KEYS } from "@/features/settings/fields";
 
 import styles from "./SettingsPage.module.css";
 
+/**
+ * Which drafts actually differ from what the server holds, as strings ready
+ * to send.
+ *
+ * The comparison is numeric, not textual: `held.get(key) !== value` on the
+ * raw strings — what the plan originally specified — treats a merely
+ * reformatted draft like "0.30" over a stored 0.3 as a change, which would
+ * send it and pin a value that was only ever a default. An empty draft (a
+ * box mid-edit) and a non-numeric one are excluded rather than compared:
+ * `Number("")` is `0`, which is exactly why the draft is held as a string
+ * in the first place, and this filter only decides what to send — the
+ * server is what validates real values.
+ */
+function changedValues(
+  fields: readonly SettingField[],
+  drafts: Record<string, string>,
+): Record<string, string> {
+  const held = new Map(fields.map((field) => [field.key, field.value]));
+  return Object.fromEntries(
+    Object.entries(drafts).filter(([key, draft]) => {
+      if (draft === "") return false;
+      const parsed = Number(draft);
+      return Number.isFinite(parsed) && held.get(key) !== parsed;
+    }),
+  );
+}
+
 export function SettingsPage() {
   const settings = useSettings();
   const save = useSaveSettings();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
 
-  function commit(fields: SettingField[]) {
+  function commit(changed: Record<string, string>) {
     // Only what was actually edited. Sending all seven would write a
     // settings row for every one of them, pinning six values that were
     // only ever defaults — and a later `.env` edit would then be invisible.
-    const held = new Map(fields.map((field) => [field.key, String(field.value)]));
-    const changed = Object.fromEntries(
-      Object.entries(drafts).filter(([key, value]) => held.get(key) !== value),
-    );
+    // `changed` is computed once by the caller and reused for the button's
+    // disabled state, so a no-op is never reachable from here anyway; the
+    // guard is just belt-and-suspenders.
     if (Object.keys(changed).length === 0) return;
     save.mutate({ values: changed }, { onSuccess: () => setDrafts({}) });
   }
@@ -40,6 +66,7 @@ export function SettingsPage() {
     <QueryBoundary query={settings} missing="No settings.">
       {(fields) => {
         const byKey = new Map(fields.map((field) => [field.key, field]));
+        const changed = changedValues(fields, drafts);
         return (
           <div className={styles.page}>
             <header className={styles.header}>
@@ -77,8 +104,8 @@ export function SettingsPage() {
                 <button
                   type="button"
                   className={styles.save}
-                  disabled={save.isPending}
-                  onClick={() => commit(fields)}
+                  disabled={save.isPending || Object.keys(changed).length === 0}
+                  onClick={() => commit(changed)}
                 >
                   Save
                 </button>
