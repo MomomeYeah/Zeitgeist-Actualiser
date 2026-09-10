@@ -1,14 +1,23 @@
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
 import { RunsPage } from "@/features/runs/RunsPage";
-import { makeRunPage, makeRunSummary } from "@/test/factories";
+import {
+  makeActiveRuns,
+  makeRunDetail,
+  makeRunPage,
+  makeRunSummary,
+  makeStageRecord,
+} from "@/test/factories";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/server";
 
 function servePage(page = makeRunPage()) {
-  server.use(http.get("/api/runs", () => HttpResponse.json(page)));
+  server.use(
+    http.get("/api/runs", () => HttpResponse.json(page)),
+    http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+  );
 }
 
 describe("RunsPage", () => {
@@ -50,7 +59,8 @@ describe("RunsPage", () => {
 
     renderWithProviders(<RunsPage />);
 
-    expect(await screen.findByRole("link")).toHaveAttribute(
+    const list = await screen.findByRole("list");
+    expect(within(list).getByRole("link")).toHaveAttribute(
       "href",
       "/runs/20260829T090000Z",
     );
@@ -183,6 +193,7 @@ describe("RunsPage", () => {
       http.get("/api/runs", () =>
         HttpResponse.json({ detail: "database is locked" }, { status: 500 }),
       ),
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
     );
 
     renderWithProviders(<RunsPage />);
@@ -214,5 +225,96 @@ describe("RunsPage", () => {
 
     expect(failedRow?.className).toContain("failed");
     expect(okRow?.className).not.toContain("failed");
+  });
+
+  it("pins the in-flight run above the list", async () => {
+    server.use(
+      http.get("/api/runs", () =>
+        HttpResponse.json(makeRunPage([makeRunSummary({ runId: "20260829T090000Z" })])),
+      ),
+      http.get("/api/runs/active", () =>
+        HttpResponse.json(makeActiveRuns({ current: "20260829T140200Z" })),
+      ),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(
+          makeRunDetail({
+            runId: "20260829T140200Z",
+            status: "running",
+            stages: [
+              makeStageRecord({ stage: "ingest" }),
+              makeStageRecord({
+                stage: "analyse",
+                status: "running",
+                finishedAt: null,
+                done: 17,
+                total: 25,
+              }),
+            ],
+          }),
+        ),
+      ),
+    );
+
+    renderWithProviders(<RunsPage />);
+
+    expect(await screen.findByText("RUNNING")).toBeInTheDocument();
+    expect(screen.getByText("20260829T140200Z")).toBeInTheDocument();
+
+    // Above the list, which is the whole point of the card: a run in
+    // flight is the thing you came to look at. Asserting only that it
+    // rendered would pass with it moved to the foot of the page.
+    const card = screen.getByRole("link", { name: /20260829T140200Z/ });
+    const list = screen.getByRole("list");
+    expect(
+      card.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // Four segments, filled from the stage records — `RunRow` draws no
+    // progressbar, so these are the card's own. 17 of 25 is 68%: the
+    // fixture's counters have to reach the DOM as a width, or the card
+    // says a stage is running without saying how far in.
+    expect(
+      screen.getAllByRole("progressbar").map((bar) => bar.getAttribute("aria-valuenow")),
+    ).toEqual(["100", "68", "0", "0"]);
+  });
+
+  it("draws no in-flight card while nothing is running", async () => {
+    server.use(
+      http.get("/api/runs", () => HttpResponse.json(makeRunPage())),
+      http.get("/api/runs/active", () =>
+        HttpResponse.json(makeActiveRuns({ current: null })),
+      ),
+    );
+
+    renderWithProviders(<RunsPage />);
+    await screen.findByRole("heading", { name: "Runs" });
+
+    expect(screen.queryByText("RUNNING")).not.toBeInTheDocument();
+  });
+
+  it("offers New run from the header", async () => {
+    server.use(
+      http.get("/api/runs", () => HttpResponse.json(makeRunPage())),
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+    );
+
+    renderWithProviders(<RunsPage />);
+
+    expect(await screen.findByRole("link", { name: "New run" })).toHaveAttribute(
+      "href",
+      "/runs/new",
+    );
+  });
+
+  it("offers New run from the empty state, which is the only thing to do there", async () => {
+    server.use(
+      http.get("/api/runs", () => HttpResponse.json(makeRunPage([]))),
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+    );
+
+    renderWithProviders(<RunsPage />);
+
+    expect(await screen.findByText("Nothing has run yet")).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "New run" })).toHaveLength(2);
   });
 });

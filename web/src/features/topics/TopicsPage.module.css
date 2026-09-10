@@ -8,6 +8,13 @@
   margin-bottom: 6px;
 }
 
+.titleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-section);
+}
+
 .title {
   font-size: 22px;
   font-weight: 800;
@@ -29,6 +36,21 @@
 .block,
 .filters {
   margin-top: 6px;
+}
+
+/* The handoff's `1fr 320px`: the mood bar wants the width, the strip does
+   not. */
+.bottom {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 18px;
+  align-items: start;
+}
+
+.runs {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
 }
 
 .cards {

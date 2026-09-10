@@ -1,0 +1,16 @@
+.button {
+  display: inline-block;
+  padding: 9px 16px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--on-accent);
+  transition: filter var(--transition);
+}
+
+.button:hover {
+  filter: brightness(0.94);
+}
