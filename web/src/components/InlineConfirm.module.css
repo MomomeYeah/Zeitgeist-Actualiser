@@ -1,6 +1,6 @@
 /* The handoff's abort confirmation: contrast at 10% fill, a contrast
    border, the question in contrast-light, and yes/no in mono 700/10
-   separated by a middle dot. 150ms ease-out, which is --transition. */
+   separated by a middle dot. 140ms ease-out, which is --transition. */
 .trigger {
   padding: 8px 14px;
   border: 1px solid var(--contrast-border-strong);

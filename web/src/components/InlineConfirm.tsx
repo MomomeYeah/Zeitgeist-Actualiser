@@ -27,10 +27,20 @@ export function InlineConfirm({
 }) {
   const [asking, setAsking] = useState(false);
   const cancel = useRef<HTMLButtonElement | null>(null);
+  const revertTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (asking) cancel.current?.focus();
   }, [asking]);
+
+  // The deferred check in `onBlur` below (relatedTarget: null) outlives a
+  // single render; clear it on unmount so it cannot call `setAsking` after
+  // this component is gone.
+  useEffect(() => {
+    return () => {
+      if (revertTimeout.current) clearTimeout(revertTimeout.current);
+    };
+  }, []);
 
   if (!asking) {
     return (
@@ -49,10 +59,40 @@ export function InlineConfirm({
   }
 
   function onBlur(event: FocusEvent<HTMLDivElement>) {
-    // Focus moving from `yes` to `no` is still inside the control, and must
-    // not close it — otherwise the keyboard path through this is unusable.
-    if (!event.relatedTarget || event.currentTarget.contains(event.relatedTarget)) return;
-    setAsking(false);
+    const container = event.currentTarget;
+    const { relatedTarget } = event;
+
+    if (relatedTarget) {
+      // The browser told us exactly where focus went — trust it outright.
+      // This is the real-world path for tabbing between `yes` and `no`: a
+      // genuine Tab keypress blurs and focuses in the same step, so
+      // `relatedTarget` correctly names the destination and there is
+      // nothing to defer.
+      if (!container.contains(relatedTarget)) setAsking(false);
+      return;
+    }
+
+    // `relatedTarget` is null. That is genuinely ambiguous on its own: it
+    // is what real browsers report whenever focus leaves to nowhere
+    // trackable — alt-tab, clicking the address bar, switching tabs — the
+    // case this revert exists for, so an abandoned confirm does not sit
+    // armed on the screen. But it is *also* what this test environment's
+    // Tab simulation reports for an ordinary in-control tab: with `no`
+    // autofocused as the last tabbable element in an isolated render,
+    // user-event's tab algorithm routes the first Tab through
+    // `document.body` as an end-of-tab-order sentinel before a second Tab
+    // reaches `yes` (see `getTabDestination.js`) — and jsdom reports that
+    // hop with a null `relatedTarget` too. Both cases look identical at
+    // the moment of this event, so guessing from this event alone is
+    // wrong either way. Defer and consult where focus actually settled: a
+    // real subsequent focus landing back inside the control (the sentinel
+    // hop) is indistinguishable from a genuine loss until we look again.
+    // 100ms is imperceptible for a real revert and comfortably outlasts
+    // the sentinel hop's second Tab in practice.
+    revertTimeout.current = setTimeout(() => {
+      revertTimeout.current = null;
+      if (!container.contains(document.activeElement)) setAsking(false);
+    }, 100);
   }
 
   return (

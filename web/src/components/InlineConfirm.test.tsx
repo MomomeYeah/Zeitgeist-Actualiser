@@ -1,5 +1,5 @@
 import userEvent from "@testing-library/user-event";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { InlineConfirm } from "@/components/InlineConfirm";
@@ -64,6 +64,31 @@ describe("InlineConfirm", () => {
     await user.click(screen.getByRole("button", { name: "elsewhere" }));
 
     expect(screen.getByRole("button", { name: "Abort" })).toBeInTheDocument();
+  });
+
+  it("reverts when focus leaves to nowhere trackable (relatedTarget null)", async () => {
+    // Real browsers fire blur/focusout with a null relatedTarget whenever
+    // the window/tab itself loses focus — alt-tab, clicking the address
+    // bar, switching tabs — not only when focus moves to another element
+    // inside the control. That case must still revert; a guard that treats
+    // every null relatedTarget as "still inside" would leave an abandoned
+    // confirm armed on the screen indefinitely.
+    const { onConfirm, user } = setup();
+
+    await user.click(screen.getByRole("button", { name: "Abort" }));
+    const no = screen.getByRole("button", { name: "no" });
+    expect(no).toHaveFocus();
+
+    // Calling .blur() directly (rather than focusing another element)
+    // reproduces the real-browser/jsdom window-blur case: focus goes to
+    // nowhere trackable and the resulting event carries relatedTarget:
+    // null, exactly as jsdom's HTMLOrSVGElement-impl does.
+    no.blur();
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Abort" })).toBeInTheDocument();
+    });
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 
   it("stays open while focus moves between yes and no", async () => {
