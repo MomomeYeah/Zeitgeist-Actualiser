@@ -283,10 +283,54 @@ npx openapi-typescript http://127.0.0.1:8000/openapi.json -o web/src/api/schema.
 That is deliberately not run yet — there is no `web/` and no gate command
 that would check the result.
 
+Phase 5 adds the browser half. Development is two processes:
+
+```bash
+uv run zeitgeist
+```
+
+```bash
+npm --prefix web run dev
+```
+
+Vite serves the SPA and proxies `/api` to uvicorn on 8000, so the app is
+same-origin in development and there is no CORS anywhere in the project.
+Open the URL Vite prints.
+
+Five screens, all read-only in this phase: Topics (`/`), Runs (`/runs`), run
+detail (`/runs/<id>`), topic detail (`/topics/<run>/<topic>`) and the
+full-size meme view (`/runs/<run>/renders/<id>`). Starting a run, the live
+log and the settings screen are phase 6; generating a meme from the browser
+is phase 7. Until then a run is started with `scripts/run_pipeline.py` or
+`POST /api/runs`, and the UI shows what it produced.
+
+The client's TypeScript types are generated from the API's own OpenAPI
+schema and checked in. After changing any response model, regenerate both:
+
+```bash
+uv run python scripts/dump_openapi.py
+```
+
+```bash
+npm --prefix web run generate:types
+```
+
+`uv run pytest` fails if `web/openapi.json` no longer matches the app, and
+`npm --prefix web run typecheck` fails if `web/src/api/schema.ts` no longer
+matches `web/openapi.json`. Between them there is no way to change the
+contract on one side and not the other without the gate saying so.
+
 ## Tests
 
 ```bash
 uv run pytest
 ```
 
-No test touches the network. Every LLM call goes through `FakeLLMProvider`.
+```bash
+npm --prefix web test
+```
+
+No test touches the network. Every LLM call goes through `FakeLLMProvider`,
+and the frontend's requests are intercepted by MSW with handlers typed from
+the generated OpenAPI types — so a backend contract change breaks frontend
+tests rather than surfacing in the browser.
