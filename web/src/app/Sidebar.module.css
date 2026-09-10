@@ -44,3 +44,38 @@
   color: var(--on-accent);
   font-weight: 700;
 }
+
+/* Pinned to the bottom, which is what lets Settings join the nav above
+   without anything else moving. */
+.card {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 11px;
+  border: 1px solid var(--accent-border-soft);
+  border-radius: 9px;
+  background: var(--accent-wash);
+  transition: border-color var(--transition);
+}
+
+.card:hover {
+  border-color: var(--accent-border);
+}
+
+.cardLabel {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  color: var(--accent);
+}
+
+.cardDetail {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-50);
+}
