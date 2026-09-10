@@ -696,6 +696,111 @@ def test_topics_are_reported_during_analyse_not_after_it(tmp_path):
     assert first_topic < analyse_finished
 
 
+def test_analyse_counts_progress_against_the_trends_it_was_given(tmp_path):
+    """`17 / 25` on the in-flight analyse card comes from here, and nowhere
+    else.
+
+    Two trends, the second of which fails distillation and is dropped:
+    `total` must stay at the trend count and `done` must stop at 1. A
+    fixture where every trend yields a topic cannot tell `len(evidence)`
+    from `len(topics)`, and those two disagree on exactly the run where
+    this counter's honesty matters.
+    """
+    observer = RecordingObserver()
+
+    run_pipeline(
+        *_full_run_args(
+            tmp_path,
+            source=_FakeTrendSource([_evidence("A trend"), _evidence("B trend")]),
+            provider=FakeLLMProvider(
+                responses=[_draft(), LLMError("model refused"), _choice()]
+            ),
+        ),
+        observer=observer,
+    )
+
+    analyse = [
+        event
+        for event in observer.named("stage_progress")
+        if event.payload[0] is Stage.ANALYSE
+    ]
+    assert [(event.payload[1], event.payload[2]) for event in analyse] == [(1, 2)]
+
+
+def test_analyse_progress_names_the_topic_it_just_finished(tmp_path):
+    """The summary line on the running card is this `detail`, and it is the
+    topic's label. A topic id would be honest but unreadable — and a type
+    assertion would pass for the id, for the stage name, or for any other
+    non-empty string the wrapper happened to send.
+    """
+    observer = RecordingObserver()
+
+    run_pipeline(
+        *_full_run_args(tmp_path, source=_FakeTrendSource([_evidence("Airport cat")])),
+        observer=observer,
+    )
+
+    (event,) = [
+        event
+        for event in observer.named("stage_progress")
+        if event.payload[0] is Stage.ANALYSE
+    ]
+    assert event.payload[3] == "Airport cat"
+
+
+def test_analyse_progress_arrives_during_the_stage_not_after_it(tmp_path):
+    """A wrapper that collected its events and flushed them once
+    `distil_topics` returned would satisfy every count assertion above while
+    leaving the card at `0 / 25` for the several minutes analyse takes. The
+    events' position in the stream is the only thing that tells the two
+    apart, so this asserts the interleaving rather than the values.
+    """
+    observer = RecordingObserver()
+
+    run_pipeline(
+        *_full_run_args(
+            tmp_path,
+            source=_FakeTrendSource([_evidence("A trend"), _evidence("B trend")]),
+            provider=FakeLLMProvider(responses=[_draft(), _draft(), _choice()]),
+        ),
+        observer=observer,
+    )
+
+    sequence = [
+        event.name
+        for event in observer.events
+        if event.name == "topic_distilled"
+        or (
+            event.name in {"stage_progress", "stage_finished"}
+            and event.payload[0] is Stage.ANALYSE
+        )
+    ]
+    assert sequence == [
+        "topic_distilled",
+        "stage_progress",
+        "topic_distilled",
+        "stage_progress",
+        "stage_finished",
+    ]
+
+
+def test_topic_distilled_still_fires_once_per_topic(tmp_path):
+    """The wrapper must not swallow or double the callback it wraps: the
+    spec's own testing section calls this out as the thing to assert."""
+    observer = RecordingObserver()
+
+    run_pipeline(
+        *_full_run_args(
+            tmp_path,
+            source=_FakeTrendSource([_evidence("A trend"), _evidence("B trend")]),
+            provider=FakeLLMProvider(responses=[_draft(), _draft(), _choice()]),
+        ),
+        observer=observer,
+    )
+
+    assert len(observer.named("topic_distilled")) == 2
+
+
 def test_every_render_is_reported_including_one_that_failed(tmp_path):
     """`render_finished` carries the whole record so a failed render reaches
     the UI as a tile with a message. Reporting only successes is how a
@@ -804,7 +909,13 @@ def test_generate_reports_progress_before_each_brief(tmp_path):
 
     run_pipeline(*_full_run_args(tmp_path), observer=observer)
 
-    progress = [event.payload for event in observer.named("stage_progress")]
+    # Filtered to GENERATE: analyse now reports its own progress too, and an
+    # unfiltered list would mix the two stages' events together.
+    progress = [
+        event.payload
+        for event in observer.named("stage_progress")
+        if event.payload[0] is Stage.GENERATE
+    ]
     # See the comment in test_every_render_is_reported_including_one_that_failed
     # about why payload[0] needs a cast here.
     rendered = [
