@@ -1,0 +1,62 @@
+/* The handoff's abort confirmation: contrast at 10% fill, a contrast
+   border, the question in contrast-light, and yes/no in mono 700/10
+   separated by a middle dot. 150ms ease-out, which is --transition. */
+.trigger {
+  padding: 8px 14px;
+  border: 1px solid var(--contrast-border-strong);
+  border-radius: var(--radius-pill);
+  background: none;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--contrast-light);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.trigger:hover {
+  background: var(--contrast-confirm);
+}
+
+.asking {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-tight);
+  padding: 7px 13px;
+  border: 1px solid var(--contrast-border);
+  border-radius: var(--radius-pill);
+  background: var(--contrast-confirm);
+  transition: background var(--transition);
+}
+
+.question {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--contrast-light);
+}
+
+.answer {
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--contrast-light);
+  cursor: pointer;
+}
+
+.answer:hover,
+.answer:focus-visible {
+  color: var(--text);
+}
+
+.dot {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--contrast-light);
+}
