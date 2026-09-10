@@ -8,7 +8,7 @@ import pytest
 from tests.run_factory import make_run_config
 from zeitgeist.config import Settings
 from zeitgeist.progress import Aborted
-from zeitgeist.records import RunConfig, Stage
+from zeitgeist.records import RunConfig, Stage, StageRecord
 from zeitgeist.runner import (
     ActiveRuns,
     RunAlreadyActive,
@@ -71,6 +71,18 @@ def _service(tmp_path, execute) -> RunService:
     service = RunService(_settings(tmp_path), _open_store(tmp_path), execute=execute)
     service.start()
     return service
+
+
+def _run_to_completion(service: RunService, request: RunRequest) -> str:
+    """Enqueue, let the worker finish, and hand back the run id.
+
+    `shutdown` puts a sentinel behind the request on the same FIFO queue, so
+    joining the worker is what waits for the run — no sleeping, no polling.
+    """
+    service.start()
+    queued = service.enqueue(request)
+    service.shutdown(timeout=10.0)
+    return queued.run_id
 
 
 def test_a_run_starts_immediately_when_the_worker_is_idle(tmp_path):
@@ -799,3 +811,82 @@ def test_resolve_settings_keeps_fields_a_run_cannot_set(tmp_path):
     resolved = resolve_settings(base, {})
 
     assert resolved.output_dir == tmp_path / "somewhere"
+
+
+def test_a_running_stage_gets_a_row_while_it_is_still_running(tmp_path):
+    """Without this, `GET /api/runs/{id}` during a run reports only the
+    stages that already finished, and the in-flight screen has no way to say
+    which stage is live except by guessing from the gap."""
+    seen: list[list[StageRecord]] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        observer.stage_started(Stage.ANALYSE)
+        seen.append(store.stages_for_run(request.run_id or ""))
+
+    service = _service(tmp_path, execute=execute)
+    _run_to_completion(service, RunRequest())
+
+    (during,) = seen
+    assert [record.stage for record in during] == [Stage.ANALYSE]
+    assert during[0].status == "running"
+    assert during[0].started_at is not None
+    assert during[0].finished_at is None
+
+
+def test_stage_progress_updates_the_running_row_in_place(tmp_path):
+    """One row per (run_id, stage), rewritten — not a row per tick. Twenty
+    five distilled topics must not leave twenty five analyse rows for
+    `stages_for_run` to sort."""
+    seen: list[list[StageRecord]] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        observer.stage_started(Stage.ANALYSE)
+        observer.stage_progress(Stage.ANALYSE, done=1, total=25, detail="cat")
+        observer.stage_progress(Stage.ANALYSE, done=17, total=25, detail="rat")
+        seen.append(store.stages_for_run(request.run_id or ""))
+
+    service = _service(tmp_path, execute=execute)
+    _run_to_completion(service, RunRequest())
+
+    (during,) = seen
+    assert len(during) == 1
+    assert during[0].done == 17
+    assert during[0].total == 25
+    assert during[0].summary == "rat"
+
+
+def test_progress_keeps_the_started_at_the_stage_began_with(tmp_path):
+    """The in-flight card shows how long the *stage* has been running. A
+    progress write that reset `started_at` to now would make that read zero
+    on every tick."""
+    seen: list[list[StageRecord]] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        observer.stage_started(Stage.ANALYSE)
+        first = store.stages_for_run(request.run_id or "")[0].started_at
+        observer.stage_progress(Stage.ANALYSE, done=3, total=25, detail="cat")
+        seen.append([first, store.stages_for_run(request.run_id or "")[0].started_at])
+
+    service = _service(tmp_path, execute=execute)
+    _run_to_completion(service, RunRequest())
+
+    (at_start, at_progress) = seen[0]
+    assert at_start == at_progress
+
+
+def test_a_store_failure_in_the_observer_never_fails_the_run(tmp_path):
+    """`RunObserver`'s contract: a run must not fail because something
+    watching it did. A closed connection under the observer is the realistic
+    version of that — it must cost the progress display, not the run."""
+    reached_the_end = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        store.close()
+        observer.stage_started(Stage.ANALYSE)
+        observer.stage_progress(Stage.ANALYSE, done=1, total=2, detail="cat")
+        reached_the_end.append(True)
+
+    service = _service(tmp_path, execute=execute)
+    _run_to_completion(service, RunRequest())
+
+    assert reached_the_end == [True]
