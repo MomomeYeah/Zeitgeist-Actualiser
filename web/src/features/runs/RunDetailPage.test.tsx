@@ -437,13 +437,6 @@ describe("RunDetailPage", () => {
         ),
       ),
       http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
-      // Registered even though a live run never reads it: `live` is derived
-      // from `run.data`, which is still undefined on the render that fires
-      // `useRunLog`'s effect, so it briefly mounts enabled before the next
-      // render disables it. Without a handler here that request is
-      // unhandled, and MSW logs and fails it even though the page never
-      // consumes the response.
-      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
     ];
   }
 
@@ -494,9 +487,6 @@ describe("RunDetailPage", () => {
         ),
       ),
       http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
-      // See `liveRun`'s comment: the log query is briefly enabled before
-      // `live` settles, even here.
-      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
     );
 
     renderDetail("20260829T150000Z");
@@ -619,6 +609,29 @@ describe("RunDetailPage", () => {
 
     expect(await screen.findByText("Fetched 25 trends")).toBeInTheDocument();
     expect(FakeEventSource.instances).toHaveLength(0);
+  });
+
+  it("asks the log endpoint for nothing while the run is live", async () => {
+    // The inverse of the test above. `live` is computed from `run.data`,
+    // which is undefined on the very first render — a gate written as
+    // `useRunLog(runId, verbose, !live)` reads that as "not live" and
+    // mounts the query enabled for one render before the next render
+    // disables it, which is enough to fire a real request. Rendered output
+    // cannot catch that: the page never reads the response either way. Only
+    // counting the calls a handler actually receives can.
+    let logCalls = 0;
+    server.use(
+      ...liveRun(),
+      http.get("/api/runs/:runId/log", () => {
+        logCalls += 1;
+        return HttpResponse.json([]);
+      }),
+    );
+
+    renderDetail();
+    await screen.findByText("RUNNING");
+
+    expect(logCalls).toBe(0);
   });
 
   it("offers Re-run config and Resume once a run is over", async () => {

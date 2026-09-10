@@ -29,7 +29,11 @@ export function RunActions({ detail, live }: { detail: RunDetail; live: boolean 
   const abort = useAbortRun(runId);
   const resume = useResumeRun(runId);
 
-  const failure = stop.error ?? abort.error ?? resume.error ?? null;
+  // Scoped to the branch that owns each mutation: Stop/Abort only apply
+  // while live, Resume only once the run is over, so a failure from one
+  // side cannot outlive the buttons that produced it when `live` flips —
+  // e.g. a failed Stop staying visible under a finished run's Resume button.
+  const failure = live ? (stop.error ?? abort.error ?? null) : (resume.error ?? null);
 
   return (
     <div className={styles.actions}>

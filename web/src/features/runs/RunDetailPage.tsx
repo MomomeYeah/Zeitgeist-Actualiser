@@ -82,7 +82,13 @@ export function RunDetailPage() {
   // right: a queued run has an open stream and a working abort.
   const live = run.data?.run.status === "running";
   const streamed = useRunEvents(runId, live);
-  const history = useRunLog(runId, verbose, !live);
+  // Gated on the run query's own resolution, not just `!live`: `run.data`
+  // is undefined on the first render, so `live` reads `false` until the run
+  // query settles. Enabling on `!live` alone would fire a real log request
+  // for every live run before its status is even known. Waiting for
+  // `run.isSuccess` keeps the log query disabled until `live` is the truth,
+  // not a placeholder — the two log sources stay genuinely exclusive.
+  const history = useRunLog(runId, verbose, run.isSuccess && !live);
   const now = useNow(live);
 
   return (
