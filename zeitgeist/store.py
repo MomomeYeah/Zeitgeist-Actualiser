@@ -569,8 +569,8 @@ class Store:
     def record_stage(self, run_id: str, record: StageRecord) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO run_stages (run_id, stage, status, "
-            "started_at, finished_at, payload_bytes, summary) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "started_at, finished_at, payload_bytes, summary, done, total) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 run_id,
                 record.stage.value,
@@ -579,6 +579,8 @@ class Store:
                 record.finished_at.isoformat() if record.finished_at else None,
                 record.payload_bytes,
                 record.summary,
+                record.done,
+                record.total,
             ),
         )
         self._conn.commit()
@@ -588,8 +590,8 @@ class Store:
         stages run, which is not the order their rows were written.
         """
         rows = self._conn.execute(
-            "SELECT stage, status, started_at, finished_at, payload_bytes, summary "
-            "FROM run_stages WHERE run_id = ?",
+            "SELECT stage, status, started_at, finished_at, payload_bytes, "
+            "summary, done, total FROM run_stages WHERE run_id = ?",
             (run_id,),
         ).fetchall()
         records = [
@@ -600,6 +602,8 @@ class Store:
                 finished_at=datetime.fromisoformat(row[3]) if row[3] else None,
                 payload_bytes=row[4],
                 summary=row[5],
+                done=row[6],
+                total=row[7],
             )
             for row in rows
         ]
