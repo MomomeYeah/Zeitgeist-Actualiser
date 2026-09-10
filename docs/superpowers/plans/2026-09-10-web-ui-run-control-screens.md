@@ -2126,8 +2126,11 @@ describe("InlineConfirm", () => {
 
     await user.click(screen.getByRole("button", { name: "Abort" }));
 
+    // The question takes the trigger's place rather than appearing beside
+    // it. A `queryByRole("dialog")` assertion is deliberately absent: this
+    // component has no dialog and never had one, so that could only fail
+    // if someone deliberately added a modal — a decision, not a break.
     expect(screen.getByText("Abort run?")).toBeInTheDocument();
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Abort" })).not.toBeInTheDocument();
   });
 
@@ -2410,12 +2413,7 @@ Create `web/src/features/runs/progress.test.ts`:
 ```ts
 import { describe, expect, it } from "vitest";
 
-import {
-  activeStage,
-  byStage,
-  stageCounter,
-  stageFill,
-} from "@/features/runs/progress";
+import { activeStage, stageCounter, stageFill } from "@/features/runs/progress";
 import { makeStageRecord } from "@/test/factories";
 
 describe("activeStage", () => {
@@ -2519,15 +2517,16 @@ describe("stageCounter", () => {
     ).toBeNull();
   });
 });
-
-describe("byStage", () => {
-  it("indexes the records a run recorded", () => {
-    const analyse = makeStageRecord({ stage: "analyse" });
-    expect(byStage([analyse]).get("analyse")).toEqual(analyse);
-    expect(byStage([analyse]).get("generate")).toBeUndefined();
-  });
-});
 ```
+
+**`byStage` gets no test of its own.** It is
+`new Map(stages.map((record) => [record.stage, record]))` — it validates
+nothing, normalises nothing, derives nothing and causes no side effect, so a
+test of it would be asserting that `Map` behaves like a `Map`. The one
+mutation that could break it, keying on something other than `.stage`, turns
+`StageCards`, `InFlightCard` and the sidebar card red immediately, and those
+are its only consumers. Assert the first consumer-visible result instead,
+which the tests above and in Tasks 8-10 already do.
 
 `makeStageRecord` needs the two new options. Extend it in
 `web/src/test/factories.ts`:
@@ -2873,6 +2872,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { LiveLog } from "@/features/runs/LiveLog";
+import styles from "@/features/runs/LiveLog.module.css";
 import { makeLogLine } from "@/test/factories";
 
 /**
@@ -2982,6 +2982,21 @@ describe("LiveLog", () => {
 
     expect(screen.getByText("Distilled 'cat' in 2.1s")).toBeInTheDocument();
     expect(screen.getByText("Fetched 25 trends")).toBeInTheDocument();
+  });
+
+  it("keeps a warning legible however far it has scrolled up", () => {
+    // Older lines fade to 40% so the eye lands on recent ones, and a
+    // warning is the one thing someone opens a log to find. Drop the level
+    // branch from `toneOf` and a WARNING twenty lines back dims away with
+    // everything else — which is a bug, not a restyling.
+    const held = [
+      makeLogLine({ seq: 0, level: "WARNING", message: "Trend 3 failed" }),
+      ...lines(30).map((line) => ({ ...line, seq: line.seq + 1 })),
+    ];
+    render(<LiveLog lines={held} live verbose={false} onVerboseChange={vi.fn()} />);
+
+    expect(screen.getByText("Trend 3 failed").closest("p")).toHaveClass(styles.warn);
+    expect(screen.getByText("line 0").closest("p")).toHaveClass(styles.dim);
   });
 
   it("offers neither follow nor jump for a finished run", () => {
@@ -3833,10 +3848,23 @@ it("pins the in-flight run above the list", async () => {
 
   expect(await screen.findByText("RUNNING")).toBeInTheDocument();
   expect(screen.getByText("20260829T140200Z")).toBeInTheDocument();
-  // Every stage named beneath its segment, so a glance says how far in it is.
-  for (const stage of ["ingest", "analyse", "evaluate", "generate"]) {
-    expect(screen.getByText(stage)).toBeInTheDocument();
-  }
+
+  // Above the list, which is the whole point of the card: a run in flight
+  // is the thing you came to look at. Asserting only that it rendered
+  // would pass with it moved to the foot of the page.
+  const card = screen.getByRole("link", { name: /20260829T140200Z/ });
+  const list = screen.getByRole("list");
+  expect(
+    card.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+
+  // Four segments, filled from the stage records — `RunRow` draws no
+  // progressbar, so these are the card's own. 17 of 25 is 68%: the
+  // fixture's counters have to reach the DOM as a width, or the card
+  // says a stage is running without saying how far in.
+  expect(
+    screen.getAllByRole("progressbar").map((bar) => bar.getAttribute("aria-valuenow")),
+  ).toEqual(["100", "68", "0", "0"]);
 });
 
 it("draws no in-flight card while nothing is running", async () => {
@@ -6856,6 +6884,43 @@ labels are both explicit requirements of the handoff and the spec rather
 than free choices, and each rides alongside a real assertion in the same
 test (a missing destination; a missing field). Everything else asserting
 copy is conditional, and so tests a branch.
+
+### A second pass, against the rubric directly
+
+Four more findings, applied. Rubric sections in brackets.
+
+14. **`indexes the records a run recorded` — deleted.** [Your code, not the
+    framework] `byStage` is a one-line `new Map(...)` that validates,
+    normalises and derives nothing, so the test asserted that `Map` behaves
+    like a `Map`. Warning sign: "the test would still matter if only the
+    framework remained." Its only mutation is caught by its three consumers.
+15. **`pins the in-flight run above the list` — rewritten.** [Principle 1;
+    "the test exists for coverage, checking no side effect or outcome"] The
+    name promised ordering and the body never checked it — the card moved
+    below the list, or into the footer, passed. Worse, the fixture set
+    `done: 17, total: 25` and no assertion read them, so the card's one
+    piece of derived output was set up and ignored. Now asserts document
+    order and the four segments' `aria-valuenow` — `["100", "68", "0",
+    "0"]`, hand-derived, with `RunRow` drawing no progressbar of its own.
+16. **`asks in place rather than opening a dialog` — one assertion trimmed.**
+    [No change detectors; "asserts a removed symbol stays removed"]
+    `InlineConfirm` has no dialog and never had one, so
+    `queryByRole("dialog")` could only fail if someone deliberately added a
+    modal. The test keeps its two real assertions and the reasoning is left
+    in a comment so the absence reads as a decision.
+17. **`keeps a warning legible however far it has scrolled up` — added.**
+    [Mutation check: wrong branch handler] `toneOf`'s level branch is what
+    keeps a `WARNING` accent rather than fading to 40% with everything else
+    older than the last twenty lines. Nothing asserted it, and a warning
+    dimmed out of sight is a bug rather than a restyling — the log's whole
+    purpose is finding one.
+
+**Judged and left alone.** `test_record_stage_defaults_counters_to_none`
+looks tautological — the fixture's `None`, the column's `NULL` and the
+model's default all agree — but `done=row[6] or 0` is a realistic mutation
+it catches, so it stays. `LiveLog`'s `overflow-anchor: none` and the absence
+of `scroll-behavior: smooth` stay untested: both are real requirements and
+neither is observable in jsdom, which is why Task 13's walk exists.
 
 ---
 
