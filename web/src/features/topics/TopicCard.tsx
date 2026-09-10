@@ -46,7 +46,7 @@ export function TopicCard({
         {render_count === 0 ? (
           <span className={styles.noMemes}>no memes yet</span>
         ) : (
-          `${render_count} memes`
+          `${render_count} ${render_count === 1 ? "meme" : "memes"}`
         )}
       </span>
     </Link>

@@ -143,6 +143,26 @@ describe("RenderDetailPage", () => {
     expect(line).toHaveTextContent("14:31");
   });
 
+  it("shows a styled failed state, not a broken image, when the PNG is gone", async () => {
+    // The database is authoritative for whether a render exists — a row
+    // whose PNG has been deleted out from under it is a failed tile, not a
+    // native broken-image icon, and there is nothing to download.
+    serve();
+
+    renderPage();
+
+    const image = await screen.findByRole("img");
+    fireEvent.error(image);
+
+    expect(
+      await screen.findByText(`Render ${RENDER_ID} has no image on disk`),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Download PNG" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("says which render is missing rather than showing an empty frame", async () => {
     server.use(
       http.get("/api/renders/:renderId", () =>

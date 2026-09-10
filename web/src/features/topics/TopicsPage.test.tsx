@@ -143,6 +143,16 @@ describe("TopicsPage", () => {
     expect(await screen.findByText("NEW THIS RUN")).toBeInTheDocument();
   });
 
+  it("pluralises a single render as 1 meme, not 1 memes", async () => {
+    // Every other fixture uses a count of 2, which is why no test caught
+    // the unconditional "memes" in HeroTopic's chip.
+    serve(makeTopicIndex({ topics: [makeIndexedTopic({ renderCount: 1 })] }));
+
+    renderWithProviders(<TopicsPage />);
+
+    expect(await screen.findByText("1 meme")).toBeInTheDocument();
+  });
+
   it("says a topic has no memes yet, which is the cue to go generate some", async () => {
     serve(makeTopicIndex({ topics: [makeIndexedTopic({ renderCount: 0 })] }));
 

@@ -19,6 +19,7 @@ export function RenderDetailPage() {
   // carry — it carries the ids that address it.
   const topic = useTopicDetail(render.data?.run_id, render.data?.topic_id);
   const [size, setSize] = useState<string>("");
+  const [failed, setFailed] = useState(false);
 
   return (
     <QueryBoundary query={render} missing="No such render.">
@@ -52,19 +53,31 @@ export function RenderDetailPage() {
 
           <div className={styles.body}>
             <figure className={styles.frame}>
-              <img
-                className={styles.image}
-                src={imageUrl(record.id, "full")}
-                alt={`${record.template_id} meme`}
-                // The contract carries no dimensions or byte size for a
-                // render, so this reports what the browser decoded rather
-                // than numbers nothing sent it.
-                onLoad={(event) =>
-                  setSize(
-                    `${event.currentTarget.naturalWidth}×${event.currentTarget.naturalHeight}`,
-                  )
-                }
-              />
+              {failed ? (
+                // The database is authoritative for whether a render
+                // exists, so a PNG deleted out from under this row is a
+                // styled failed state, not a broken-image icon — the same
+                // rule `MemeTile` already follows for the tiles that link
+                // here.
+                <span className={styles.failed}>
+                  {`Render ${record.id} has no image on disk`}
+                </span>
+              ) : (
+                <img
+                  className={styles.image}
+                  src={imageUrl(record.id, "full")}
+                  alt={`${record.template_id} meme`}
+                  // The contract carries no dimensions or byte size for a
+                  // render, so this reports what the browser decoded rather
+                  // than numbers nothing sent it.
+                  onLoad={(event) =>
+                    setSize(
+                      `${event.currentTarget.naturalWidth}×${event.currentTarget.naturalHeight}`,
+                    )
+                  }
+                  onError={() => setFailed(true)}
+                />
+              )}
             </figure>
 
             <aside className={styles.brief}>
@@ -87,15 +100,17 @@ export function RenderDetailPage() {
                 <p className={styles.byHand}>written by hand</p>
               )}
 
-              <div className={styles.footer}>
-                <a
-                  className={styles.download}
-                  href={imageUrl(record.id, "full")}
-                  download={`${record.template_id}-${record.id}.png`}
-                >
-                  Download PNG
-                </a>
-              </div>
+              {!failed && (
+                <div className={styles.footer}>
+                  <a
+                    className={styles.download}
+                    href={imageUrl(record.id, "full")}
+                    download={`${record.template_id}-${record.id}.png`}
+                  >
+                    Download PNG
+                  </a>
+                </div>
+              )}
             </aside>
           </div>
         </div>

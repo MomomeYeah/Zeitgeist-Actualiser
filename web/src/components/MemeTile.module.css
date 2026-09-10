@@ -16,6 +16,13 @@
 }
 
 .image {
+  /* An unloaded <img> has no intrinsic size, and `.tile` is a flex
+     container, so without this the image is a zero-size flex item: it
+     never occupies its 100%×100% box until decoded, `loading="lazy"` never
+     sees it intersect the viewport, and a missing render is an invisible
+     gap instead of the styled failed tile. `flex: none` makes the browser
+     honour width/height instead of shrinking the item to its content. */
+  flex: none;
   width: 100%;
   height: 100%;
   object-fit: cover;
