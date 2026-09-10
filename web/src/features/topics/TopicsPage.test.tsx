@@ -360,6 +360,9 @@ describe("TopicsPage", () => {
         ),
       ),
       http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(makeTopicDetail()),
+      ),
     );
 
     renderWithProviders(<TopicsPage />);
@@ -387,6 +390,9 @@ describe("TopicsPage", () => {
         HttpResponse.json(
           makeRunDetail({ runId: "20260829T140200Z", status: "running" }),
         ),
+      ),
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(makeTopicDetail()),
       ),
     );
 
@@ -416,6 +422,9 @@ describe("TopicsPage", () => {
         return HttpResponse.json(makeRunPage());
       }),
       http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(makeTopicDetail()),
+      ),
     );
 
     renderWithProviders(<TopicsPage />);

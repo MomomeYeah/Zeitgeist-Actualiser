@@ -80,7 +80,7 @@ export function TopicsPage() {
                 )}
 
                 <div className={styles.bottom}>
-                  <div className={styles.mood}>
+                  <div>
                     <SectionLabel>The mood today</SectionLabel>
                     <MoodBar
                       totals={data.sentiment_totals}

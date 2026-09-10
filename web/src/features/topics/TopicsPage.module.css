@@ -32,19 +32,20 @@
   grid-template-columns: 1fr;
 }
 
-.mood,
 .block,
 .filters {
   margin-top: 6px;
 }
 
 /* The handoff's `1fr 320px`: the mood bar wants the width, the strip does
-   not. */
+   not. The 6px that used to sit on `.mood` alone moves here so both
+   columns of the row start flush under `align-items: start`. */
 .bottom {
   display: grid;
   grid-template-columns: 1fr 320px;
   gap: 18px;
   align-items: start;
+  margin-top: 6px;
 }
 
 .runs {
