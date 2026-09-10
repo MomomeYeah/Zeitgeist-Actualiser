@@ -4342,6 +4342,28 @@ describe("RunDetailPage", () => {
     expect(screen.getAllByText("generate ↗")).toHaveLength(2);
   });
 
+  it("does not claim every brief failed while generate is still running", async () => {
+    // Phase 6 polls a live run. Watched from the moment generate starts,
+    // every render_count reads 0 for the same reason as the never-reached
+    // case below — nothing has landed yet — and the message would be just
+    // as wrong here.
+    serve(
+      makeRunDetail({
+        runId: RUN_ID,
+        stages: [makeStageRecord({ stage: "generate", status: "running" })],
+      }),
+      [
+        makeRankedTopic({ topicId: "t1", finalRank: 1, label: "Stadium rat", renderCount: 0 }),
+        makeRankedTopic({ topicId: "t2", finalRank: 2, label: "Airport cat", renderCount: 0 }),
+      ],
+    );
+
+    renderPage();
+
+    expect(await screen.findByText("Airport cat")).toBeInTheDocument();
+    expect(screen.queryByText(/every brief failed/)).not.toBeInTheDocument();
+  });
+
   it("does not claim every brief failed on a run that never reached generate", async () => {
     // The ranking has to be non-empty for this to test anything: an empty
     // one takes a different branch and never consults the generate stage
@@ -4919,7 +4941,16 @@ function configLine(detail: RunDetail): string {
  */
 function everyBriefFailed(stages: StageRecord[], ranking: RankedTopic[]): boolean {
   const generate = stages.find((stage) => stage.stage === "generate");
-  if (generate === undefined || generate.status === "queued") return false;
+  // `running` counts with `queued`: phase 6 polls a live run, and from the
+  // moment generate starts every render_count reads 0 because nothing has
+  // landed yet — not because every brief failed.
+  if (
+    generate === undefined ||
+    generate.status === "queued" ||
+    generate.status === "running"
+  ) {
+    return false;
+  }
   return (
     ranking.length > 0 &&
     ranking.every((entry) => entry.render_count === 0)
