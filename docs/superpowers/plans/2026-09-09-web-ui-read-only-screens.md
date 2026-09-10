@@ -2128,7 +2128,8 @@ export function makeTopicDetail(
     renders: options.renders ?? [makeRenderRecord()],
     recurrence: {
       run_count: options.runCount ?? 3,
-      first_seen_run_id: options.firstSeenRunId ?? "20260826T090000Z",
+      first_seen_run_id:
+        options.firstSeenRunId === undefined ? "20260826T090000Z" : options.firstSeenRunId,
     },
   };
 }
@@ -3279,7 +3280,7 @@ export function Sidebar() {
   );
 }
 
-function navClass({ isActive }: { isActive: boolean }): string {
+function navClass({ isActive }: { isActive: boolean }): string | undefined {
   return isActive ? `${styles.item} ${styles.active}` : styles.item;
 }
 ```
@@ -4891,7 +4892,7 @@ import { StatusPill } from "@/components/StatusPill";
 import { RankingList } from "@/features/runs/RankingList";
 import { StageCards } from "@/features/runs/StageCards";
 import { survivedFor } from "@/features/runs/survived";
-import { formatDuration } from "@/format";
+import { formatDuration, shortRunId } from "@/format";
 
 import styles from "./RunDetailPage.module.css";
 
@@ -4935,7 +4936,14 @@ export function RunDetailPage() {
       {(detail) => (
         <div className={styles.page}>
           <Breadcrumb
-            trail={[{ label: "Runs", to: "/runs" }, { label: detail.run.run_id }]}
+            trail={[
+              { label: "Runs", to: "/runs" },
+              // Shortened rather than the mockup's full id: the header two
+              // lines down already shows it in full, and `findByText` (and
+              // a reader's eye) needs the run id to appear once, not twice,
+              // in identical text.
+              { label: shortRunId(detail.run.run_id) },
+            ]}
           />
 
           <header className={styles.header}>
@@ -5612,7 +5620,7 @@ export function HeroTopic({ entry }: { entry: IndexedTopic }) {
           <Chip tone="inverted">{topic.conversation_register}</Chip>
         )}
         <Chip tone="inverted">
-          {entry.render_count === 0 ? "no memes yet" : `${entry.render_count} memes`}
+          {`${entry.render_count} ${entry.render_count === 1 ? "meme" : "memes"}`}
         </Chip>
       </span>
     </Link>
@@ -5892,7 +5900,7 @@ export function TopicCard({
         {render_count === 0 ? (
           <span className={styles.noMemes}>no memes yet</span>
         ) : (
-          `${render_count} memes`
+          `${render_count} ${render_count === 1 ? "meme" : "memes"}`
         )}
       </span>
     </Link>
@@ -6733,8 +6741,13 @@ import { SectionLabel } from "@/components/SectionLabel";
 
 import styles from "./PhraseCard.module.css";
 
-/** 15px, 13px, then 12px for everything after — the design's three steps. */
-function sizeClass(index: number): string {
+/**
+ * 15px, 13px, then 12px for everything after — the design's three steps.
+ *
+ * No explicit return type: under `noUncheckedIndexedAccess`, a CSS module's
+ * properties type as `string | undefined`, same as `StatusPill`'s `tone`.
+ */
+function sizeClass(index: number) {
   if (index === 0) return styles.first;
   if (index === 1) return styles.second;
   return styles.rest;
@@ -7166,10 +7179,9 @@ describe("RenderDetailPage", () => {
       "href",
       "/",
     );
-    expect(within(crumb).getByRole("link", { name: "Airport cat" })).toHaveAttribute(
-      "href",
-      `/topics/${RUN_ID}/topic-1`,
-    );
+    expect(
+      await within(crumb).findByRole("link", { name: "Airport cat" }),
+    ).toHaveAttribute("href", `/topics/${RUN_ID}/topic-1`);
     expect(within(crumb).getByText("drake")).toBeInTheDocument();
   });
 
@@ -7178,8 +7190,9 @@ describe("RenderDetailPage", () => {
 
     renderPage();
 
-    expect(await screen.findByText("drake")).toBeInTheDocument();
-    expect(screen.getByText("auto")).toBeInTheDocument();
+    const chips = await screen.findByTestId("chips");
+    expect(within(chips).getByText("drake")).toBeInTheDocument();
+    expect(within(chips).getByText("auto")).toBeInTheDocument();
   });
 
   it("lays out one block per caption slot, with the slot's real name", async () => {
@@ -7326,7 +7339,7 @@ export function RenderDetailPage() {
             <h1 className={styles.title}>
               {topic.data?.topic.label ?? record.topic_id}
             </h1>
-            <div className={styles.chips}>
+            <div className={styles.chips} data-testid="chips">
               <Chip tone="accent">{record.template_id}</Chip>
               <Chip>{record.origin.provenance}</Chip>
             </div>
@@ -7796,6 +7809,31 @@ The same pass found the Runs summary line counting `status !== "ok"` as
 "failed", which would have labelled an aborted run a failure. The line now
 names each status present with its own count, and the test carries an
 aborted run so the distinction bites.
+
+**Seven defects found in the plan's own code during execution.** `navClass`
+and `sizeClass` claimed a `string` return type that `noUncheckedIndexedAccess`
+does not allow a CSS-module lookup to have. The run detail breadcrumb and the
+hero and card chips each duplicated text an unscoped query or a reader's eye
+would meet twice. `makeTopicDetail`'s `first_seen_run_id` used `??`, which
+cannot tell "not supplied" from an explicit `null` and so silently ignored
+what a test asked for. And two `RenderDetailPage` tests queried
+`findByText("drake")` and a breadcrumb link without scoping or awaiting,
+against a screen that renders the template id twice and resolves the topic
+title one commit after the render itself. All seven are corrected above,
+against the shipped files.
+
+They share one root cause: the plan's code was written against a strict
+toolchain the plan itself introduces in Task 1, and was never compiled or
+linted against it. Instances included `as const` under
+`consistent-type-assertions: never`, `console` under `no-undef`, a value
+import used only as a type under `consistent-type-imports`, CSS-module
+access under `noUncheckedIndexedAccess`, and four unscoped `findByText`
+queries against identifiers the high-fidelity design deliberately renders
+twice. The `reviewing-plan-tests` audit above checks falsifiability and
+dependency discipline; it does not compile. For a plan that stands up its
+own toolchain mid-flight, a pre-flight pass that type-checks and lints the
+plan's code blocks against the config its own Task 1 writes would have
+caught five of the seven before any dispatch.
 
 ## Execution Handoff
 
