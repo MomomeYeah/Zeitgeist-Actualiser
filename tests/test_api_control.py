@@ -4,6 +4,7 @@ import threading
 
 from tests.api_factory import GatedExecute, LoggingGate, SeededRun, seeded_client
 from tests.run_factory import make_evidence, make_run_config
+from zeitgeist.config import Settings
 from zeitgeist.records import LogLine, Stage
 
 
@@ -275,6 +276,86 @@ def test_resuming_carries_the_narrowed_template_library(tmp_path):
         "/api/runs/20260901T120000Z/resume",
         json={"stage": "evaluate", "template_ids": ["drake"]},
     )
+    client.app.state.runner.shutdown(timeout=10)
+
+    assert seen == [["drake"]]
+
+
+def test_resuming_replays_the_runs_frozen_config(tmp_path):
+    """F1: resume must replay the run's frozen config, not whatever current
+    settings say. Before the fix, `resume_run` enqueued with no overrides at
+    all, so the worker built `Settings` from current settings-table/`.env`
+    values and `Store.start_run` overwrote the run's stored `RunConfig` with
+    that result — a run started with `top_count 3` would resume reading
+    `top_count 5` if that was `.env`'s current value.
+
+    Seeded with a config that differs from current settings on both a
+    per-run choice (`top_count`, `llm_provider`) and a settings-table tunable
+    (`trend_limit`), then a different value is written to the settings table
+    for that same tunable before resuming — so a resume that fell through to
+    current settings would see the newly-written 10, not the frozen 5.
+    """
+    seen: list[Settings] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        seen.append(settings)
+
+    frozen = make_run_config(top_count=3, llm_provider="ollama", trend_limit=5)
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id="20260901T120000Z",
+                config=frozen,
+                evidence=[make_evidence(["p1"])],
+            )
+        ],
+        execute=execute,
+    )
+    put_response = client.put(
+        "/api/settings", json={"values": {"bluesky_trend_limit": "10"}}
+    )
+    assert put_response.status_code == 200
+
+    response = client.post(
+        "/api/runs/20260901T120000Z/resume", json={"stage": "evaluate"}
+    )
+    client.app.state.runner.shutdown(timeout=10)
+
+    assert response.status_code == 202
+    assert len(seen) == 1
+    assert seen[0].topic_count == 3
+    assert seen[0].llm_provider == "ollama"
+    assert seen[0].bluesky_trend_limit == 5
+
+    stored = client.get("/api/runs/20260901T120000Z").json()["run"]["config"]
+    assert stored["top_count"] == 3
+    assert stored["trend_limit"] == 5
+
+
+def test_resuming_with_no_template_ids_keeps_the_frozen_list(tmp_path):
+    """The companion to `test_resuming_carries_the_narrowed_template_library`:
+    when the resume body omits `template_ids`, the run's own frozen list
+    survives rather than being dropped to "the whole library" (`None`)."""
+    seen: list[list[str] | None] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        seen.append(request.template_ids)
+
+    frozen = make_run_config(template_ids=["drake"])
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id="20260901T120000Z",
+                config=frozen,
+                evidence=[make_evidence(["p1"])],
+            )
+        ],
+        execute=execute,
+    )
+
+    client.post("/api/runs/20260901T120000Z/resume", json={"stage": "evaluate"})
     client.app.state.runner.shutdown(timeout=10)
 
     assert seen == [["drake"]]

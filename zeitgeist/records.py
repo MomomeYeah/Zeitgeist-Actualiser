@@ -85,6 +85,42 @@ class RunConfig(BaseModel):
             template_ids=list(template_ids) if template_ids is not None else None,
         )
 
+    def as_overrides(self) -> dict[str, str]:
+        """The inverse of `freeze`: this config as the `dict[str, str]` of
+        per-run overrides `RunRequest.overrides` takes, for replaying a
+        resumed run against exactly what it was frozen with rather than
+        whatever current settings say.
+
+        Keyed by *setting* name, not by this model's field name — several
+        differ (`top_count` here is `topic_count` on `Settings`, `trend_limit`
+        is `bluesky_trend_limit`, and so on) because this model groups a
+        run's per-run choices and its settings-table tunables under one
+        vocabulary while `Settings` does not. `sources` is comma-joined
+        because `Settings._split_csv` accepts a plain CSV string, and a
+        per-run override is string-valued the same way a form field would be.
+
+        `template_ids` is deliberately absent: `RunRequest` carries it as its
+        own field, not as an override, so a caller replaying this config
+        passes it separately.
+
+        `bluesky_fetch_concurrency` is deliberately absent too, but for a
+        different reason: it has no field on `RunConfig` at all, so a resume
+        cannot replay it and it keeps resolving from whatever the settings
+        table says now. That is the one tunable a resume does not freeze.
+        """
+        return {
+            "sources": ",".join(self.sources),
+            "bluesky_trend_limit": str(self.trend_limit),
+            "bluesky_posts_per_trend": str(self.posts_per_trend),
+            "topic_count": str(self.top_count),
+            "meme_potential_weight": str(self.meme_potential_weight),
+            "phrase_min_authors": str(self.phrase_min_authors),
+            "distil_char_budget": str(self.distil_char_budget),
+            "distil_concurrency": str(self.distil_concurrency),
+            "llm_provider": self.llm_provider,
+            "llm_model": self.llm_model,
+        }
+
 
 class RunError(BaseModel):
     """Why a run failed, and where.

@@ -53,7 +53,12 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     llm_provider: Literal["anthropic", "ollama"] = "anthropic"
     llm_model: str = "claude-sonnet-5"
-    ollama_host: str = "http://localhost:11434"
+    # 127.0.0.1, not localhost: on the machine this was measured on, httpx
+    # resolves localhost to ::1 first and IPv6-first resolution cost more
+    # (2.16-2.28s) than the model registry's whole 2.0s timeout, so New run's
+    # options fetch showed "Loading..." for over two seconds and came close
+    # to failing outright. 127.0.0.1 answered in 0.19s.
+    ollama_host: str = "http://127.0.0.1:11434"
 
     # NoDecode: pydantic-settings otherwise JSON-decodes any list-typed env
     # value before validators run, so a plain CSV string like
