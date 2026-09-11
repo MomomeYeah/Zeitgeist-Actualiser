@@ -8,6 +8,7 @@ import {
   queryKeys,
   useAbortRun,
   useActiveRun,
+  useConfigOptions,
   useRanking,
   useRender,
   useRun,
@@ -20,6 +21,7 @@ import {
 } from "@/api/queries";
 import {
   makeActiveRuns,
+  makeConfigOptions,
   makeLogLine,
   makeRankedTopic,
   makeRenderRecord,
@@ -391,5 +393,45 @@ describe("the run mutations", () => {
     await waitFor(() => expect(result.current.settings.data).toHaveLength(1));
     expect(result.current.settings.data?.[0]?.value).toBe(9);
     expect(getCalls).toBe(1);
+  });
+
+  it("saving settings refreshes the defaults the New run screen draws", async () => {
+    // Found on a real run: with `bluesky_trend_limit` just lowered on the
+    // settings screen, New run still said "of 25 trends analysed" from the
+    // options it already held, until a stale-time refetch caught up. The
+    // settings reply goes into its own cache; the options are a second
+    // answer the same write changed.
+    const defaults = makeConfigOptions().defaults;
+    let trendLimit = "25";
+    server.use(
+      http.get("/api/config/options", () =>
+        HttpResponse.json(
+          makeConfigOptions({
+            defaults: { ...defaults, bluesky_trend_limit: trendLimit },
+          }),
+        ),
+      ),
+      http.put("/api/settings", () => {
+        trendLimit = "4";
+        return HttpResponse.json(
+          makeSettingFields({ bluesky_trend_limit: { value: 4, source: "settings" } }),
+        );
+      }),
+    );
+
+    const { result } = renderHook(
+      () => ({ options: useConfigOptions(), save: useSaveSettings() }),
+      { wrapper: renderWithProviders.Wrapper },
+    );
+    await waitFor(() => expect(result.current.options.isSuccess).toBe(true));
+    expect(result.current.options.data?.defaults.bluesky_trend_limit).toBe("25");
+
+    await act(async () => {
+      await result.current.save.mutateAsync({ values: { bluesky_trend_limit: "4" } });
+    });
+
+    await waitFor(() =>
+      expect(result.current.options.data?.defaults.bluesky_trend_limit).toBe("4"),
+    );
   });
 });

@@ -56,6 +56,31 @@ describe("InlineConfirm", () => {
     expect(screen.getByRole("button", { name: "Abort" })).toBeInTheDocument();
   });
 
+  it("hands focus back to the trigger when Escape reverts it", async () => {
+    // Found on a real run's page: the question takes focus (onto `no`), and
+    // Escape then unmounted the focused button, dropping a keyboard user at
+    // the top of the document mid-run. The one revert that must not move
+    // focus is blur, below — focus has already gone where someone put it.
+    const { user } = setup();
+
+    await user.click(screen.getByRole("button", { name: "Abort" }));
+    await user.keyboard("{Escape}");
+
+    expect(screen.getByRole("button", { name: "Abort" })).toHaveFocus();
+  });
+
+  it("hands focus back to the trigger after either answer", async () => {
+    const { user } = setup();
+
+    await user.click(screen.getByRole("button", { name: "Abort" }));
+    await user.click(screen.getByRole("button", { name: "no" }));
+    expect(screen.getByRole("button", { name: "Abort" })).toHaveFocus();
+
+    await user.click(screen.getByRole("button", { name: "Abort" }));
+    await user.click(screen.getByRole("button", { name: "yes" }));
+    expect(screen.getByRole("button", { name: "Abort" })).toHaveFocus();
+  });
+
   it("reverts when focus leaves it entirely", async () => {
     const { user } = setup();
     render(<button type="button">elsewhere</button>);

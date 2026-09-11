@@ -285,16 +285,72 @@ uv run zeitgeist
 npm --prefix web run dev
 ```
 
-Vite serves the SPA and proxies `/api` to uvicorn on 8000, so the app is
-same-origin in development and there is no CORS anywhere in the project.
-Open the URL Vite prints.
+The two do different jobs. `uv run zeitgeist` serves the API on 8000 and
+nothing else — open `127.0.0.1:8000` itself and you get a 404, not the app.
+`npm --prefix web run dev` serves the SPA and proxies `/api` to uvicorn on
+8000, so the app is same-origin in development and there is no CORS
+anywhere in the project. Open the URL Vite prints. Both must be running.
 
-Five screens, all read-only in this phase: Topics (`/`), Runs (`/runs`), run
-detail (`/runs/<id>`), topic detail (`/topics/<run>/<topic>`) and the
-full-size meme view (`/runs/<run>/renders/<id>`). Starting a run, the live
-log and the settings screen are phase 6; generating a meme from the browser
-is phase 7. Until then a run is started with `scripts/run_pipeline.py` or
-`POST /api/runs`, and the UI shows what it produced.
+Seven screens: Topics (`/`), Runs (`/runs`), run detail (`/runs/<id>`),
+topic detail (`/topics/<run>/<topic>`), the full-size meme view
+(`/runs/<run>/renders/<id>`), New run (`/runs/new`) and Settings
+(`/settings`). Generating a meme from the browser is phase 7.
+`scripts/run_pipeline.py` and `POST /api/runs` still work, and a run started
+either way shows up in the browser like any other.
+
+### Starting and watching a run
+
+Phase 6 makes the browser the way in. **New run**, on the Topics and Runs
+headers, opens four cards: the provider and model (switching provider swaps
+the model list — for Ollama it is whatever `ollama list` would show, and the
+card says so when that is nothing), the platform, how many ranked topics get
+memes, and which templates to draw from. Everything else a run uses comes
+from the settings screen, below. **Start run** lands on the run's own page.
+
+While a run is in flight its page counts up from when it started, fills each
+stage's bar as the stage reports progress (`7 / 25` topics distilled), and
+streams the log. The log follows new lines until you scroll up, then offers
+**jump to latest**; **verbose** adds the DEBUG lines — the per-topic
+`Distilled ... in 6.8s` timings among them — to the ones already shown. The
+sidebar and the Runs screen show the same run in flight wherever you are.
+
+Two ways to end it early:
+
+- **Stop after this stage** lets the current stage finish and write its
+  checkpoint, then ends the run `aborted`. **Resume from &lt;stage&gt;** then
+  picks it up at the next one.
+- **Abort** asks first, in place (`yes` · `no`, and Escape backs out), then
+  ends the run now.
+
+Starting a run while one is in flight queues it: New run names the run it
+will wait behind, and the queued run's page opens straight away and starts
+streaming when its turn comes. A finished run's page offers **Re-run
+config**, which opens New run with that run's four cards filled in, and
+**Resume from &lt;stage&gt;** when there is a checkpoint to resume from.
+
+### The settings screen
+
+`/settings` edits the seven fields a run is tuned with and nothing else:
+`bluesky_trend_limit`, `bluesky_posts_per_trend`,
+`bluesky_fetch_concurrency`, `meme_potential_weight`, `phrase_min_authors`,
+`distil_char_budget` and `distil_concurrency`. The default provider and
+model, the API key, and where the database and output live stay in `.env` —
+a screen that could rewrite where the database lives, or read a key back
+out, would be a different and worse thing than a tuning screen. (New run
+still picks the provider and model per run.)
+
+Each field says where its value came from: `SET HERE` (saved on this
+screen), `FROM ENV` (a variable in the shell that started `zeitgeist`),
+`FROM .env` or `DEFAULT`. The shell outranks this screen, and this screen
+outranks `.env`: saving a field the shell sets writes the row but changes
+nothing until that variable is gone, which is what `FROM ENV` is warning
+you about. A value `Settings` would reject — `meme_potential_weight` above 1,
+say — is refused with the server's own sentence and nothing is written.
+**Reset to .env** deletes every saved row, so each field falls back to
+`.env` or its default rather than pinning today's value.
+
+Changes apply to the next run. A run already in flight keeps the config it
+froze when it started, which its page's config line shows.
 
 The client's TypeScript types are generated from the API's own OpenAPI
 schema and checked in. After changing any response model, regenerate both:

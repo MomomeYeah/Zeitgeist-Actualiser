@@ -83,6 +83,36 @@ def test_captured_lines_reach_both_the_buffer_and_the_table(tmp_path):
     ]
 
 
+def test_a_resumed_run_numbers_its_lines_after_the_first_attempts(tmp_path):
+    """Found by resuming a real run from the browser. A resume reuses the
+    run's id, and so its rows in `log_lines`; a handler numbering from 1
+    again collided with the first attempt's lines on `(run_id, seq)`. The
+    `IntegrityError` escaped the handler's flush and the run was recorded
+    as failed in generate — after generate had rendered every meme — with
+    the resumed attempt's own log lost.
+
+    The buffer's numbering is asserted too: the stream a resumed run opens
+    polls `since(0)`, and its lines have to follow the history's rather
+    than repeat seqs a client already keyed rows by.
+    """
+    store = _store(tmp_path)
+    store.start_run("r1", make_run_config())
+    log = logging.getLogger("zeitgeist.testing.resume")
+
+    with capture_run_log("r1", store):
+        log.info("first attempt")
+        log.info("stopped after analyse")
+    with capture_run_log("r1", store) as buffer:
+        log.info("resumed")
+
+    assert [line.message for line in store.log_lines("r1", verbose=True)] == [
+        "first attempt",
+        "stopped after analyse",
+        "resumed",
+    ]
+    assert [line.seq for line in buffer.since(0)] == [3]
+
+
 def test_lines_are_written_in_batches_rather_than_one_row_at_a_time(tmp_path):
     """A DEBUG run emits several hundred lines and a transaction each would
     be gratuitous. This pins the batching by counting writes: an

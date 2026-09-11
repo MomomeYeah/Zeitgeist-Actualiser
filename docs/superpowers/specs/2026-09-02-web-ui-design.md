@@ -1188,6 +1188,72 @@ jump-to-latest; the inline abort confirmation; the sidebar in-flight card and
 the run strip; the settings screen and its third nav item. Ends with a run
 startable, watchable and abortable from the browser.
 
+Walked, as phase 5 was, against real runs — live Bluesky trends distilled by
+a local Ollama model, started, watched, stopped, aborted, queued behind one
+another and resumed from an actual browser. The walk found five defects the
+fixtures structurally could not catch, each now fixed with a test that fails
+without the fix:
+
+- **The API's one SQLite connection raced itself.** A live run's page asks
+  for the run's detail and its ranking in the same instant, once a second,
+  and both handlers call `get_run` on the `Store` the app shares across
+  FastAPI's thread pool. `sqlite3.threadsafety == 3` protects SQLite's own
+  state, not the `sqlite3` module's statement cache or its one transaction
+  per connection, so the page intermittently read "No such run." for a run
+  that existed and the server logged 500s carrying `InterfaceError`. Phase 5
+  made a few concurrent requests per page load; phase 6's tick-driven
+  refresh makes three a second for a run's whole duration. MSW answers each
+  request alone, so no fixture could race. Every public `Store` method now
+  holds a per-store lock.
+- **Resuming a run failed on its own log.** A resume reuses the run's id,
+  and the resumed attempt numbered its log lines from 1 again, colliding
+  with the first attempt's on `(run_id, seq)`. The run was recorded as
+  failed in generate after generate had rendered every meme. The numbering
+  now continues from the run's last recorded line.
+- **New run's defaults were frozen at startup.** `GET /api/config/options`
+  read `app.state.settings`, so with `bluesky_trend_limit` lowered to 4 on
+  the settings screen, New run still said "of 25 trends analysed" for a run
+  that analysed 4 — the bug `GET /api/settings` had already been fixed for,
+  one endpoint over. It now resolves settings the way the next run will, and
+  saving settings invalidates the options the client holds.
+- **A finished run offered "New run" where the handoff draws "Re-run
+  config".** Two accent pills side by side, one indistinguishable from the
+  header button that starts from settings. It is now the ghost **Re-run
+  config** pill the handoff specifies.
+- **Escape, or either answer, on the inline abort confirm dropped keyboard
+  focus** to the top of the document, because the focused button unmounts.
+  Focus now returns to the trigger.
+
+Two things the design asks for are not built in this phase, deliberately.
+"Decisions" below means that section of the phase 6 plan,
+`docs/superpowers/plans/2026-09-10-web-ui-run-control-screens.md`.
+
+- **Ranking rows appending mid-analyse.** Persisting a row needs a
+  `run_topics` row, and `TopicRow` requires a trend score, final score and
+  rank that do not exist until every topic is distilled and scored. A
+  mid-analyse row is a different, rank-less shape — a new response model and
+  a second endpoint, which is a contract change with its own storage
+  questions rather than screen work. The ranking section says the final
+  order is set in evaluate, and the live log carries per-topic progress
+  instead. "Decisions", 2.
+- **`~4m left`.** An estimate needs a rate, and the only one available —
+  elapsed over items done — is meaningless for the first item and wrong
+  whenever the remaining work is unlike the work already done. A running
+  card's artifact line shows the checkpoint name alone. "Decisions", 1.
+
+Two are flagged back to the designer:
+
+- **Model annotations** (`default` / `slower` / `cheap`). Nothing records
+  them — the registry holds bare ids, and Ollama's list is whatever is pulled
+  on this machine — so model rows show the id alone rather than an editorial
+  claim nothing verifies. They need a real source, or removing from the
+  design. "Decisions", 3.
+- **The fourth settings source chip, `FROM ENV`.** The design drew three
+  because it did not know the environment outranks the settings table. It
+  is a real answer, and the one state where Save cannot change what the next
+  run uses, so the screen draws four and gives `FROM ENV` the stronger fill.
+  "Decisions", 5.
+
 **7 — Generation screens.** The two generation panels on topic detail, the
 rendered grid with its three tile states, the inline delete confirm, the
 below-the-cut `generate ↗` link, and the nothing-rendered-yet state. Ends with

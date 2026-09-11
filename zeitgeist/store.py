@@ -1,11 +1,14 @@
 """Cross-run history. The minimum needed to detect topics rising and falling."""
 
+import functools
+import inspect
 import json
 import sqlite3
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel
 
@@ -77,6 +80,34 @@ class _LogLineLike(Protocol):
     def message(self) -> str: ...
 
 
+def _holding_lock(method: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(method)
+    def locked(self: Store, *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return locked
+
+
+def _serialized[T](cls: type[T]) -> type[T]:
+    """Run every public method of `cls` under its instance's `_lock`.
+
+    A class decorator rather than a `with self._lock:` in each method, so a
+    method added later cannot forget it: the lock is what makes a shared
+    connection safe (see `Store.__init__`), and a single unguarded accessor
+    would reopen the race for every request that happened to overlap it.
+    Private helpers are left alone because they only ever run inside a
+    public method that already holds the lock; the lock is re-entrant so
+    one public method calling another is fine too. Only plain functions are
+    wrapped — the one property, `path`, reads no connection.
+    """
+    for name, member in list(vars(cls).items()):
+        if inspect.isfunction(member) and not name.startswith("_"):
+            setattr(cls, name, _holding_lock(member))
+    return cls
+
+
+@_serialized
 class Store:
     def __init__(self, path: Path, *, check_same_thread: bool = True) -> None:
         """`check_same_thread` defaults to sqlite3's own safe default: a
@@ -84,34 +115,34 @@ class Store:
         an immediate `sqlite3.ProgrammingError` if it is ever touched from
         another one.
 
-        The API app (`zeitgeist/api/app.py`) is the one caller that passes
-        `False`. It opens a single `Store` for the whole life of the FastAPI
-        app, but that connection is touched from more than one thread: ASGI
-        servers dispatch sync dependencies and sync path operations through
-        a thread pool, and `TestClient` runs the lifespan's startup and
-        shutdown on its own portal thread. Passing `False` there is safe
-        for what phase 2 actually does with it — concurrent reads — because
-        `sqlite3.threadsafety == 3` in this environment: the underlying
-        SQLite library is built in serialized mode, so a single connection
-        cannot be corrupted by two threads touching it at once. That is
-        narrower than safe for concurrent *writes*: a connection has one
-        transaction, so two threads each running a multi-statement write
-        through it could in principle interleave, with one thread's commit
-        landing midway through another's. The invariant that makes that
-        theoretical rather than real: every write through this connection
-        is a single statement followed immediately by `commit()` (or,
-        where more than one statement has to land together — `add_renders`
-        and `write_log_lines` — a single `executemany()` inside `with
-        self._conn:`, which is one transaction and one commit). There is
-        never a second statement waiting on the same connection between a
-        write's first statement and its commit, so there is no midway for
-        another thread's commit to land in. `PUT /api/settings` (phase 3)
-        and the on-demand generation endpoints (this phase) both write
-        through this same shared connection from the threadpool, and both
-        hold to this rule — it is why they can.
+        The API app (`zeitgeist/api/app.py`) passes `False`, and so does
+        `logcapture.capture_run_log`. Each holds one `Store` that more than
+        one thread touches: ASGI servers dispatch sync dependencies and path
+        operations through a thread pool, `TestClient` runs the lifespan on
+        its own portal thread, and a run's log is written from the distil
+        pool's threads as well as the worker's.
+
+        `sqlite3.threadsafety == 3` is *not* what makes that safe. It keeps
+        the SQLite library's own state intact, but the `sqlite3` module
+        above it shares a statement cache and one implicit transaction per
+        connection across every thread using it. Two request threads calling
+        `get_run` at once were handed the same prepared statement: a real
+        run's live page, which asks for a run's detail and its ranking in
+        the same instant once a second, flashed "No such run." for a run
+        that existed, and the server logged 500s carrying `InterfaceError:
+        bad parameter or other API misuse`. Two writers raced one
+        transaction ("cannot commit - no transaction is active").
+
+        So every public method holds `_lock` for its whole body (see
+        `_serialized`) — one query or one transaction at a time per
+        `Store`, which is all a single connection can honestly offer. The
+        cost is small: every method here is a query of a few milliseconds,
+        and the worker thread has its own `Store` and its own lock, so a
+        run's writes never queue behind the API's reads.
         """
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(self._path, check_same_thread=check_same_thread)
         # The worker thread writes while the API reads. Without WAL a reader
         # blocks behind every checkpoint write, which the UI feels as the
@@ -381,6 +412,19 @@ class Store:
             )
             for seq, logged_at, level, logger, message in rows
         ]
+
+    def last_log_seq(self, run_id: str) -> int:
+        """The highest `seq` this run has recorded, or 0 for none.
+
+        A resume reuses the run's id and so its `log_lines` rows; the
+        resumed attempt's handler numbers on from here rather than from 1,
+        which collided with the first attempt on `(run_id, seq)`.
+        """
+        [(seq,)] = self._conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) FROM log_lines WHERE run_id = ?",
+            (run_id,),
+        ).fetchall()
+        return seq
 
     def write_log_lines(self, run_id: str, lines: Sequence[_LogLineLike]) -> None:
         """One transaction for the whole batch.

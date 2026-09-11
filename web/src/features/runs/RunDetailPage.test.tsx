@@ -520,7 +520,9 @@ describe("RunDetailPage", () => {
       await screen.findByRole("button", { name: "Stop after this stage" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Abort" })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "New run" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Re-run config" }),
+    ).not.toBeInTheDocument();
   });
 
   it("stop needs no confirmation, because it is not destructive", async () => {
@@ -646,10 +648,13 @@ describe("RunDetailPage", () => {
 
     renderDetail("20260829T090000Z");
 
-    expect(await screen.findByRole("link", { name: "New run" })).toHaveAttribute(
-      "href",
-      "/runs/new?from=20260829T090000Z",
-    );
+    // Named for what it does to *this* run, not "New run": the header pill
+    // of that name starts from settings, and a finished run's header
+    // offering the same words could not say it prefills from this one.
+    // Found on a real run's page, where the two read identically.
+    expect(
+      await screen.findByRole("link", { name: "Re-run config" }),
+    ).toHaveAttribute("href", "/runs/new?from=20260829T090000Z");
     expect(
       screen.getByRole("button", { name: "Resume from generate" }),
     ).toBeInTheDocument();
@@ -678,7 +683,7 @@ describe("RunDetailPage", () => {
 
     await screen.findByText("FAILED");
     expect(screen.queryByRole("button", { name: /Resume/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "New run" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Re-run config" })).toBeInTheDocument();
   });
 
   it("resumes from the computed stage without naming one", async () => {

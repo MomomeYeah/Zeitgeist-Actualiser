@@ -12,7 +12,11 @@ import styles from "./InlineConfirm.module.css";
  * not sit armed on the screen.
  *
  * Focus moves to `no` when the question appears, which puts the safe answer
- * under the keyboard and under Escape at the same time.
+ * under the keyboard and under Escape at the same time. It comes back to
+ * the trigger when the question goes away by an answer or by Escape: the
+ * focused button is unmounted either way, and without this a keyboard user
+ * lands at the top of the document. A blur revert leaves focus alone,
+ * because it has already gone where someone put it.
  */
 export function InlineConfirm({
   label,
@@ -26,12 +30,25 @@ export function InlineConfirm({
   className?: string;
 }) {
   const [asking, setAsking] = useState(false);
+  const trigger = useRef<HTMLButtonElement | null>(null);
   const cancel = useRef<HTMLButtonElement | null>(null);
   const revertTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refocus = useRef(false);
 
   useEffect(() => {
-    if (asking) cancel.current?.focus();
+    if (asking) {
+      cancel.current?.focus();
+    } else if (refocus.current) {
+      refocus.current = false;
+      trigger.current?.focus();
+    }
   }, [asking]);
+
+  /** Close the question from inside it, and take focus back to the trigger. */
+  function answer() {
+    refocus.current = true;
+    setAsking(false);
+  }
 
   // The deferred check in `onBlur` below (relatedTarget: null) outlives a
   // single render; clear it on unmount so it cannot call `setAsking` after
@@ -45,6 +62,7 @@ export function InlineConfirm({
   if (!asking) {
     return (
       <button
+        ref={trigger}
         type="button"
         className={[styles.trigger, className].filter(Boolean).join(" ")}
         onClick={() => setAsking(true)}
@@ -55,7 +73,7 @@ export function InlineConfirm({
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") setAsking(false);
+    if (event.key === "Escape") answer();
   }
 
   function onBlur(event: FocusEvent<HTMLDivElement>) {
@@ -102,7 +120,7 @@ export function InlineConfirm({
         type="button"
         className={styles.answer}
         onClick={() => {
-          setAsking(false);
+          answer();
           onConfirm();
         }}
       >
@@ -113,7 +131,7 @@ export function InlineConfirm({
         ref={cancel}
         type="button"
         className={styles.answer}
-        onClick={() => setAsking(false)}
+        onClick={answer}
       >
         no
       </button>

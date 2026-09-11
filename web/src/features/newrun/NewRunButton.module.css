@@ -14,3 +14,22 @@
 .button:hover {
   filter: brightness(0.94);
 }
+
+/* Re-run config: the ghost pill `RunActions` draws beside Resume. */
+.ghost {
+  display: inline-block;
+  padding: 8px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-70);
+  transition: border-color var(--transition), color var(--transition);
+}
+
+.ghost:hover {
+  border-color: var(--border-hover);
+  color: var(--text);
+}

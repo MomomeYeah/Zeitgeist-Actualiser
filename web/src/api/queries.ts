@@ -233,12 +233,20 @@ export function useAbortRun(runId: string) {
  * `PUT /api/settings` answers with the same shape as the `GET`, so the
  * reply goes straight into the cache. A refetch instead would be a wasted
  * round trip and a visible flicker on the very chip that just changed.
+ *
+ * The config options are invalidated rather than written: their `defaults`
+ * are the same values resolved again, which the reply does not carry in
+ * that shape. Without it New run kept saying "of 25 trends analysed" for a
+ * limit just lowered here, until its stale time ran out.
  */
 export function useSaveSettings() {
   const client = useQueryClient();
   return useMutation<SettingField[], ApiError, SettingsUpdate>({
     mutationFn: (body) => apiSend<SettingField[]>("PUT", "/api/settings", body),
-    onSuccess: (fields) => client.setQueryData(queryKeys.settings(), fields),
+    onSuccess: (fields) => {
+      client.setQueryData(queryKeys.settings(), fields);
+      void client.invalidateQueries({ queryKey: queryKeys.configOptions() });
+    },
   });
 }
 

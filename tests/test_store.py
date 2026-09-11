@@ -648,6 +648,58 @@ def test_check_same_thread_false_permits_cross_thread_use(tmp_path):
     assert error is None
 
 
+def test_a_shared_store_answers_every_concurrent_request_correctly(tmp_path):
+    """The live run screen asks for a run's detail and its ranking at the
+    same moment, once a second, and both handlers call `get_run` on the
+    API's one shared connection from different threadpool threads.
+
+    `threadsafety == 3` keeps SQLite's own C state intact, but not the
+    `sqlite3` module's: its statement cache hands two threads the same
+    prepared statement, and its implicit transactions are one per
+    connection. Unserialised, this is what a real run produced — a live
+    page flashing "No such run." for a run that existed, and 500s carrying
+    `InterfaceError: bad parameter or other API misuse`.
+
+    Reads race each other and a writer, because a request thread writes
+    through this connection too (`enqueue`, `PUT /api/settings`).
+    """
+    store = Store(tmp_path / "z.db", check_same_thread=False)
+    store.init_schema()
+    store.start_run("r1", make_run_config())
+    failures: list[str] = []
+    rounds = 400
+
+    def read() -> None:
+        for _ in range(rounds):
+            try:
+                if store.get_run("r1") is None:
+                    failures.append("get_run returned None for a run that exists")
+            except Exception as exc:  # noqa: BLE001 - collected, asserted below
+                failures.append(repr(exc))
+
+    def write() -> None:
+        for done in range(rounds):
+            try:
+                store.record_stage(
+                    "r1",
+                    make_stage_record(
+                        Stage.ANALYSE, status="running", done=done, total=rounds
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 - collected, asserted below
+                failures.append(repr(exc))
+
+    threads = [threading.Thread(target=read) for _ in range(6)]
+    threads.append(threading.Thread(target=write))
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert failures == []
+    assert store.stages_for_run("r1")[0].done == rounds - 1
+
+
 def test_a_checkpoint_round_trips_through_its_model(tmp_path):
     """This is what resuming a run depends on. A payload that does not round
     trip breaks resume silently rather than loudly."""
