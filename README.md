@@ -300,9 +300,8 @@ anywhere in the project. Open the URL Vite prints. Both must be running.
 Seven screens: Topics (`/`), Runs (`/runs`), run detail (`/runs/<id>`),
 topic detail (`/topics/<run>/<topic>`), the full-size meme view
 (`/runs/<run>/renders/<id>`), New run (`/runs/new`) and Settings
-(`/settings`). Generating a meme from the browser is phase 7.
-`scripts/run_pipeline.py` and `POST /api/runs` still work, and a run started
-either way shows up in the browser like any other.
+(`/settings`). `scripts/run_pipeline.py` and `POST /api/runs` still work,
+and a run started either way shows up in the browser like any other.
 
 ### Starting and watching a run
 
@@ -364,6 +363,39 @@ say — is refused with the server's own sentence and nothing is written.
 
 Changes apply to the next run. A run already in flight keeps the config it
 froze when it started, which its page's config line shows.
+
+### Making memes from the browser
+
+Phase 7 is generation. Topic detail carries two panels:
+
+- **Ask the LLM** writes a fresh brief and renders it, a model call each.
+  **Let the LLM choose** is the default — the model picks the template
+  from the whole library, named by the topic's sentiment and register — or
+  you pick one tile to fix it, and the model writes only that template's
+  slots.
+- **Write it yourself** takes a caption per slot of a template you pick,
+  and makes no model call: straight to the renderer.
+
+A request makes one or three memes, never more than four (`MAX_RENDERS`) —
+the design's `5` is past that cap — because every meme is a model call.
+
+Each render tile is one of three states, and only one asks before its `✕`
+acts. **Generating** sweeps an indeterminate bar; its `✕` cancels at
+once, because nothing has been made yet and only the wait is lost.
+**Failed** keeps the tile with the renderer's own reason in its footer;
+its `✕` dismisses at once, because there is no image to lose. **Ready** is
+a PNG someone may want, so its `✕` asks first: `Delete this render?`,
+`yes` / `no`, Escape reverts it.
+
+Below the cut on run detail, a ranked-out topic's row offers `generate ↗`
+instead of a meme count: it briefs one meme with the model choosing and
+opens straight to that topic. The full-size meme view carries the same
+**Delete**, in place of the image once it is gone.
+
+On-demand generation reads its provider and model from Settings and
+`.env`, not a per-run choice — the panels have no form of their own for
+it — and runs on its own executor, so it keeps working while a run is in
+flight.
 
 The client's TypeScript types are generated from the API's own OpenAPI
 schema and checked in. After changing any response model, regenerate both:
