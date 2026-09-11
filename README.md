@@ -103,8 +103,8 @@ The pipeline runs four stages, each checkpointed before the next begins:
 
 Stage checkpoints are written to SQLite at `data/zeitgeist.db`; rendered
 memes land in `output/<run-id>/renders/`, one PNG and one 96px thumbnail
-per meme. A `data/zeitgeist.db` written before phase 6 is refused at startup
-(schema version 3, where this build expects 4); there are no migrations, so
+per meme. A `data/zeitgeist.db` written before phase 7 is refused at startup
+(schema version 4, where this build expects 5); there are no migrations, so
 the fix is to delete it, which loses cross-run trend history and nothing else.
 Read a checkpoint back with:
 
@@ -245,7 +245,8 @@ demand, long after its run ended:
 
 - **Two ways to make a meme.** `POST /api/runs/{id}/topics/{topic_id}/renders`
   takes either `{"mode": "llm", "template_id": ..., "count": N}` — the model
-  writes the captions for the template you name, up to four at a time — or
+  writes the captions, up to four at a time, for the template you name, or
+  picks one itself when `template_id` is omitted or null — or
   `{"mode": "manual", "template_id": ..., "caption_slots": {...}}`, which
   draws captions you wrote yourself. It answers 202 with the render rows
   already created and `status: "generating"`; poll the topic to watch them

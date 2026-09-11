@@ -66,6 +66,27 @@ describe("RenderDetailPage", () => {
     expect(within(chips).getByText("auto")).toBeInTheDocument();
   });
 
+  it("says no template was chosen for a render whose brief failed before choosing", async () => {
+    // The model is asked to pick, fails before it does, and the row names
+    // no template. Every place the page names the template still needs a
+    // word, and "null" is not one: the chip, the breadcrumb's last entry,
+    // the image's alt text and the download's file name. Each is checked,
+    // because each is its own use site — the type checker is satisfied by
+    // a template literal that prints "null".
+    serve(makeRenderRecord({ templateId: null, status: "failed", error: "the model is down" }));
+
+    renderPage();
+
+    const chips = await screen.findByTestId("chips");
+    expect(within(chips).getByText("no template chosen")).toBeInTheDocument();
+    const crumb = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(within(crumb).getByText("no template chosen")).toBeInTheDocument();
+    expect(screen.getByAltText("no template chosen meme")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Download PNG" }).getAttribute("download"),
+    ).not.toMatch(/null/);
+  });
+
   it("lays out one block per caption slot, with the slot's real name", async () => {
     serve(
       makeRenderRecord({

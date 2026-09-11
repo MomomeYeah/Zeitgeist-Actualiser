@@ -93,6 +93,17 @@ def test_a_hand_written_request_returns_the_captions_that_were_posted(tmp_path):
     assert body[0]["origin"] == {"provenance": "manual"}
 
 
+def test_a_model_written_request_may_leave_the_template_to_the_model(tmp_path):
+    """ "Let the LLM choose" posts no template. Accepted, and the rows come
+    back naming none until the model has picked one."""
+    client = _client(tmp_path)
+
+    response = client.post(_url(), json={"mode": "llm", "count": 2})
+
+    assert response.status_code == 202
+    assert [row["template_id"] for row in response.json()] == [None, None]
+
+
 def test_the_new_renders_appear_on_topic_detail(tmp_path):
     """The endpoint's whole point: the grid the panel sits above reads
     them back from the run's topic detail."""

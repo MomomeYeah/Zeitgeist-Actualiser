@@ -44,16 +44,19 @@ single click, on a provider that may be one local GPU."""
 
 
 class LLMGeneration(BaseModel):
-    """Ask the model to write `count` briefs against one named template.
+    """Ask the model to write `count` briefs.
 
-    The template is named rather than chosen, because the panel already
-    made that choice. The model writes captions for it and explains them.
+    `template_id` is a template the panel picked as an override. None — the
+    panel's default, "Let the LLM choose" — offers the model the whole
+    library and lets it pick per brief, exactly as the generate stage does.
+    The below-the-cut `generate` link posts None too: a ranking row has no
+    room to ask which template.
     """
 
     model_config = STRICT
 
     mode: Literal["llm"] = "llm"
-    template_id: str
+    template_id: str | None = None
     count: Annotated[int, Field(ge=1, le=MAX_RENDERS)] = 1
 
 
@@ -138,15 +141,21 @@ def _brief_for(job: GenerationJob) -> MediaBrief:
         )
     if job.provider is None:
         raise BriefError("An llm generation job was built with no provider")
-    # Narrowed to the one template the panel named. `generate_brief`
-    # validates the model's answer against this library, so a model that
-    # names anything else is retried and then fails, rather than rendering
-    # onto a template nobody asked for.
-    return generate_brief(
-        job.topic,
-        {request.template_id: job.templates[request.template_id]},
-        job.provider,
+    # A named template narrows the library to that one, so the model writes
+    # captions rather than picking; None offers it the whole library, which
+    # is "Let the LLM choose". Either way `generate_brief` validates the
+    # answer against the library it was given, so a model that names
+    # anything else is retried and then fails, rather than rendering onto a
+    # template nobody offered it.
+    # Bound to a local so the narrowing below is on a name, which every
+    # type checker follows, rather than on an attribute access.
+    template_id = request.template_id
+    library = (
+        job.templates
+        if template_id is None
+        else {template_id: job.templates[template_id]}
     )
+    return generate_brief(job.topic, library, job.provider)
 
 
 def _draw(
@@ -320,7 +329,8 @@ class GenerationService:
             raise UnknownTopic(f"No such topic in {run_id}: {topic_id}")
 
         templates = load_templates(settings.templates_dir)
-        if request.template_id not in templates:
+        # None is "let the model choose", which names nothing to check.
+        if request.template_id is not None and request.template_id not in templates:
             raise GenerationRefused(
                 f"template_id {request.template_id!r} is not in the library; "
                 f"choose one of: {', '.join(sorted(templates))}"
@@ -356,7 +366,7 @@ class GenerationService:
             request.mode,
             run_id,
             topic_id,
-            request.template_id,
+            request.template_id or "(the model's choice)",
         )
         try:
             pool.submit(self._run, job)
@@ -400,6 +410,10 @@ class GenerationService:
         is the invariant the origin union protects; what changes is
         `status`. A `generating` record's captions and rationale must not
         be read.
+
+        `template_id` is the request's own, which is None when the model is
+        choosing. `_draw` writes the one it chose. A brief that fails before
+        the model chose leaves it None, which is the truth about that row.
 
         This *appends*. A re-run of the generate stage clears a topic's
         prior auto renders (see `zeitgeist.renders.clear_auto_renders`),

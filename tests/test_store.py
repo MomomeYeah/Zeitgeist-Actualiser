@@ -173,7 +173,7 @@ def test_a_real_older_database_is_refused_rather_than_adopted(tmp_path):
     old.commit()
     old.close()
 
-    with pytest.raises(StoreSchemaError, match=r"version 2.*expects 4"):
+    with pytest.raises(StoreSchemaError, match=r"version 2.*expects 5"):
         Store(path).init_schema()
 
 
@@ -457,7 +457,7 @@ def test_a_stale_database_is_rejected_with_an_actionable_message(tmp_path):
     # tests/test_config.py's match="mastodon". Rewording the instruction is
     # a decision; failing to name the file the user must delete is a bug,
     # because the message is the only place that path appears.
-    with pytest.raises(StoreSchemaError, match=r"z\.db.*version 1.*expects 4"):
+    with pytest.raises(StoreSchemaError, match=r"z\.db.*version 1.*expects 5"):
         Store(path).init_schema()
 
 

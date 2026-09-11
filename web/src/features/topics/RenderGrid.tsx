@@ -36,7 +36,7 @@ export function RenderGrid({
             <MemeTile
               renderId={render.id}
               size={96}
-              templateId={render.template_id}
+              templateId={render.template_id ?? undefined}
               to={`/runs/${encodeURIComponent(runId)}/renders/${encodeURIComponent(render.id)}`}
             />
             <Link

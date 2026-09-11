@@ -9,7 +9,7 @@ open a mismatched database *is* the strategy. Bumping SCHEMA_VERSION means
 deleting the file.
 """
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 -- The four stage artifacts, held whole rather than normalised. Nothing
@@ -83,7 +83,10 @@ CREATE TABLE IF NOT EXISTS renders (
     id            TEXT PRIMARY KEY,
     run_id        TEXT NOT NULL,
     topic_id      TEXT NOT NULL,
-    template_id   TEXT NOT NULL,
+    -- NULL while the model has yet to choose a template for a render it
+    -- was asked to choose one for, and on a render whose brief failed
+    -- before it did. Every other row names the template it was drawn on.
+    template_id   TEXT,
     caption_slots TEXT NOT NULL,
     origin        TEXT NOT NULL,
     status        TEXT NOT NULL,

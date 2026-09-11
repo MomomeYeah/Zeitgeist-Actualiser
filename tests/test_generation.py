@@ -218,6 +218,93 @@ def test_the_model_is_only_offered_the_template_the_panel_named(tmp_path):
     assert prompt.count("id=") == 1
 
 
+OTHER = "shape_other"
+
+
+def _settings_with(tmp_path, *template_ids: str) -> Settings:
+    """`_settings`, but with a library of several templates.
+
+    Letting the model choose is only observable against more than one
+    template: with a library of one, "the whole library" and "the template
+    named" are the same prompt, and a test could not tell them apart.
+    """
+    return Settings(
+        _env_file=None,
+        output_dir=tmp_path / "output",
+        db_path=tmp_path / "z.db",
+        anthropic_api_key="key",
+        templates_dir=write_library(
+            tmp_path / "templates",
+            *(
+                make_manifest(
+                    tid,
+                    slots=[
+                        make_slot("rejected", box=(10, 10, 190, 90)),
+                        make_slot("preferred", box=(10, 110, 190, 190)),
+                    ],
+                )
+                for tid in template_ids
+            ),
+        ),
+    )
+
+
+def _choosing_job(tmp_path, records, provider) -> GenerationJob:
+    """A job whose request left the template to the model."""
+    settings = _settings_with(tmp_path, TEMPLATE, OTHER)
+    return GenerationJob(
+        settings=settings,
+        request=LLMGeneration(),
+        topic=make_topic("airport-cat"),
+        templates=load_templates(settings.templates_dir),
+        records=records,
+        provider=provider,
+    )
+
+
+def test_letting_the_model_choose_offers_it_the_whole_library(tmp_path):
+    """The panel's default. A job that narrowed to one template here would
+    make "Let the LLM choose" a synonym for whichever template the code
+    happened to reach first."""
+    store = _store(tmp_path)
+    provider = FakeLLMProvider(
+        responses=[BriefChoice(template_id=OTHER, caption_slots=SLOTS, rationale="r")]
+    )
+
+    generate_renders(
+        _choosing_job(tmp_path, [_seeded(store, "rnd1", template_id=None)], provider),
+        store,
+    )
+
+    prompt = provider.calls[0].prompt
+    assert f"id={TEMPLATE}" in prompt
+    assert f"id={OTHER}" in prompt
+
+
+def test_a_render_the_model_chose_for_records_the_template_it_chose(tmp_path):
+    """The seeded row names no template; the finished one names the model's
+    pick, which is what the tile's footer and the full-size view show.
+
+    The model picks `OTHER`, not the first template in the library, so a
+    job that filled the row in from the library instead of from the brief
+    would name the wrong one.
+    """
+    store = _store(tmp_path)
+    provider = FakeLLMProvider(
+        responses=[BriefChoice(template_id=OTHER, caption_slots=SLOTS, rationale="r")]
+    )
+
+    generate_renders(
+        _choosing_job(tmp_path, [_seeded(store, "rnd1", template_id=None)], provider),
+        store,
+    )
+
+    finished = store.get_render("rnd1")
+    assert finished is not None
+    assert finished.status == "ready"
+    assert finished.template_id == OTHER
+
+
 def test_each_requested_render_gets_its_own_brief(tmp_path):
     """count=2 is two model calls and two rows, not one brief drawn twice
     — the panel offers a count so you can compare captions."""
@@ -432,6 +519,22 @@ def test_a_generating_manual_row_already_carries_its_captions(tmp_path):
 
     assert records[0].caption_slots == SLOTS
     assert records[0].origin == ManualOrigin()
+
+
+def test_a_request_that_names_no_template_seeds_rows_without_one(tmp_path):
+    """The model has not chosen yet, so the row names no template — read
+    back from the database, because the column has to accept that. A
+    `NOT NULL` left on it refuses the insert with an `IntegrityError`
+    before a single row exists."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    records = service.submit("run-1", "airport-cat", LLMGeneration(count=2))
+    service.shutdown()
+
+    stored = [store.get_render(record.id) for record in records]
+    assert [row.template_id if row else "missing" for row in stored] == [None, None]
 
 
 def test_submit_briefs_a_topic_that_was_never_ranked(tmp_path):

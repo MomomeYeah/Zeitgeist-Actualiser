@@ -27,6 +27,10 @@ export function RenderDetailPage() {
         // Used for both the page title and its own breadcrumb entry, so the
         // two can never drift apart.
         const topicLabel = topic.data?.topic.label ?? record.topic_id;
+        // None only on a render whose model never chose a template — a
+        // brief that failed before it picked one. The breadcrumb, the chip
+        // and the file name still need a word.
+        const templateLabel = record.template_id ?? "no template chosen";
 
         return (
           <div className={styles.page}>
@@ -37,14 +41,14 @@ export function RenderDetailPage() {
                   label: topicLabel,
                   to: `/topics/${encodeURIComponent(record.run_id)}/${encodeURIComponent(record.topic_id)}`,
                 },
-                { label: record.template_id },
+                { label: templateLabel },
               ]}
             />
 
             <header className={styles.header}>
               <h1 className={styles.title}>{topicLabel}</h1>
               <div className={styles.chips} data-testid="chips">
-                <Chip tone="accent">{record.template_id}</Chip>
+                <Chip tone="accent">{templateLabel}</Chip>
                 <Chip>{record.origin.provenance}</Chip>
               </div>
               <MetaLine>
@@ -71,7 +75,7 @@ export function RenderDetailPage() {
                   <img
                     className={styles.image}
                     src={imageUrl(record.id, "full")}
-                    alt={`${record.template_id} meme`}
+                    alt={`${templateLabel} meme`}
                     // The contract carries no dimensions or byte size for a
                     // render, so this reports what the browser decoded rather
                     // than numbers nothing sent it.
@@ -110,7 +114,7 @@ export function RenderDetailPage() {
                     <a
                       className={styles.download}
                       href={imageUrl(record.id, "full")}
-                      download={`${record.template_id}-${record.id}.png`}
+                      download={`${templateLabel}-${record.id}.png`}
                     >
                       Download PNG
                     </a>
