@@ -91,6 +91,7 @@ export function makeRunSummary(
     finishedAt?: string | null;
     trendsFound?: number | null;
     topicsKept?: number | null;
+    phrasesFound?: number | null;
     config?: Partial<RunConfig>;
   } = {},
 ): RunSummary {

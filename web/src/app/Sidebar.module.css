@@ -1,4 +1,21 @@
+/* `.shell` is a flex row with no `align-items`, so its default (stretch)
+   makes `.rail` as tall as its tallest sibling — the page content — rather
+   than the viewport. A run's log grows the content well past 100vh, and
+   `.card`'s `margin-top: auto` below then pins the in-flight card to the
+   bottom of that stretched rail: off-screen, at the foot of the whole
+   document, not the foot of the visible sidebar.
+   `position: sticky` with its own `height: 100vh` and `align-self:
+   flex-start` opts the rail out of that stretch and keeps it exactly one
+   viewport tall, pinned to the top of the scroll rather than the top of the
+   document, so the in-flight card stays at the bottom of what is actually
+   on screen. `overflow-y: auto` is the rail's own escape hatch if its
+   content ever grows past that one viewport. */
 .rail {
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  overflow-y: auto;
   width: var(--sidebar-width);
   flex: none;
   display: flex;

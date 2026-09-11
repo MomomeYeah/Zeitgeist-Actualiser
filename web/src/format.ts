@@ -54,6 +54,19 @@ export function formatClock(at: string, timeZone?: string): string {
   }).format(new Date(at));
 }
 
+/**
+ * A count of trends, kept topics or phrases, where "never taken" and "took
+ * it and it was zero" both have to reach the screen without looking alike.
+ * `trends_found`/`topics_kept`/`phrases_found` are written when a run
+ * finishes, so a running, aborted or interrupted run has them null — `0
+ * trends` there would claim the pipeline looked and found nothing, which is
+ * a different fact from not having looked yet.
+ */
+export function formatCount(count: number | null | undefined): string {
+  if (count === null || count === undefined) return NONE;
+  return String(count);
+}
+
 export function formatScore(score: number | null | undefined, digits = 2): string {
   if (score === null || score === undefined) return NONE;
   return score.toFixed(digits);

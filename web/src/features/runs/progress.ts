@@ -63,3 +63,18 @@ export function stageCounter(record: StageRecord | undefined): string | null {
   const progress = counted(record);
   return progress === null ? null : `${progress.done} / ${progress.total}`;
 }
+
+/**
+ * `interrupted · 8 of 12`, or bare `interrupted` for a stage that counts
+ * nothing (ingest, evaluate).
+ *
+ * For a `running` row in a run that is no longer live: nothing closes a
+ * stage row when a run is aborted, fails, or is cut off by a restart, so
+ * the row's own `running` status has been overtaken by the run's. The
+ * counters it got to are still true and worth showing; the word "running"
+ * is not.
+ */
+export function interruptedSummary(record: StageRecord | undefined): string {
+  const progress = record === undefined ? null : counted(record);
+  return progress === null ? "interrupted" : `interrupted · ${progress.done} of ${progress.total}`;
+}

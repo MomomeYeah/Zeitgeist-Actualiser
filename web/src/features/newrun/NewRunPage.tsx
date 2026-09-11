@@ -8,6 +8,7 @@ import { Breadcrumb } from "@/components/Breadcrumb";
 import { MetaLine } from "@/components/MetaLine";
 import { QueryBoundary } from "@/components/QueryBoundary";
 import { CountCard } from "@/features/newrun/CountCard";
+import { frozenTunables } from "@/features/newrun/frozen";
 import { ModelCard } from "@/features/newrun/ModelCard";
 import { PlatformCard } from "@/features/newrun/PlatformCard";
 import { TemplateCard } from "@/features/newrun/TemplateCard";
@@ -29,8 +30,21 @@ export function NewRunPage() {
           <header className={styles.header}>
             <h1 className={styles.title}>New run</h1>
             <MetaLine>
-              defaults come from <Link to="/settings">settings</Link> · changes apply
-              to this run only
+              {from !== undefined ? (
+                // Re-running: every frozen field, not just the four cards
+                // someone can see and edit, is about to be replayed — the
+                // settings link is dropped because nothing here comes from
+                // settings while a preset fills the form.
+                <>
+                  re-running {shortRunId(from)} · its frozen config fills every
+                  field · changes apply to this run only
+                </>
+              ) : (
+                <>
+                  defaults come from <Link to="/settings">settings</Link> · changes
+                  apply to this run only
+                </>
+              )}
             </MetaLine>
           </header>
 
@@ -95,6 +109,12 @@ function NewRunForm({
       {
         template_ids: templateIds,
         overrides: {
+          // The six tunables the four cards don't cover, replayed exactly
+          // as the source run froze them — spread first so the explicit
+          // fields below (form state, not the preset) always win on any
+          // overlap, though today there is none: the two key sets are
+          // disjoint by construction.
+          ...(preset !== undefined ? frozenTunables(preset) : {}),
           llm_provider: provider,
           llm_model: model,
           // A bare name: `Settings._split_csv` accepts a CSV string, and
@@ -131,7 +151,15 @@ function NewRunForm({
         />
         <CountCard
           count={count}
-          trendLimit={config.defaults.bluesky_trend_limit ?? "25"}
+          // The frozen `trend_limit` while re-running, not the settings
+          // default: this run already fixed how many trends it analysed,
+          // and the note has to say what actually happened, not what a
+          // fresh run would do today.
+          trendLimit={
+            preset !== undefined
+              ? String(preset.trend_limit)
+              : (config.defaults.bluesky_trend_limit ?? "25")
+          }
           onCount={setCount}
         />
         <TemplateCard

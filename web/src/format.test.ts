@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatBytes,
   formatClock,
+  formatCount,
   formatDuration,
   formatElapsed,
   formatRelative,
@@ -85,6 +86,20 @@ describe("formatScore", () => {
     // number. "0.00" would read as "this is a terrible meme", which is a
     // claim the pipeline never made.
     expect(formatScore(null)).toBe("—");
+  });
+});
+
+describe("formatCount", () => {
+  it("renders an em dash for a count the pipeline never took", () => {
+    // trends_found/topics_kept/phrases_found are null while a run is
+    // running, and stay null on one that was aborted or interrupted before
+    // finishing — there is no count to show, not a count of zero.
+    expect(formatCount(null)).toBe("—");
+    expect(formatCount(undefined)).toBe("—");
+  });
+
+  it("keeps a genuine zero distinguishable from a count never taken", () => {
+    expect(formatCount(0)).toBe("0");
   });
 });
 

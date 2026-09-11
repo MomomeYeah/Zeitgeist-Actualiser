@@ -1044,6 +1044,31 @@ pointing at a 404 — so the one screen designed to be deep-linked is also the
 one most likely to meet a missing file, and now does so without a broken
 image or a dead link.
 
+**Resume asks before it acts.** The handoff draws it as an accent button
+with no confirm, at the same coordinates Abort occupies a moment earlier:
+the header's buttons swap in place the instant a run ends. A real-run walk
+aimed a click at Abort as a run completed; it landed on Resume instead and
+re-ran generate, overwriting the run's model-written renders. Resume now
+gets the same swap-in-place confirm as Abort, so a click that lands on it
+arms a question rather than acting, whichever button was there when the
+click was aimed. Its resting look stays the design's accent pill —
+`InlineConfirm` grew a `tone` prop for this, defaulting to Abort's existing
+contrast look — so the handoff's placement and styling both survive; only
+the missing confirm is added.
+
+**A stage a run cut off is drawn interrupted, not still running.**
+`_RunRecorder` writes a `running` stage row, and nothing closes it when a
+run is aborted, fails, or is interrupted by a restart — the handoff has no
+state for a stage a run cut off mid-flight, only queued, running and done.
+Trusting the row's own status once the run itself has ended would draw an
+aborted run's page as live forever: an accent-bordered card and a live
+counter under an ABORTED pill, always. The run's own status is
+authoritative; a `running` row in a run that is not live is redrawn as
+interrupted — idle-muted, no counter, its artifact line showing the
+checkpoint name alone because it wrote no checkpoint — and the summary
+still reports what the stage counted (`interrupted · 8 of 12`) where it
+counted anything, because that much is still true.
+
 ## Testing
 
 Backend testing follows the discipline already in the repository: hermetic, no
@@ -1223,6 +1248,27 @@ without the fix:
 - **Escape, or either answer, on the inline abort confirm dropped keyboard
   focus** to the top of the document, because the focused button unmounts.
   Focus now returns to the trigger.
+
+A second walk, once this phase's screens had settled — a real run started,
+watched, stopped, aborted, queued behind another and resumed, all from the
+browser against a local Ollama model — found nine more findings, F1-F9.
+F1 and F2 both resolve as **the run's frozen config**: Resume and Re-run
+config each now send every field the source run was frozen with, not just
+the four cards visible on the New run form, so a run frozen at
+`trend_limit 5` no longer starts again at whatever `bluesky_trend_limit`
+currently says. F3, F4, F5, F6 and F7 are fixed: a stage a run cut off
+(aborted, failed, or interrupted by a restart) draws as interrupted rather
+than perpetually running; Stop and Abort acknowledge a pending request
+instead of sitting unchanged for however long the current stage takes;
+Resume gained the confirm described above; the sidebar rail is sticky and
+viewport-height rather than stretching to the document's; and a count a run
+never took reads `—` instead of a false zero. F8's default changed:
+`OLLAMA_HOST` now defaults to `127.0.0.1` rather than `localhost`, which
+cost over two seconds per model list on the machine the walk ran on. F9 is
+**deferred**: saving a field the environment controls writes a hidden
+settings row and silently shows the environment's value again on the next
+load. It needs a decision — disable the input, or add a note explaining
+why the save appeared to do nothing — that was not taken in this phase.
 
 Two things the design asks for are not built in this phase, deliberately.
 "Decisions" below means that section of the phase 6 plan,

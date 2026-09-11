@@ -19,6 +19,30 @@
   background: var(--contrast-confirm);
 }
 
+/* The resting accent pill — Resume's look, per the design — for a
+   confirmed control that must not read as Abort's contrast/destructive
+   style. Mirrors RunActions.module.css's `.accent` and
+   NewRunButton.module.css's `.button`, which draw the same pill on the
+   other accent controls; kept as its own rule rather than shared across
+   modules because CSS Modules scope each stylesheet to its component. */
+.accentTrigger {
+  padding: 9px 16px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--on-accent);
+  cursor: pointer;
+  transition: filter var(--transition);
+}
+
+.accentTrigger:hover {
+  filter: brightness(0.94);
+}
+
 .asking {
   display: inline-flex;
   align-items: center;

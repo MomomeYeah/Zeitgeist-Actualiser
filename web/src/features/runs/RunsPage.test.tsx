@@ -54,6 +54,39 @@ describe("RunsPage", () => {
     expect(screen.getByText("18 phrases")).toBeInTheDocument();
   });
 
+  it("shows no count for a run whose fan-out was never taken", async () => {
+    // trends_found/topics_kept/phrases_found are written when a run
+    // finishes. A running, aborted or interrupted run has them null, and
+    // format.ts's own convention is an em dash for "there is no value here"
+    // rather than a zero the pipeline never claimed.
+    servePage(
+      makeRunPage([
+        makeRunSummary({ trendsFound: null, topicsKept: null, phrasesFound: null }),
+      ]),
+    );
+
+    renderWithProviders(<RunsPage />);
+
+    expect(await screen.findByText("— trends → — kept")).toBeInTheDocument();
+    expect(screen.getByText("— phrases")).toBeInTheDocument();
+    expect(screen.queryByText(/0 trends/)).not.toBeInTheDocument();
+  });
+
+  it("keeps a genuine zero distinguishable from a count never taken", async () => {
+    // The control case: a run that really did find nothing must still say
+    // so, not disappear behind the null-guard above.
+    servePage(
+      makeRunPage([
+        makeRunSummary({ trendsFound: 0, topicsKept: 0, phrasesFound: 0 }),
+      ]),
+    );
+
+    renderWithProviders(<RunsPage />);
+
+    expect(await screen.findByText("0 trends → 0 kept")).toBeInTheDocument();
+    expect(screen.getByText("0 phrases")).toBeInTheDocument();
+  });
+
   it("links each row to that run's detail page", async () => {
     servePage(makeRunPage([makeRunSummary({ runId: "20260829T090000Z" })]));
 

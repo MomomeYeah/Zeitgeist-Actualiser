@@ -5,8 +5,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { RankedTopic, RunDetail } from "@/api/types";
 import { RunDetailPage } from "@/features/runs/RunDetailPage";
+import stageStyles from "@/features/runs/StageCards.module.css";
 import { FakeEventSource } from "@/test/eventsource";
 import {
+  FIXED_END,
   makeActiveRuns,
   makeLogLine,
   makeQueuedRun,
@@ -375,6 +377,84 @@ describe("RunDetailPage", () => {
     expect(screen.getByText("airport cat")).toBeInTheDocument();
   });
 
+  it("draws an aborted run's still-running stage as interrupted, not live", async () => {
+    // `_RunRecorder` writes a `running` stage row and nothing closes it when
+    // a run is aborted, failed or interrupted by a restart. The run's own
+    // status is authoritative: once it has ended, a row still saying
+    // `running` is a stage that was cut off, not one still going.
+    server.use(
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(
+          makeRunDetail({
+            status: "aborted",
+            finishedAt: FIXED_END,
+            stages: [
+              makeStageRecord({ stage: "ingest" }),
+              makeStageRecord({
+                stage: "analyse",
+                status: "running",
+                finishedAt: null,
+                payloadBytes: null,
+                done: 8,
+                total: 12,
+              }),
+            ],
+          }),
+        ),
+      ),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
+    );
+
+    renderPage();
+
+    expect(await screen.findByText("interrupted · 8 of 12")).toBeInTheDocument();
+    expect(screen.queryByText("8 / 12")).not.toBeInTheDocument();
+    expect(screen.getByText("analyse").closest("li")).not.toHaveClass(
+      stageStyles.running ?? "",
+    );
+  });
+
+  it("keeps a live run's running stage counting, as the control case", async () => {
+    // Same record as above, but on a run that is still `running`. This is
+    // what proves the new branch keys on the run's own liveness rather than
+    // the stage record alone — a version that always drew `running` rows as
+    // interrupted would pass the test above and fail this one.
+    server.use(
+      http.get("/api/runs/active", () =>
+        HttpResponse.json(makeActiveRuns({ current: "20260829T090000Z" })),
+      ),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(
+          makeRunDetail({
+            status: "running",
+            finishedAt: null,
+            stages: [
+              makeStageRecord({ stage: "ingest" }),
+              makeStageRecord({
+                stage: "analyse",
+                status: "running",
+                finishedAt: null,
+                payloadBytes: null,
+                done: 8,
+                total: 12,
+              }),
+            ],
+          }),
+        ),
+      ),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+    );
+
+    renderPage();
+
+    expect(await screen.findByText("8 / 12")).toBeInTheDocument();
+    expect(screen.getByText("analyse").closest("li")).toHaveClass(
+      stageStyles.running ?? "",
+    );
+  });
+
   it("shows no checkpoint size for a stage that has not written one", async () => {
     // `evidence · —` reads as a size that went missing. `evidence` alone
     // reads as a checkpoint not yet written, which is what is true.
@@ -570,6 +650,120 @@ describe("RunDetailPage", () => {
     await waitFor(() => expect(aborted).toBe("20260829T140200Z"));
   });
 
+  it("acknowledges a pending stop until the stage actually ends", async () => {
+    // A 202 means only that the request was accepted — the stage the run
+    // is on can take minutes to finish. Nothing said so before this fix,
+    // and the button stayed enabled and unchanged the whole time.
+    const user = userEvent.setup();
+    server.use(
+      ...liveRun(),
+      http.post("/api/runs/:runId/stop", () =>
+        HttpResponse.json(
+          { run_id: "20260829T140200Z", requested: "stop" },
+          { status: 202 },
+        ),
+      ),
+    );
+    renderDetail();
+
+    await user.click(
+      await screen.findByRole("button", { name: "Stop after this stage" }),
+    );
+
+    expect(await screen.findByRole("button", { name: "Stopping…" })).toBeDisabled();
+    // A user who asked for a clean stop can still escalate.
+    expect(screen.getByRole("button", { name: "Abort" })).toBeEnabled();
+  });
+
+  it("acknowledges a pending abort, and disables stop along with it", async () => {
+    const user = userEvent.setup();
+    server.use(
+      ...liveRun(),
+      http.post("/api/runs/:runId/abort", () =>
+        HttpResponse.json(
+          { run_id: "20260829T140200Z", requested: "abort" },
+          { status: 202 },
+        ),
+      ),
+    );
+    renderDetail();
+
+    await user.click(await screen.findByRole("button", { name: "Abort" }));
+    await user.click(screen.getByRole("button", { name: "yes" }));
+
+    expect(await screen.findByRole("button", { name: "Aborting…" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Stop after this stage" }),
+    ).toBeDisabled();
+  });
+
+  it("clears a pending stop or abort label once the run itself has ended", async () => {
+    // The pending state is client-side only and must not leak: a resumed
+    // run goes live again on the same page, and a stale `isSuccess` from
+    // the previous life would mislabel it. Here the run query itself
+    // refetches a finished detail — the same mechanism a real stop uses —
+    // and the finished buttons must replace the pending ones entirely.
+    //
+    // The second response is gated on a promise this test controls: the
+    // invalidate a successful Stop fires refetches the run query almost
+    // immediately, and an ungated handler resolved it before "Stopping…"
+    // ever painted, making the assertion below a race rather than a test.
+    const user = userEvent.setup();
+    let calls = 0;
+    let releaseSecondFetch: (() => void) | undefined;
+    const secondFetchGate = new Promise<void>((resolve) => {
+      releaseSecondFetch = resolve;
+    });
+    server.use(
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+      http.get("/api/runs/:runId", async () => {
+        calls += 1;
+        if (calls === 2) await secondFetchGate;
+        return HttpResponse.json(
+          makeRunDetail({
+            runId: "20260829T140200Z",
+            status: calls === 1 ? "running" : "aborted",
+            finishedAt: calls === 1 ? null : FIXED_END,
+            resumeStage: "generate",
+            stages: [
+              makeStageRecord({ stage: "ingest" }),
+              makeStageRecord({
+                stage: "analyse",
+                status: "running",
+                finishedAt: null,
+                done: 17,
+                total: 25,
+              }),
+            ],
+          }),
+        );
+      }),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
+      http.post("/api/runs/:runId/stop", () =>
+        HttpResponse.json(
+          { run_id: "20260829T140200Z", requested: "stop" },
+          { status: 202 },
+        ),
+      ),
+    );
+
+    renderDetail();
+    await user.click(
+      await screen.findByRole("button", { name: "Stop after this stage" }),
+    );
+    expect(await screen.findByRole("button", { name: "Stopping…" })).toBeInTheDocument();
+
+    // The stop mutation's own `onSuccess` invalidates `["runs"]`, which
+    // refetches this run's detail — now finished — the same way a real
+    // poll or reload would notice the run has ended.
+    releaseSecondFetch?.();
+
+    expect(await screen.findByRole("link", { name: "Re-run config" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stopping…" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Aborting…" })).not.toBeInTheDocument();
+  });
+
   it("streams the log while live", async () => {
     server.use(...liveRun());
     renderDetail();
@@ -686,6 +880,34 @@ describe("RunDetailPage", () => {
     expect(screen.getByRole("link", { name: "Re-run config" })).toBeInTheDocument();
   });
 
+  it("asks before resuming rather than acting on the first click", async () => {
+    // A click aimed at Abort as a live run completes can land on Resume
+    // instead — the buttons swap in place. Resume must arm a question, not
+    // re-run generate on the click that was meant to abort.
+    const user = userEvent.setup();
+    let resumed = false;
+    server.use(
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(makeRunDetail({ resumeStage: "generate" })),
+      ),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
+      http.post("/api/runs/:runId/resume", () => {
+        resumed = true;
+        return HttpResponse.json(makeQueuedRun(), { status: 202 });
+      }),
+    );
+
+    renderDetail("20260829T090000Z");
+    await user.click(
+      await screen.findByRole("button", { name: "Resume from generate" }),
+    );
+
+    expect(screen.getByText("Resume from generate?")).toBeInTheDocument();
+    expect(resumed).toBe(false);
+  });
+
   it("resumes from the computed stage without naming one", async () => {
     // The button posts an empty body: `resume_stage` is the server's own
     // computation, and a client that echoed it back could send a stale one.
@@ -710,6 +932,9 @@ describe("RunDetailPage", () => {
     await user.click(
       await screen.findByRole("button", { name: "Resume from generate" }),
     );
+    // Going through the confirm is a direct consequence of the ruling, not
+    // a weakened test: the assertion below (an empty body) is unchanged.
+    await user.click(screen.getByRole("button", { name: "yes" }));
 
     await waitFor(() => expect(body).toEqual({}));
   });
@@ -737,6 +962,7 @@ describe("RunDetailPage", () => {
     await user.click(
       await screen.findByRole("button", { name: "Resume from generate" }),
     );
+    await user.click(screen.getByRole("button", { name: "yes" }));
 
     expect(
       await screen.findByText("Run 20260829T090000Z is already queued or executing"),

@@ -260,6 +260,159 @@ describe("NewRunPage", () => {
     );
   });
 
+  it("sends the source run's frozen tunables as overrides when re-running", async () => {
+    // The four cards come from form state (asserted elsewhere), but the six
+    // tunables have no card of their own. Chosen to differ from every
+    // default in makeConfigOptions, so a version reading current settings
+    // instead of the preset would show up immediately.
+    const user = userEvent.setup();
+    let sent: unknown = null;
+    server.use(
+      options(),
+      idle(),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(
+          makeRunDetail({
+            runId: "20260829T090000Z",
+            config: {
+              trend_limit: 5,
+              posts_per_trend: 7,
+              meme_potential_weight: 0.6,
+              phrase_min_authors: 9,
+              distil_char_budget: 12000,
+              distil_concurrency: 2,
+            },
+          }),
+        ),
+      ),
+      http.post("/api/runs", async ({ request }) => {
+        sent = await request.json();
+        return HttpResponse.json(makeQueuedRun(), { status: 202 });
+      }),
+    );
+
+    renderWithProviders(<NewRunPage />, {
+      route: "/runs/new?from=20260829T090000Z",
+    });
+    await user.click(await screen.findByRole("button", { name: /Start run/ }));
+
+    await waitFor(() => expect(sent).not.toBeNull());
+    expect(sent).toMatchObject({
+      overrides: {
+        bluesky_trend_limit: "5",
+        bluesky_posts_per_trend: "7",
+        meme_potential_weight: "0.6",
+        phrase_min_authors: "9",
+        distil_char_budget: "12000",
+        distil_concurrency: "2",
+      },
+    });
+  });
+
+  it("sends none of the six frozen tunables on a fresh run", async () => {
+    const user = userEvent.setup();
+    let sent: unknown = null;
+    server.use(
+      options(),
+      idle(),
+      http.post("/api/runs", async ({ request }) => {
+        sent = await request.json();
+        return HttpResponse.json(makeQueuedRun(), { status: 202 });
+      }),
+    );
+
+    renderWithProviders(<NewRunPage />, { route: "/runs/new" });
+    await user.click(await screen.findByRole("button", { name: /Start run/ }));
+
+    await waitFor(() => expect(sent).not.toBeNull());
+    const json = JSON.stringify(sent);
+    for (const key of [
+      "bluesky_trend_limit",
+      "bluesky_posts_per_trend",
+      "meme_potential_weight",
+      "phrase_min_authors",
+      "distil_char_budget",
+      "distil_concurrency",
+    ]) {
+      expect(json).not.toContain(key);
+    }
+  });
+
+  it("shows the frozen trend limit in the count card's note, not settings' current default", async () => {
+    server.use(
+      options(),
+      idle(),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(makeRunDetail({ config: { trend_limit: 5 } })),
+      ),
+    );
+
+    renderWithProviders(<NewRunPage />, {
+      route: "/runs/new?from=20260829T090000Z",
+    });
+
+    expect(await screen.findByText("of 5 trends analysed")).toBeInTheDocument();
+  });
+
+  it("lets an edited card win over the preset it was seeded from", async () => {
+    const user = userEvent.setup();
+    let sent: unknown = null;
+    server.use(
+      options(),
+      idle(),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(makeRunDetail({ config: { top_count: 10 } })),
+      ),
+      http.post("/api/runs", async ({ request }) => {
+        sent = await request.json();
+        return HttpResponse.json(makeQueuedRun(), { status: 202 });
+      }),
+    );
+
+    renderWithProviders(<NewRunPage />, {
+      route: "/runs/new?from=20260829T090000Z",
+    });
+
+    expect(await screen.findByRole("button", { name: "10" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await user.click(screen.getByRole("button", { name: "3" }));
+    await user.click(screen.getByRole("button", { name: /Start run/ }));
+
+    await waitFor(() => expect(sent).not.toBeNull());
+    expect(sent).toMatchObject({ overrides: { topic_count: "3" } });
+  });
+
+  it("says defaults come from settings on a fresh form, with a link there", async () => {
+    server.use(options(), idle());
+
+    renderWithProviders(<NewRunPage />, { route: "/runs/new" });
+
+    expect(
+      await screen.findByRole("link", { name: "settings" }),
+    ).toHaveAttribute("href", "/settings");
+  });
+
+  it("says it is re-running a run's frozen config, with no settings link", async () => {
+    server.use(
+      options(),
+      idle(),
+      http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+    );
+
+    renderWithProviders(<NewRunPage />, {
+      route: "/runs/new?from=20260829T090000Z",
+    });
+
+    expect(
+      await screen.findByText(
+        "re-running …829T090000Z · its frozen config fills every field · changes apply to this run only",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "settings" })).not.toBeInTheDocument();
+  });
+
   it("reports a refused start rather than navigating", async () => {
     const user = userEvent.setup();
     server.use(

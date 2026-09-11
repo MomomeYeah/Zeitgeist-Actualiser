@@ -325,8 +325,15 @@ Two ways to end it early:
 Starting a run while one is in flight queues it: New run names the run it
 will wait behind, and the queued run's page opens straight away and starts
 streaming when its turn comes. A finished run's page offers **Re-run
-config**, which opens New run with that run's four cards filled in, and
-**Resume from &lt;stage&gt;** when there is a checkpoint to resume from.
+config**, which opens New run with that run's whole frozen config: the four
+cards, prefilled and editable, plus the six tunables it was frozen with
+(trend limit, posts per trend, meme potential weight, phrase min authors,
+distil char budget, distil concurrency), sent exactly as they were then —
+not whatever the settings screen says now. **Resume from &lt;stage&gt;**
+replays the same frozen config server-side, and — because the header's
+buttons swap in place the instant a run ends, and a click aimed at Abort as
+that happens can land on Resume instead — asks first, in place, the same
+way Abort does.
 
 ### The settings screen
 

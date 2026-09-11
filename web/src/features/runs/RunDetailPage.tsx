@@ -120,7 +120,18 @@ export function RunDetailPage() {
                     </span>
                   )}
                 </div>
-                <RunActions detail={detail} live={live} />
+                <RunActions
+                  // Remounts on every live↔over transition, which clears
+                  // every mutation's state along with it. Without this, a
+                  // resumed run going live again on this same page would
+                  // carry a stale `stop.isSuccess` from its previous life
+                  // straight into the buttons for its new one — see
+                  // `RunActions`'s own doc comment for the pending-state
+                  // guards this makes safe.
+                  key={live ? "live" : "over"}
+                  detail={detail}
+                  live={live}
+                />
               </div>
               <MetaLine>{configLine(detail, live)}</MetaLine>
               {queued && (
@@ -136,7 +147,7 @@ export function RunDetailPage() {
               )}
             </header>
 
-            <StageCards stages={detail.stages} />
+            <StageCards stages={detail.stages} live={live} />
 
             <QueryBoundary query={ranking} missing="No such run.">
               {(rows) =>

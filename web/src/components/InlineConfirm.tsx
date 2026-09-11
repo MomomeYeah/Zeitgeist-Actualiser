@@ -23,11 +23,24 @@ export function InlineConfirm({
   question,
   onConfirm,
   className,
+  tone = "contrast",
 }: {
   label: string;
   question: string;
   onConfirm: () => void;
   className?: string;
+  /**
+   * Which resting look the trigger gets. Defaults to today's contrast
+   * look, so Abort and phase 7's delete are unchanged.
+   *
+   * `"accent"` is for a control that has to read as the design's accent
+   * pill at rest — Resume, once it grew this confirm — without gambling on
+   * CSS-module class order: `className` alone appends a second single-class
+   * selector, and two such selectors from different stylesheets can land in
+   * either cascade order depending on import order, which is not something
+   * this component controls.
+   */
+  tone?: "contrast" | "accent";
 }) {
   const [asking, setAsking] = useState(false);
   const trigger = useRef<HTMLButtonElement | null>(null);
@@ -64,7 +77,12 @@ export function InlineConfirm({
       <button
         ref={trigger}
         type="button"
-        className={[styles.trigger, className].filter(Boolean).join(" ")}
+        className={[
+          tone === "accent" ? styles.accentTrigger : styles.trigger,
+          className,
+        ]
+          .filter(Boolean)
+          .join(" ")}
         onClick={() => setAsking(true)}
       >
         {label}
