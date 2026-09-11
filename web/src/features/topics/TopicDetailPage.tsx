@@ -77,7 +77,7 @@ export function TopicDetailPage() {
               />
             </div>
 
-            <RenderGrid renders={data.renders} runId={topic.run_id} />
+            <RenderGrid renders={data.renders} runId={topic.run_id} pending={[]} />
           </div>
         );
       }}

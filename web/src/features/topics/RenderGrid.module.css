@@ -2,28 +2,23 @@
   margin-top: var(--gap-page);
 }
 
+/* 4-up, per 2e. Past four tiles it wraps to a second row. */
 .grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: var(--gap-card);
 }
 
-.cell {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-tight);
-  padding: 8px;
-  border: 1px solid var(--border);
+/* The spec's nothing-rendered-yet row: the grid's place, dashed, with the
+   one instruction that matters. The mockup's dashed white 10% is the
+   border token (9%). */
+.nothing {
+  padding: 22px;
+  border: 1px dashed var(--border);
   border-radius: var(--radius-tile);
-  background: var(--surface);
-}
-
-.footer {
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 10.5px;
+  line-height: 1;
+  text-align: center;
   color: var(--text-35);
-}
-
-.footer:hover {
-  color: var(--text-70);
 }

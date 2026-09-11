@@ -35,3 +35,26 @@
   font-size: 9.5px;
   font-weight: 500;
 }
+
+/* A linked tile's anchor fills the tile, so the image's 100% × 100% has a
+   box to be a percentage of — at the grid size an unsized anchor left the
+   image its natural 1180px wide. */
+.tile > a {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+/* Topic detail's tile: the card's full width, 112px tall, per 2e. The card
+   around it carries the border and the radius, so the image carries
+   neither. Declared after `.tile` and `.failed` so it wins at equal
+   specificity. */
+.grid {
+  width: 100%;
+  height: 112px;
+  border-radius: 0;
+}
+
+.tile.grid {
+  border: none;
+}

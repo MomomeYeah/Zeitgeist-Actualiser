@@ -6,8 +6,9 @@ import { imageUrl } from "@/api/client";
 import styles from "./MemeTile.module.css";
 
 /**
- * One rendered meme, at one of the three sizes the design draws: 34px in a
- * runs-list row, 42px in a ranking row, 96px in a topic-detail grid.
+ * One rendered meme, at one of the sizes the design draws: 34px in a
+ * runs-list row, 42px in a ranking row, 96px square, and `"grid"` — the
+ * full width of a topic-detail tile, 112px tall.
  *
  * The database is authoritative for whether a render exists, so a row whose
  * PNG is missing is a failed tile rather than a broken image or a crash.
@@ -15,7 +16,9 @@ import styles from "./MemeTile.module.css";
  * a partially failed run shows itself on the runs list — see "Decisions this
  * phase is required to make", 7.
  *
- * Phase 7 adds the other two states, `confirming` and `generating`.
+ * The tile's other states — generating, failed as a row, confirming a
+ * delete — belong to the card around it, `features/topics/RenderTile`,
+ * because they live in its footer and its preview rather than in the image.
  */
 export function MemeTile({
   renderId,
@@ -24,17 +27,25 @@ export function MemeTile({
   templateId,
 }: {
   renderId: string;
-  size: 34 | 42 | 96;
+  size: 34 | 42 | 96 | "grid";
   to?: string;
   templateId?: string;
 }) {
   const [failed, setFailed] = useState(false);
 
+  const grid = size === "grid";
+  // Anything drawn wider than the 96px thumbnail gets the full PNG.
+  // `size === "grid"` is spelled out rather than reusing `grid`, so the
+  // comparison on its right narrows `size` to a number without leaning on
+  // aliased-condition narrowing.
+  const source = size === "grid" || size >= 96 ? "full" : "thumb";
+  const box = grid ? undefined : { "--tile": `${size}px` };
+
   if (failed) {
     return (
       <span
-        className={styles.failed}
-        style={{ "--tile": `${size}px` }}
+        className={grid ? `${styles.failed} ${styles.grid}` : styles.failed}
+        style={box}
         title={`Render ${renderId} has no image on disk`}
       >
         failed
@@ -45,7 +56,7 @@ export function MemeTile({
   const image = (
     <img
       className={styles.image}
-      src={imageUrl(renderId, size >= 96 ? "full" : "thumb")}
+      src={imageUrl(renderId, source)}
       alt={templateId === undefined ? "meme" : `${templateId} meme`}
       loading="lazy"
       onError={() => setFailed(true)}
@@ -53,7 +64,7 @@ export function MemeTile({
   );
 
   return (
-    <span className={styles.tile} style={{ "--tile": `${size}px` }}>
+    <span className={grid ? `${styles.tile} ${styles.grid}` : styles.tile} style={box}>
       {to === undefined ? image : <Link to={to}>{image}</Link>}
     </span>
   );

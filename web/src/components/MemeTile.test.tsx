@@ -73,4 +73,15 @@ describe("MemeTile", () => {
     );
     expect(screen.getByAltText("drake meme")).toBeInTheDocument();
   });
+
+  it("fills a grid tile with the full-size PNG", () => {
+    // Topic detail's tiles are a quarter of the page wide, far past the
+    // 96px thumbnail — anything but the full image is a scaled-up blur.
+    renderWithProviders(<MemeTile renderId="render-1" size="grid" />);
+
+    expect(screen.getByRole("img")).toHaveAttribute(
+      "src",
+      "/api/renders/render-1/image?size=full",
+    );
+  });
 });

@@ -1,4 +1,5 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
@@ -198,37 +199,34 @@ describe("TopicDetailPage", () => {
     expect(await screen.findByText("2 from …829T090000Z")).toBeInTheDocument();
   });
 
-  it("shows only the renders that have an image behind them", async () => {
-    // A `generating` row has no PNG yet and a `failed` one never will.
-    // Phase 7 draws both states; this phase draws neither, so a tile with
-    // nothing behind it must not appear.
-    serve(
-      makeTopicDetail({
-        renders: [
-          makeRenderRecord({ id: "r1", status: "ready" }),
-          makeRenderRecord({ id: "r2", status: "generating" }),
-          makeRenderRecord({ id: "r3", status: "failed", error: "caption too long" }),
-        ],
+  it("takes a deleted render off the page, and leaves the others", async () => {
+    // "The tile disappearing is the confirmation", per the handoff. The
+    // server's list shrinks with the deletion, so the refetch that follows
+    // agrees with what the page already drew.
+    let renders = [
+      makeRenderRecord({ id: "r1", templateId: "drake" }),
+      makeRenderRecord({ id: "r2", templateId: "two_buttons" }),
+    ];
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(makeTopicDetail({ renders })),
+      ),
+      http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+      http.delete("/api/renders/:renderId", ({ params }) => {
+        renders = renders.filter((render) => render.id !== params.renderId);
+        return new HttpResponse(null, { status: 204 });
       }),
     );
-
+    const user = userEvent.setup();
     renderPage();
 
-    expect(await screen.findByText("1 from …829T090000Z")).toBeInTheDocument();
-    expect(screen.getAllByRole("img")).toHaveLength(1);
-  });
+    const tile = (await screen.findByAltText("drake meme")).closest("li");
+    if (!(tile instanceof HTMLElement)) throw new Error("drake's tile is not a list item");
+    await user.click(within(tile).getByRole("button", { name: "Delete render" }));
+    await user.click(within(tile).getByRole("button", { name: "yes" }));
 
-  it("draws no render section at all when nothing has rendered yet", async () => {
-    // Not the same as hiding the tiles: an empty section would show the
-    // label and a "0 from …" hint under it, which is a worse answer than
-    // saying nothing. Phase 7 replaces this with the designed dashed row.
-    serve(makeTopicDetail({ renders: [] }));
-
-    renderPage();
-
-    await screen.findByRole("heading", { name: "Airport cat" });
-    expect(screen.queryByText("Rendered from this topic")).not.toBeInTheDocument();
-    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByAltText("drake meme")).not.toBeInTheDocument());
+    expect(screen.getByAltText("two_buttons meme")).toBeInTheDocument();
   });
 
   it("says which topic is missing rather than showing an empty page", async () => {
