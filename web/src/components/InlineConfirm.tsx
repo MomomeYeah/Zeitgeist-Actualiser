@@ -1,4 +1,4 @@
-import type { FocusEvent, KeyboardEvent } from "react";
+import type { FocusEvent, KeyboardEvent, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 
 import styles from "./InlineConfirm.module.css";
@@ -17,6 +17,12 @@ import styles from "./InlineConfirm.module.css";
  * focused button is unmounted either way, and without this a keyboard user
  * lands at the top of the document. A blur revert leaves focus alone,
  * because it has already gone where someone put it.
+ *
+ * Two shapes. `"pill"` is Abort's and Resume's: a pill button that becomes
+ * a pill-shaped question. `"tile"` is the render tile's footer, per the
+ * handoff's 2e: at rest a line of `resting` text and a `✕`; asking, the
+ * whole footer becomes the question on contrast at 10%, with `yes` / `no`
+ * beside it and no middle dot, because the tile draws none.
  */
 export function InlineConfirm({
   label,
@@ -25,6 +31,9 @@ export function InlineConfirm({
   className,
   tone = "contrast",
   disabled = false,
+  variant = "pill",
+  ariaLabel,
+  resting,
 }: {
   label: string;
   question: string;
@@ -48,6 +57,15 @@ export function InlineConfirm({
    * this component controls.
    */
   tone?: "contrast" | "accent";
+  /** Which shape — see above. */
+  variant?: "pill" | "tile";
+  /** The trigger's accessible name, when its visible label is a glyph. */
+  ariaLabel?: string;
+  /**
+   * Tile only: what sits beside the trigger at rest — the tile's
+   * `<template> · <provenance>` line — and gives way to the question.
+   */
+  resting?: ReactNode;
 }) {
   const [asking, setAsking] = useState(false);
   const trigger = useRef<HTMLButtonElement | null>(null);
@@ -80,12 +98,17 @@ export function InlineConfirm({
   }, []);
 
   if (!asking) {
-    return (
+    const button = (
       <button
         ref={trigger}
         type="button"
+        aria-label={ariaLabel}
         className={[
-          tone === "accent" ? styles.accentTrigger : styles.trigger,
+          variant === "tile"
+            ? styles.tileTrigger
+            : tone === "accent"
+              ? styles.accentTrigger
+              : styles.trigger,
           className,
         ]
           .filter(Boolean)
@@ -96,6 +119,15 @@ export function InlineConfirm({
         {label}
       </button>
     );
+    if (variant === "tile") {
+      return (
+        <div className={styles.tileRest}>
+          {resting}
+          {button}
+        </div>
+      );
+    }
+    return button;
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -139,12 +171,17 @@ export function InlineConfirm({
     }, 100);
   }
 
+  const tile = variant === "tile";
   return (
-    <div className={styles.asking} onKeyDown={onKeyDown} onBlur={onBlur}>
-      <span className={styles.question}>{question}</span>
+    <div
+      className={tile ? styles.tileAsking : styles.asking}
+      onKeyDown={onKeyDown}
+      onBlur={onBlur}
+    >
+      <span className={tile ? styles.tileQuestion : styles.question}>{question}</span>
       <button
         type="button"
-        className={styles.answer}
+        className={tile ? styles.tileYes : styles.answer}
         onClick={() => {
           answer();
           onConfirm();
@@ -152,11 +189,11 @@ export function InlineConfirm({
       >
         yes
       </button>
-      <span className={styles.dot}>·</span>
+      {!tile && <span className={styles.dot}>·</span>}
       <button
         ref={cancel}
         type="button"
-        className={styles.answer}
+        className={tile ? styles.tileNo : styles.answer}
         onClick={answer}
       >
         no
