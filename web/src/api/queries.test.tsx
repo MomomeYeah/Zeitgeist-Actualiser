@@ -4,12 +4,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   ACTIVE_POLL_MS,
+  GENERATION_POLL_MS,
   MAX_LOG_LINES,
   TICK_INVALIDATE_MS,
   queryKeys,
   useAbortRun,
   useActiveRun,
   useConfigOptions,
+  useDeleteRender,
+  useGenerateRenders,
   useRanking,
   useRender,
   useRun,
@@ -20,6 +23,7 @@ import {
   useTopicDetail,
   useTopicIndex,
 } from "@/api/queries";
+import type { RenderRecord } from "@/api/types";
 import {
   makeActiveRuns,
   makeConfigOptions,
@@ -528,5 +532,390 @@ describe("the run mutations", () => {
     await waitFor(() =>
       expect(result.current.options.data?.defaults.bluesky_trend_limit).toBe("4"),
     );
+  });
+});
+
+describe("useTopicDetail while renders generate", () => {
+  it("polls while a render is generating, and stops once none is", async () => {
+    // Asserted as a quiet window rather than a call count. The render
+    // finishing triggers a refresh of its own — this detail is one of the
+    // views that count renders — and how many requests that makes is the
+    // implementation's business. What polling means is that requests keep
+    // coming a poll interval apart, so the proof it stopped is a stretch
+    // longer than one interval with no request at all.
+    const requestedAt: number[] = [];
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", () => {
+        requestedAt.push(Date.now());
+        // Generating on the first answer, ready on every one after.
+        const status = requestedAt.length === 1 ? "generating" : "ready";
+        return HttpResponse.json(
+          makeTopicDetail({ renders: [makeRenderRecord({ id: "r1", status })] }),
+        );
+      }),
+    );
+
+    const { result } = renderHook(() => useTopicDetail("r1", "t1"), {
+      wrapper: renderWithProviders.Wrapper,
+    });
+
+    // Reaching "ready" at all needs a poll: the first answer was generating.
+    await waitFor(() => expect(result.current.data?.renders[0]?.status).toBe("ready"), {
+      timeout: GENERATION_POLL_MS * 2,
+    });
+    await new Promise((resolve) => setTimeout(resolve, GENERATION_POLL_MS + 500));
+
+    const quiet = Date.now() - (requestedAt.at(-1) ?? 0);
+    expect(quiet).toBeGreaterThan(GENERATION_POLL_MS);
+  }, 10_000);
+
+  it("does not poll a topic with nothing generating", async () => {
+    // A failed render is settled too: it will never become anything else,
+    // so it is no reason to keep asking.
+    let calls = 0;
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", () => {
+        calls += 1;
+        return HttpResponse.json(
+          makeTopicDetail({
+            renders: [
+              makeRenderRecord({ id: "r1", status: "ready" }),
+              makeRenderRecord({ id: "r2", status: "failed", error: "overflow" }),
+            ],
+          }),
+        );
+      }),
+    );
+
+    const { result } = renderHook(() => useTopicDetail("r1", "t1"), {
+      wrapper: renderWithProviders.Wrapper,
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    await new Promise((resolve) => setTimeout(resolve, GENERATION_POLL_MS + 300));
+    expect(calls).toBe(1);
+  });
+
+  it("refreshes the run's ranking when a render finishes", async () => {
+    // `render_count` counts ready renders only, so a render finishing here
+    // changes a number the ranking holds. Nothing else would tell it.
+    let detailCalls = 0;
+    let rankingCalls = 0;
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", () => {
+        detailCalls += 1;
+        const status = detailCalls === 1 ? "generating" : "ready";
+        return HttpResponse.json(
+          makeTopicDetail({ renders: [makeRenderRecord({ id: "r1", status })] }),
+        );
+      }),
+      http.get("/api/runs/:runId/topics", () => {
+        rankingCalls += 1;
+        return HttpResponse.json([makeRankedTopic()]);
+      }),
+    );
+
+    const { result } = renderHook(
+      () => ({ detail: useTopicDetail("r1", "t1"), ranking: useRanking("r1") }),
+      { wrapper: renderWithProviders.Wrapper },
+    );
+    await waitFor(() => expect(result.current.ranking.isSuccess).toBe(true));
+    expect(rankingCalls).toBe(1);
+
+    await waitFor(() => expect(rankingCalls).toBe(2), {
+      timeout: GENERATION_POLL_MS * 3,
+    });
+  });
+});
+
+describe("useGenerateRenders", () => {
+  it("posts to the topic's renders and puts the rows it returns straight into the cache", async () => {
+    // The rows go into the cache from the reply itself. Waiting for a
+    // refetch instead would leave a gap between the placeholders going and
+    // the rows arriving. Every detail request after the first is held open,
+    // so the only way "new" can reach the cache is the mutation's own write
+    // — an implementation that invalidated rather than wrote never gets
+    // there, deterministically rather than depending on which response
+    // lands first.
+    let detailCalls = 0;
+    let posted: unknown = null;
+    let postedTo = "";
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", async () => {
+        detailCalls += 1;
+        if (detailCalls > 1) await new Promise(() => undefined);
+        return HttpResponse.json(
+          makeTopicDetail({ renders: [makeRenderRecord({ id: "old" })] }),
+        );
+      }),
+      http.post("/api/runs/:runId/topics/:topicId/renders", async ({ request, params }) => {
+        posted = await request.json();
+        postedTo = `${String(params.runId)}/${String(params.topicId)}`;
+        return HttpResponse.json(
+          [
+            makeRenderRecord({
+              id: "new",
+              status: "generating",
+              templateId: null,
+              captionSlots: {},
+            }),
+          ],
+          { status: 202 },
+        );
+      }),
+    );
+
+    const { result } = renderHook(
+      () => ({ detail: useTopicDetail("r1", "t1"), generate: useGenerateRenders("r1", "t1") }),
+      { wrapper: renderWithProviders.Wrapper },
+    );
+    await waitFor(() => expect(result.current.detail.isSuccess).toBe(true));
+
+    await act(async () => {
+      await result.current.generate.mutateAsync({ mode: "llm", template_id: null, count: 1 });
+    });
+
+    expect(postedTo).toBe("r1/t1");
+    expect(posted).toEqual({ mode: "llm", template_id: null, count: 1 });
+    // TanStack notifies observers on a setTimeout(0) batch, so this can lag
+    // mutateAsync's own resolution by a tick. Every later detail GET is
+    // held open, so only the mutation's own cache write can ever satisfy
+    // this — a refetch can't get there first.
+    await waitFor(() =>
+      expect(result.current.detail.data?.renders.map((render) => render.id)).toEqual([
+        "old",
+        "new",
+      ]),
+    );
+  });
+
+  it("is not undone by a detail fetch that was sent before the rows existed", async () => {
+    // The poll or a refocus can have a detail request on its way when the
+    // reply lands. Answered from before the post, it lacks the new rows;
+    // written over them, it would take the tiles away, and with nothing
+    // left generating the poll that would find them again would stop.
+    const created = makeRenderRecord({
+      id: "new",
+      status: "generating",
+      templateId: null,
+      captionSlots: {},
+    });
+    let renders = [makeRenderRecord({ id: "old" })];
+    let detailCalls = 0;
+    let staleAnswered = false;
+    let releaseStale: () => void = () => undefined;
+    const stale = new Promise<void>((resolve) => {
+      releaseStale = resolve;
+    });
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", async () => {
+        detailCalls += 1;
+        // Answered from the server's state at the moment it was asked.
+        const answer = makeTopicDetail({ renders });
+        if (detailCalls === 2) {
+          await stale;
+          staleAnswered = true;
+        }
+        return HttpResponse.json(answer);
+      }),
+      http.post("/api/runs/:runId/topics/:topicId/renders", () => {
+        renders = [...renders, created];
+        return HttpResponse.json([created], { status: 202 });
+      }),
+    );
+
+    const { result } = renderHook(
+      () => ({ detail: useTopicDetail("r1", "t1"), generate: useGenerateRenders("r1", "t1") }),
+      { wrapper: renderWithProviders.Wrapper },
+    );
+    await waitFor(() => expect(result.current.detail.isSuccess).toBe(true));
+
+    // A second fetch, sent and held before anything is posted.
+    void result.current.detail.refetch();
+    await waitFor(() => expect(detailCalls).toBe(2));
+
+    await act(async () => {
+      await result.current.generate.mutateAsync({ mode: "llm", template_id: null, count: 1 });
+    });
+    releaseStale();
+    // Wait for the stale answer to have been sent and for the query to
+    // settle, rather than for a fixed interval: a sleep that ran out before
+    // the stale response was processed would let this test pass against
+    // the very bug it names. Without the cancel, the query stays fetching
+    // until that response lands and overwrites the cache; with it, the
+    // query is already idle.
+    await waitFor(() => expect(staleAnswered).toBe(true));
+    await waitFor(() => expect(result.current.detail.isFetching).toBe(false));
+
+    expect(result.current.detail.data?.renders.map((render) => render.id)).toEqual([
+      "old",
+      "new",
+    ]);
+  });
+});
+
+describe("useDeleteRender", () => {
+  // `makeRenderRecord`'s own run and topic, which is what the hook keys the
+  // cached detail by.
+  const RUN = "20260829T090000Z";
+  const TOPIC = "topic-1";
+
+  /**
+   * Answers the first detail request and holds every later one open, so the
+   * only way a row can leave the cache in these tests is the mutation's own
+   * write — not a refetch that happens to agree with it.
+   */
+  function serveDetailOnce(renders: RenderRecord[]) {
+    let calls = 0;
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", async () => {
+        calls += 1;
+        if (calls > 1) await new Promise(() => undefined);
+        return HttpResponse.json(makeTopicDetail({ renders }));
+      }),
+    );
+  }
+
+  it("takes the row out of the cached topic at once, not after a refetch", async () => {
+    // "The tile disappearing is the confirmation", per the handoff.
+    serveDetailOnce([makeRenderRecord({ id: "keep" }), makeRenderRecord({ id: "gone" })]);
+    server.use(
+      http.delete("/api/renders/:renderId", () => new HttpResponse(null, { status: 204 })),
+    );
+
+    const { result } = renderHook(
+      () => ({ detail: useTopicDetail(RUN, TOPIC), remove: useDeleteRender() }),
+      { wrapper: renderWithProviders.Wrapper },
+    );
+    await waitFor(() => expect(result.current.detail.isSuccess).toBe(true));
+
+    await act(async () => {
+      await result.current.remove.mutateAsync(makeRenderRecord({ id: "gone" }));
+    });
+
+    // TanStack notifies observers on a setTimeout(0) batch, so this can lag
+    // mutateAsync's own resolution by a tick. Every later detail GET is
+    // held open, so only the mutation's own cache write can ever satisfy
+    // this — a refetch can't get there first.
+    await waitFor(() =>
+      expect(result.current.detail.data?.renders.map((render) => render.id)).toEqual(["keep"]),
+    );
+  });
+
+  it("counts a render that is already gone as deleted", async () => {
+    // Deleted in another tab. The end state asked for is the state the
+    // server reports; a tile that stayed put with an error nobody can act
+    // on would be the wrong answer to it.
+    serveDetailOnce([makeRenderRecord({ id: "gone" })]);
+    server.use(
+      http.delete("/api/renders/:renderId", () =>
+        HttpResponse.json({ detail: "No such render: gone" }, { status: 404 }),
+      ),
+    );
+
+    const { result } = renderHook(
+      () => ({ detail: useTopicDetail(RUN, TOPIC), remove: useDeleteRender() }),
+      { wrapper: renderWithProviders.Wrapper },
+    );
+    await waitFor(() => expect(result.current.detail.isSuccess).toBe(true));
+
+    await act(async () => {
+      await result.current.remove.mutateAsync(makeRenderRecord({ id: "gone" }));
+    });
+
+    // TanStack notifies observers on a setTimeout(0) batch, so this can lag
+    // mutateAsync's own resolution by a tick. Every later detail GET is
+    // held open, so only the mutation's own cache write can ever satisfy
+    // this — a refetch can't get there first.
+    await waitFor(() => expect(result.current.detail.data?.renders).toEqual([]));
+  });
+
+  it("refreshes the ranking, which just lost a meme", async () => {
+    let rankingCalls = 0;
+    serveDetailOnce([makeRenderRecord({ id: "gone" })]);
+    server.use(
+      http.get("/api/runs/:runId/topics", () => {
+        rankingCalls += 1;
+        return HttpResponse.json([makeRankedTopic()]);
+      }),
+      http.delete("/api/renders/:renderId", () => new HttpResponse(null, { status: 204 })),
+    );
+
+    const { result } = renderHook(
+      () => ({
+        detail: useTopicDetail(RUN, TOPIC),
+        ranking: useRanking(RUN),
+        remove: useDeleteRender(),
+      }),
+      { wrapper: renderWithProviders.Wrapper },
+    );
+    await waitFor(() => expect(result.current.ranking.isSuccess).toBe(true));
+
+    await act(async () => {
+      await result.current.remove.mutateAsync(makeRenderRecord({ id: "gone" }));
+    });
+
+    await waitFor(() => expect(rankingCalls).toBe(2));
+  });
+
+  it("refreshes the topics index, whose meme counts just lost one", async () => {
+    // The index counts ready renders per topic, as the ranking does, but
+    // lives under its own key rather than under the run's.
+    let indexCalls = 0;
+    serveDetailOnce([makeRenderRecord({ id: "gone" })]);
+    server.use(
+      http.get("/api/topics", () => {
+        indexCalls += 1;
+        return HttpResponse.json(makeTopicIndex());
+      }),
+      http.delete("/api/renders/:renderId", () => new HttpResponse(null, { status: 204 })),
+    );
+
+    const { result } = renderHook(
+      () => ({
+        detail: useTopicDetail(RUN, TOPIC),
+        index: useTopicIndex(),
+        remove: useDeleteRender(),
+      }),
+      { wrapper: renderWithProviders.Wrapper },
+    );
+    await waitFor(() => expect(result.current.index.isSuccess).toBe(true));
+    await waitFor(() => expect(result.current.detail.isSuccess).toBe(true));
+
+    await act(async () => {
+      await result.current.remove.mutateAsync(makeRenderRecord({ id: "gone" }));
+    });
+
+    await waitFor(() => expect(indexCalls).toBe(2));
+  });
+
+  it("leaves the row where it was when the server refuses", async () => {
+    // A 500 is a render that still exists. Taking it out of the cache
+    // anyway — TanStack's optimistic `onMutate` pattern with no rollback,
+    // which "the tile disappearing is the confirmation" invites — would
+    // show a deletion that did not happen, and unmount the tile that
+    // carries the server's reason.
+    serveDetailOnce([makeRenderRecord({ id: "keep" }), makeRenderRecord({ id: "stuck" })]);
+    server.use(
+      http.delete("/api/renders/:renderId", () =>
+        HttpResponse.json({ detail: "Permission denied: renders/stuck.png" }, { status: 500 }),
+      ),
+    );
+
+    const { result } = renderHook(
+      () => ({ detail: useTopicDetail(RUN, TOPIC), remove: useDeleteRender() }),
+      { wrapper: renderWithProviders.Wrapper },
+    );
+    await waitFor(() => expect(result.current.detail.isSuccess).toBe(true));
+
+    act(() => {
+      result.current.remove.mutate(makeRenderRecord({ id: "stuck" }));
+    });
+    await waitFor(() => expect(result.current.remove.isError).toBe(true));
+
+    expect(result.current.detail.data?.renders.map((render) => render.id)).toEqual([
+      "keep",
+      "stuck",
+    ]);
   });
 });

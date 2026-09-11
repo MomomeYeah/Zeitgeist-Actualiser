@@ -1,7 +1,7 @@
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
-import { ApiError, apiGet, apiSend, imageUrl, parseLogEvent } from "@/api/client";
+import { ApiError, apiDelete, apiGet, apiSend, imageUrl, parseLogEvent } from "@/api/client";
 import type { QueuedRun } from "@/api/types";
 import { makeLogLine, makeQueuedRun } from "@/test/factories";
 import { server } from "@/test/server";
@@ -129,6 +129,37 @@ describe("apiSend", () => {
     await expect(apiSend("POST", "/api/runs/r1/resume", {})).rejects.toMatchObject({
       status: 409,
       detail: "Run r1 wrote no checkpoints",
+    });
+  });
+});
+
+describe("apiDelete", () => {
+  it("resolves on a 204, which carries no body to parse", async () => {
+    // `DELETE /api/renders/{id}` answers 204 and nothing else. A client that
+    // called `response.json()` on it would throw on the empty body and
+    // report a deletion that worked as one that failed.
+    let deleted = "";
+    server.use(
+      http.delete("/api/renders/:renderId", ({ params }) => {
+        deleted = String(params.renderId);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+
+    await expect(apiDelete("/api/renders/r1")).resolves.toBeUndefined();
+    expect(deleted).toBe("r1");
+  });
+
+  it("raises an ApiError carrying the server's own detail", async () => {
+    server.use(
+      http.delete("/api/renders/:renderId", () =>
+        HttpResponse.json({ detail: "Permission denied: r1.png" }, { status: 500 }),
+      ),
+    );
+
+    await expect(apiDelete("/api/renders/r1")).rejects.toMatchObject({
+      status: 500,
+      detail: "Permission denied: r1.png",
     });
   });
 });

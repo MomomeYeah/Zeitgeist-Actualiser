@@ -99,6 +99,24 @@ export async function apiSend<T>(
 }
 
 /**
+ * A DELETE, whose success is a 204 with no body.
+ *
+ * Separate from `apiSend` rather than a third method on it: `apiSend`
+ * returns the parsed reply, and a 204 has none — `response.json()` on an
+ * empty body throws, so sharing the function would mean a special case
+ * inside it for the one verb that answers with nothing.
+ */
+export async function apiDelete(path: string): Promise<void> {
+  const response = await fetch(path, {
+    method: "DELETE",
+    headers: { accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await detailOf(response));
+  }
+}
+
+/**
  * What `openRunEvents` hands back.
  *
  * `EventTarget & { close() }` rather than `EventSource` because that is the
