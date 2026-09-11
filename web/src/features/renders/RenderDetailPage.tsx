@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 
 import { imageUrl } from "@/api/client";
-import { useRender, useTopicDetail } from "@/api/queries";
+import { useDeleteRender, useRender, useTopicDetail } from "@/api/queries";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { Chip } from "@/components/Chip";
+import { InlineConfirm } from "@/components/InlineConfirm";
 import { MetaLine } from "@/components/MetaLine";
 import { QueryBoundary } from "@/components/QueryBoundary";
 import { SectionLabel } from "@/components/SectionLabel";
@@ -20,6 +21,9 @@ export function RenderDetailPage() {
   const topic = useTopicDetail(render.data?.run_id, render.data?.topic_id);
   const [size, setSize] = useState<string>("");
   const [failed, setFailed] = useState(false);
+
+  const navigate = useNavigate();
+  const remove = useDeleteRender();
 
   return (
     <QueryBoundary query={render} missing="No such render.">
@@ -109,8 +113,8 @@ export function RenderDetailPage() {
                   <p className={styles.byHand}>written by hand</p>
                 )}
 
-                {!failed && (
-                  <div className={styles.footer}>
+                <div className={styles.footer}>
+                  {!failed && (
                     <a
                       className={styles.download}
                       href={imageUrl(record.id, "full")}
@@ -118,7 +122,30 @@ export function RenderDetailPage() {
                     >
                       Download PNG
                     </a>
-                  </div>
+                  )}
+                  {/* Offered whether or not the image loaded: a render whose
+                      PNG is gone is the likeliest to want deleting. On yes,
+                      back to the topic it came from, where its tile has
+                      already left the cache. */}
+                  <InlineConfirm
+                    label="Delete"
+                    question="Delete this render?"
+                    disabled={remove.isPending}
+                    onConfirm={() =>
+                      remove.mutate(record, {
+                        onSuccess: () =>
+                          void navigate(
+                            `/topics/${encodeURIComponent(record.run_id)}` +
+                              `/${encodeURIComponent(record.topic_id)}`,
+                          ),
+                      })
+                    }
+                  />
+                </div>
+                {remove.isError && (
+                  <p role="alert" className={styles.deleteError}>
+                    {remove.error.detail}
+                  </p>
                 )}
               </aside>
             </div>
