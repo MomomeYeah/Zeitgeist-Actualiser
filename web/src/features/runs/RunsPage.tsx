@@ -1,8 +1,10 @@
 import type { RunStatus, RunSummary } from "@/api/types";
-import { useRuns } from "@/api/queries";
+import { useActiveRun, useRuns } from "@/api/queries";
 import { EmptyState } from "@/components/EmptyState";
 import { MetaLine } from "@/components/MetaLine";
 import { QueryBoundary } from "@/components/QueryBoundary";
+import { NewRunButton } from "@/features/newrun/NewRunButton";
+import { InFlightCard } from "@/features/runs/InFlightCard";
 import { RunRow } from "@/features/runs/RunRow";
 
 import styles from "./RunsPage.module.css";
@@ -45,20 +47,28 @@ function summarise(runs: RunSummary[]): string {
 
 export function RunsPage() {
   const query = useRuns();
+  const active = useActiveRun();
+  const activeRunId = active.data?.current ?? null;
 
   return (
     <QueryBoundary query={query} missing="No runs.">
       {(page) => (
         <>
           <header className={styles.header}>
-            <h1 className={styles.title}>Runs</h1>
+            <div className={styles.titleRow}>
+              <h1 className={styles.title}>Runs</h1>
+              <NewRunButton />
+            </div>
             {page.runs.length > 0 && <MetaLine>{summarise(page.runs)}</MetaLine>}
           </header>
+
+          {activeRunId !== null && <InFlightCard runId={activeRunId} />}
 
           {page.runs.length === 0 ? (
             <EmptyState
               headline="Nothing has run yet"
               body="A run reads Bluesky, works out what is trending, and generates memes about it. The first one takes a few minutes."
+              action={<NewRunButton />}
             />
           ) : (
             <ul className={styles.rows}>

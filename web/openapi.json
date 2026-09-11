@@ -1895,6 +1895,28 @@
           "summary": {
             "type": "string",
             "title": "Summary"
+          },
+          "done": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Done"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
           }
         },
         "additionalProperties": false,
@@ -1908,7 +1930,7 @@
           "summary"
         ],
         "title": "StageRecord",
-        "description": "One stage of one run.\n\nEvery `| None` here is a real state: a queued stage has not started, a\nrunning one has not finished, and a failed or skipped one wrote no\ncheckpoint."
+        "description": "One stage of one run.\n\nEvery `| None` here is a real state: a queued stage has not started, a\nrunning one has not finished, and a failed or skipped one wrote no\ncheckpoint.\n\n`done` and `total` are the stage-relative counters the in-flight card\ndraws as `17 / 25`, and the partial fill on its top bar. They default\nto None because two of the four stages have nothing to count \u2014 ingest\nis one opaque fetch and evaluate one ranking pass \u2014 so requiring every\nconstruction site to spell out `done=None, total=None` would state\nnothing four times over. A running stage that reports no counters\nrenders an indeterminate bar rather than a zero-length one."
       },
       "StartRunBody": {
         "properties": {

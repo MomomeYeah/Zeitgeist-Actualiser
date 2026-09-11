@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+from tests.run_factory import make_run_config
 from zeitgeist.config import Settings
 from zeitgeist.records import (
     AutoOrigin,
@@ -12,6 +13,7 @@ from zeitgeist.records import (
     Stage,
     StageRecord,
 )
+from zeitgeist.runner import RUN_OVERRIDE_KEYS, resolve_settings
 
 
 def test_freeze_copies_the_settings_a_run_detail_config_line_shows():
@@ -33,6 +35,35 @@ def test_freeze_is_a_copy_not_a_view():
     settings.topic_count = 9
 
     assert frozen.top_count == 5
+
+
+def test_as_overrides_round_trips_through_freeze_and_resolve_settings():
+    """The inverse of `freeze`, pinned against the real `resolve_settings`
+    and the real `Settings` validator rather than against a hand-written
+    expectation of the mapping. Every value here is deliberately different
+    from its `Settings` default, so a wrong key name in the mapping table
+    would leave that field at its default in `resolved` and this would
+    catch it as a mismatch against `cfg`.
+    """
+    cfg = make_run_config(
+        sources=["bluesky"],
+        trend_limit=7,
+        posts_per_trend=3,
+        top_count=2,
+        meme_potential_weight=0.75,
+        phrase_min_authors=9,
+        distil_char_budget=5000,
+        distil_concurrency=2,
+        llm_provider="ollama",
+        llm_model="qwen3.5",
+        template_ids=["drake", "distracted-boyfriend"],
+    )
+
+    overrides = cfg.as_overrides()
+    resolved = resolve_settings(Settings(_env_file=None), overrides)
+
+    assert RunConfig.freeze(resolved, cfg.template_ids) == cfg
+    assert set(overrides) <= RUN_OVERRIDE_KEYS
 
 
 def test_a_manual_render_has_no_rationale_field_at_all():

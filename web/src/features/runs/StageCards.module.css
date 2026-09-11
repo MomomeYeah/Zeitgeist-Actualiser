@@ -53,3 +53,20 @@
   font-size: 9.5px;
   color: var(--text-30);
 }
+
+/* The active card, per 5a: a 35% accent border and the accent wash, so the
+   eye lands on the stage that is happening now. */
+.running {
+  border-color: var(--accent-border-strong);
+  background: var(--accent-wash);
+}
+
+/* Where the duration sits on a finished card. Mono, and accent, because it
+   is a live count rather than a settled fact. */
+.counter {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--accent);
+}

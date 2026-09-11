@@ -1044,6 +1044,31 @@ pointing at a 404 — so the one screen designed to be deep-linked is also the
 one most likely to meet a missing file, and now does so without a broken
 image or a dead link.
 
+**Resume asks before it acts.** The handoff draws it as an accent button
+with no confirm, at the same coordinates Abort occupies a moment earlier:
+the header's buttons swap in place the instant a run ends. A real-run walk
+aimed a click at Abort as a run completed; it landed on Resume instead and
+re-ran generate, overwriting the run's model-written renders. Resume now
+gets the same swap-in-place confirm as Abort, so a click that lands on it
+arms a question rather than acting, whichever button was there when the
+click was aimed. Its resting look stays the design's accent pill —
+`InlineConfirm` grew a `tone` prop for this, defaulting to Abort's existing
+contrast look — so the handoff's placement and styling both survive; only
+the missing confirm is added.
+
+**A stage a run cut off is drawn interrupted, not still running.**
+`_RunRecorder` writes a `running` stage row, and nothing closes it when a
+run is aborted, fails, or is interrupted by a restart — the handoff has no
+state for a stage a run cut off mid-flight, only queued, running and done.
+Trusting the row's own status once the run itself has ended would draw an
+aborted run's page as live forever: an accent-bordered card and a live
+counter under an ABORTED pill, always. The run's own status is
+authoritative; a `running` row in a run that is not live is redrawn as
+interrupted — idle-muted, no counter, its artifact line showing the
+checkpoint name alone because it wrote no checkpoint — and the summary
+still reports what the stage counted (`interrupted · 8 of 12`) where it
+counted anything, because that much is still true.
+
 ## Testing
 
 Backend testing follows the discipline already in the repository: hermetic, no
@@ -1187,6 +1212,93 @@ two in-flight run-detail states; the live log with its follow behaviour and
 jump-to-latest; the inline abort confirmation; the sidebar in-flight card and
 the run strip; the settings screen and its third nav item. Ends with a run
 startable, watchable and abortable from the browser.
+
+Walked, as phase 5 was, against real runs — live Bluesky trends distilled by
+a local Ollama model, started, watched, stopped, aborted, queued behind one
+another and resumed from an actual browser. The walk found five defects the
+fixtures structurally could not catch, each now fixed with a test that fails
+without the fix:
+
+- **The API's one SQLite connection raced itself.** A live run's page asks
+  for the run's detail and its ranking in the same instant, once a second,
+  and both handlers call `get_run` on the `Store` the app shares across
+  FastAPI's thread pool. `sqlite3.threadsafety == 3` protects SQLite's own
+  state, not the `sqlite3` module's statement cache or its one transaction
+  per connection, so the page intermittently read "No such run." for a run
+  that existed and the server logged 500s carrying `InterfaceError`. Phase 5
+  made a few concurrent requests per page load; phase 6's tick-driven
+  refresh makes three a second for a run's whole duration. MSW answers each
+  request alone, so no fixture could race. Every public `Store` method now
+  holds a per-store lock.
+- **Resuming a run failed on its own log.** A resume reuses the run's id,
+  and the resumed attempt numbered its log lines from 1 again, colliding
+  with the first attempt's on `(run_id, seq)`. The run was recorded as
+  failed in generate after generate had rendered every meme. The numbering
+  now continues from the run's last recorded line.
+- **New run's defaults were frozen at startup.** `GET /api/config/options`
+  read `app.state.settings`, so with `bluesky_trend_limit` lowered to 4 on
+  the settings screen, New run still said "of 25 trends analysed" for a run
+  that analysed 4 — the bug `GET /api/settings` had already been fixed for,
+  one endpoint over. It now resolves settings the way the next run will, and
+  saving settings invalidates the options the client holds.
+- **A finished run offered "New run" where the handoff draws "Re-run
+  config".** Two accent pills side by side, one indistinguishable from the
+  header button that starts from settings. It is now the ghost **Re-run
+  config** pill the handoff specifies.
+- **Escape, or either answer, on the inline abort confirm dropped keyboard
+  focus** to the top of the document, because the focused button unmounts.
+  Focus now returns to the trigger.
+
+A second walk, once this phase's screens had settled — a real run started,
+watched, stopped, aborted, queued behind another and resumed, all from the
+browser against a local Ollama model — found nine more findings, F1-F9.
+F1 and F2 both resolve as **the run's frozen config**: Resume and Re-run
+config each now send every field the source run was frozen with, not just
+the four cards visible on the New run form, so a run frozen at
+`trend_limit 5` no longer starts again at whatever `bluesky_trend_limit`
+currently says. F3, F4, F5, F6 and F7 are fixed: a stage a run cut off
+(aborted, failed, or interrupted by a restart) draws as interrupted rather
+than perpetually running; Stop and Abort acknowledge a pending request
+instead of sitting unchanged for however long the current stage takes;
+Resume gained the confirm described above; the sidebar rail is sticky and
+viewport-height rather than stretching to the document's; and a count a run
+never took reads `—` instead of a false zero. F8's default changed:
+`OLLAMA_HOST` now defaults to `127.0.0.1` rather than `localhost`, which
+cost over two seconds per model list on the machine the walk ran on. F9 is
+**deferred**: saving a field the environment controls writes a hidden
+settings row and silently shows the environment's value again on the next
+load. It needs a decision — disable the input, or add a note explaining
+why the save appeared to do nothing — that was not taken in this phase.
+
+Two things the design asks for are not built in this phase, deliberately.
+"Decisions" below means that section of the phase 6 plan,
+`docs/superpowers/plans/2026-09-10-web-ui-run-control-screens.md`.
+
+- **Ranking rows appending mid-analyse.** Persisting a row needs a
+  `run_topics` row, and `TopicRow` requires a trend score, final score and
+  rank that do not exist until every topic is distilled and scored. A
+  mid-analyse row is a different, rank-less shape — a new response model and
+  a second endpoint, which is a contract change with its own storage
+  questions rather than screen work. The ranking section says the final
+  order is set in evaluate, and the live log carries per-topic progress
+  instead. "Decisions", 2.
+- **`~4m left`.** An estimate needs a rate, and the only one available —
+  elapsed over items done — is meaningless for the first item and wrong
+  whenever the remaining work is unlike the work already done. A running
+  card's artifact line shows the checkpoint name alone. "Decisions", 1.
+
+Two are flagged back to the designer:
+
+- **Model annotations** (`default` / `slower` / `cheap`). Nothing records
+  them — the registry holds bare ids, and Ollama's list is whatever is pulled
+  on this machine — so model rows show the id alone rather than an editorial
+  claim nothing verifies. They need a real source, or removing from the
+  design. "Decisions", 3.
+- **The fourth settings source chip, `FROM ENV`.** The design drew three
+  because it did not know the environment outranks the settings table. It
+  is a real answer, and the one state where Save cannot change what the next
+  run uses, so the screen draws four and gives `FROM ENV` the stronger fill.
+  "Decisions", 5.
 
 **7 — Generation screens.** The two generation panels on topic detail, the
 rendered grid with its three tile states, the inline delete confirm, the

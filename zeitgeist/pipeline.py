@@ -182,11 +182,36 @@ def run_pipeline(
     if resuming <= ORDER.index(Stage.ANALYSE):
         observer.stage_started(Stage.ANALYSE)
         started = datetime.now(UTC)
+        distilled = 0
+
+        def _distilled(topic: Topic) -> None:
+            """Count, tell the observer, then pass the topic on.
+
+            No lock: `distil_topics` runs its pool with `pool.map` and calls
+            `on_topic` while iterating the results on *this* thread, so the
+            increment is single-threaded even though the model calls behind
+            it were not.
+
+            `total` is the trend count rather than the topic count, because
+            a trend whose distillation fails is dropped — so `done` can end
+            below `total`, which is the truth about that run and not an
+            off-by-one.
+            """
+            nonlocal distilled
+            distilled += 1
+            observer.topic_distilled(topic)
+            observer.stage_progress(
+                Stage.ANALYSE,
+                done=distilled,
+                total=len(evidence),
+                detail=topic.label,
+            )
+
         topics = distil_topics(
             evidence,
             provider,
             settings,
-            on_topic=observer.topic_distilled,
+            on_topic=_distilled,
             token=token,
         )
         topics = score_topics(

@@ -826,6 +826,14 @@ export interface components {
          *     Every `| None` here is a real state: a queued stage has not started, a
          *     running one has not finished, and a failed or skipped one wrote no
          *     checkpoint.
+         *
+         *     `done` and `total` are the stage-relative counters the in-flight card
+         *     draws as `17 / 25`, and the partial fill on its top bar. They default
+         *     to None because two of the four stages have nothing to count — ingest
+         *     is one opaque fetch and evaluate one ranking pass — so requiring every
+         *     construction site to spell out `done=None, total=None` would state
+         *     nothing four times over. A running stage that reports no counters
+         *     renders an indeterminate bar rather than a zero-length one.
          */
         StageRecord: {
             stage: components["schemas"]["Stage"];
@@ -842,6 +850,10 @@ export interface components {
             payload_bytes: number | null;
             /** Summary */
             summary: string;
+            /** Done */
+            done?: number | null;
+            /** Total */
+            total?: number | null;
         };
         /**
          * StartRunBody

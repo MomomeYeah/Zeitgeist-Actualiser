@@ -1,20 +1,34 @@
 /**
- * The query-key factory and the six read hooks, in one module so a key
- * cannot drift from the fetch that uses it.
+ * The query-key factory and all sixteen hooks — six read, four mutations,
+ * `useActiveRun`'s poll and `useRunEvents`'s stream — in one module so a
+ * key cannot drift from the fetch that uses it.
  *
- * Nothing here polls. `useActiveRun` and `useRunEvents` — the two hooks that
- * carry live behaviour — are phase 6's, and an idle app on these screens
- * makes no requests after the ones its route needed.
+ * `useActiveRun` and `useRunEvents` are the two hooks that carry live
+ * behaviour: the first polls while a run is in flight, and the second opens
+ * an SSE stream through the injectable transport in `client.ts`. `useRun`
+ * polls too, but only when a caller showing the run in flight asks it to
+ * (`poll`). Every other hook here fires once per mount, like phase 5's read
+ * hooks did.
  */
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 
-import { apiGet } from "@/api/client";
+import { apiGet, apiSend, openRunEvents, parseLogEvent } from "@/api/client";
 import type { ApiError } from "@/api/client";
 import type {
+  ActiveRuns,
+  ConfigOptions,
+  LogLine,
+  QueuedRun,
   RankedTopic,
   RenderRecord,
+  ResumeBody,
+  RunActionAck,
   RunDetail,
   RunPage,
+  SettingField,
+  SettingsUpdate,
+  StartRunBody,
   TopicDetail,
   TopicIndex,
   TrendStatus,
@@ -32,6 +46,10 @@ export const queryKeys = {
   topicDetail: (runId: string, topicId: string) => ["runs", runId, "topics", topicId],
   topicIndex: (options: TopicIndexOptions) => ["topics", options],
   render: (renderId: string) => ["renders", renderId],
+  active: () => ["runs", "active"],
+  log: (runId: string, verbose: boolean) => ["runs", runId, "log", { verbose }],
+  configOptions: () => ["config", "options"],
+  settings: () => ["settings"],
 };
 
 /** The three rows the design's run strip shows, and the runs list's page. */
@@ -46,11 +64,23 @@ export function useRuns(limit: number = DEFAULT_RUN_LIMIT) {
   });
 }
 
-export function useRun(runId: string | undefined) {
+/**
+ * One run's detail.
+ *
+ * `poll` is for the surfaces that show the run in flight away from its own
+ * page — the sidebar card and the Runs list's pinned card. Run detail keeps
+ * itself current from its stream's ticks, but no other screen opens one, so
+ * without a poll of their own those cards froze at the stage they first
+ * loaded: `useActiveRun`'s poll refreshes `["runs", "active"]`, which says
+ * *which* run is in flight and nothing about how far it has got. Same
+ * interval as that poll, because the two answer halves of one question.
+ */
+export function useRun(runId: string | undefined, options: { poll?: boolean } = {}) {
   return useQuery<RunDetail, ApiError>({
     queryKey: queryKeys.run(runId ?? ""),
     queryFn: () => apiGet<RunDetail>(`/api/runs/${encodeURIComponent(runId ?? "")}`),
     enabled: runId !== undefined,
+    refetchInterval: options.poll === true ? ACTIVE_POLL_MS : false,
   });
 }
 
@@ -91,4 +121,274 @@ export function useRender(renderId: string | undefined) {
       apiGet<RenderRecord>(`/api/renders/${encodeURIComponent(renderId ?? "")}`),
     enabled: renderId !== undefined,
   });
+}
+
+/** How often the active-run query re-asks while something is running. */
+export const ACTIVE_POLL_MS = 2000;
+/**
+ * The floor between two tick-driven invalidations.
+ *
+ * The stream ticks every 250ms (`control.POLL_SECONDS`). Refetching run
+ * detail four times a second would spend most of a run re-reading rows that
+ * change once a stage, so a tick is a hint to refresh rather than an
+ * instruction to.
+ */
+export const TICK_INVALIDATE_MS = 1000;
+/** Lines held in the DOM before the oldest are dropped. */
+export const MAX_LOG_LINES = 2000;
+
+/**
+ * The in-flight run and the queue — the single source of truth for the
+ * sidebar card, the run strip, the Runs in-flight card and New run's queue
+ * notice.
+ *
+ * `refetchInterval` is `false` while nothing is running, so an idle app
+ * makes no requests at all. A run started from this app invalidates the
+ * query on success, and `refetchOnWindowFocus` (left on in `providers.tsx`)
+ * covers coming back to a tab after one was started elsewhere.
+ */
+export function useActiveRun() {
+  return useQuery<ActiveRuns, ApiError>({
+    queryKey: queryKeys.active(),
+    queryFn: () => apiGet<ActiveRuns>("/api/runs/active"),
+    refetchInterval: (query) =>
+      query.state.data === undefined || query.state.data.current === null
+        ? false
+        : ACTIVE_POLL_MS,
+    staleTime: 0,
+  });
+}
+
+/**
+ * A finished run's log.
+ *
+ * `verbose` is a server-side filter here, unlike the live log's, because
+ * there is no buffer on the client to filter — the lines come from
+ * `log_lines` and the endpoint already knows how to narrow them.
+ */
+export function useRunLog(
+  runId: string | undefined,
+  verbose: boolean,
+  enabled = true,
+) {
+  return useQuery<LogLine[], ApiError>({
+    queryKey: queryKeys.log(runId ?? "", verbose),
+    queryFn: () =>
+      apiGet<LogLine[]>(`/api/runs/${encodeURIComponent(runId ?? "")}/log`, {
+        verbose,
+      }),
+    enabled: enabled && runId !== undefined,
+  });
+}
+
+export function useConfigOptions() {
+  return useQuery<ConfigOptions, ApiError>({
+    queryKey: queryKeys.configOptions(),
+    queryFn: () => apiGet<ConfigOptions>("/api/config/options"),
+  });
+}
+
+export function useSettings() {
+  return useQuery<SettingField[], ApiError>({
+    queryKey: queryKeys.settings(),
+    queryFn: () => apiGet<SettingField[]>("/api/settings"),
+  });
+}
+
+/**
+ * Everything under `["runs", ...]`: the list, every detail, every ranking,
+ * and `active`. One invalidation rather than four, because every mutation
+ * here can change all of them — a started run is a new row, a new active
+ * run, and a page whose counts moved.
+ */
+function useRunsInvalidator() {
+  const client = useQueryClient();
+  return () => {
+    void client.invalidateQueries({ queryKey: ["runs"] });
+  };
+}
+
+export function useStartRun() {
+  const invalidate = useRunsInvalidator();
+  return useMutation<QueuedRun, ApiError, StartRunBody>({
+    mutationFn: (body) => apiSend<QueuedRun>("POST", "/api/runs", body),
+    onSuccess: invalidate,
+  });
+}
+
+export function useResumeRun(runId: string) {
+  const invalidate = useRunsInvalidator();
+  return useMutation<QueuedRun, ApiError, ResumeBody>({
+    mutationFn: (body) =>
+      apiSend<QueuedRun>("POST", `/api/runs/${encodeURIComponent(runId)}/resume`, body),
+    onSuccess: invalidate,
+  });
+}
+
+export function useStopRun(runId: string) {
+  const invalidate = useRunsInvalidator();
+  return useMutation<RunActionAck, ApiError, void>({
+    mutationFn: () =>
+      apiSend<RunActionAck>("POST", `/api/runs/${encodeURIComponent(runId)}/stop`),
+    onSuccess: invalidate,
+  });
+}
+
+export function useAbortRun(runId: string) {
+  const invalidate = useRunsInvalidator();
+  return useMutation<RunActionAck, ApiError, void>({
+    mutationFn: () =>
+      apiSend<RunActionAck>("POST", `/api/runs/${encodeURIComponent(runId)}/abort`),
+    onSuccess: invalidate,
+  });
+}
+
+/**
+ * `PUT /api/settings` answers with the same shape as the `GET`, so the
+ * reply goes straight into the cache. A refetch instead would be a wasted
+ * round trip and a visible flicker on the very chip that just changed.
+ *
+ * The config options are invalidated rather than written: their `defaults`
+ * are the same values resolved again, which the reply does not carry in
+ * that shape. Without it New run kept saying "of 25 trends analysed" for a
+ * limit just lowered here, until its stale time ran out.
+ */
+export function useSaveSettings() {
+  const client = useQueryClient();
+  return useMutation<SettingField[], ApiError, SettingsUpdate>({
+    mutationFn: (body) => apiSend<SettingField[]>("PUT", "/api/settings", body),
+    onSuccess: (fields) => {
+      client.setQueryData(queryKeys.settings(), fields);
+      void client.invalidateQueries({ queryKey: queryKeys.configOptions() });
+    },
+  });
+}
+
+/**
+ * The run's live log, and the nudge that keeps the rest of the screen
+ * current.
+ *
+ * Lines accumulate in local state rather than in the query cache: they
+ * arrive as a stream of appends, and a cache entry rewritten on every frame
+ * would invalidate every consumer of it on every frame.
+ *
+ * Incoming lines are batched to an animation frame. A DEBUG run emits a
+ * line per distilled topic from a thread pool, so appending one at a time
+ * would re-render the log once per line.
+ *
+ * A line at or below the highest `seq` already taken is dropped. The server
+ * sends no `id:` lines, so an `EventSource` that reconnects mid-run starts
+ * the server's generator again at `since(0)` and gets the whole buffer a
+ * second time; appended as it came, that doubled the log and repeated the
+ * `seq` each row is keyed by. `seq` is the handler's total order over one
+ * run's lines, so it is the right thing to deduplicate on.
+ *
+ * The tick throttle has a trailing edge as well as a leading one. The tick
+ * after a run's final status write usually lands inside the window the
+ * previous one opened, and a leading-edge-only throttle dropped it — so the
+ * page stayed live, "Stopping…" and a counting clock, until the stream
+ * reconnected about three seconds later. A throttled tick now leaves one
+ * refresh for the end of its window, and a burst of them leaves only that
+ * one.
+ */
+export function useRunEvents(runId: string | undefined, enabled: boolean) {
+  const client = useQueryClient();
+  const [lines, setLines] = useState<LogLine[]>([]);
+  const pending = useRef<LogLine[]>([]);
+  const frame = useRef<number | null>(null);
+  const lastInvalidated = useRef(0);
+  const trailing = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Negative infinity rather than 0: nothing has been taken yet, so no
+  // `seq` — whatever the server starts numbering at — is a replay.
+  const highestSeq = useRef(Number.NEGATIVE_INFINITY);
+
+  useEffect(() => {
+    if (runId === undefined || !enabled) return;
+    setLines([]);
+    // Reset with the lines they describe: a resumed run's new stream is a
+    // new buffer, and its numbering is checked against nothing held.
+    highestSeq.current = Number.NEGATIVE_INFINITY;
+    const source = openRunEvents(runId);
+
+    const flush = () => {
+      frame.current = null;
+      const batch = pending.current;
+      pending.current = [];
+      if (batch.length === 0) return;
+      setLines((held) => {
+        const next = [...held, ...batch];
+        return next.length > MAX_LOG_LINES
+          ? next.slice(next.length - MAX_LOG_LINES)
+          : next;
+      });
+    };
+
+    const onLog = (event: Event) => {
+      const fresh = parseLogEvent(eventData(event)).filter(
+        (line) => line.seq > highestSeq.current,
+      );
+      if (fresh.length === 0) return;
+      for (const line of fresh) {
+        highestSeq.current = Math.max(highestSeq.current, line.seq);
+      }
+      pending.current = [...pending.current, ...fresh];
+      if (frame.current === null) {
+        frame.current = requestAnimationFrame(flush);
+      }
+    };
+
+    const invalidate = () => {
+      lastInvalidated.current = Date.now();
+      void client.invalidateQueries({ queryKey: ["runs"] });
+    };
+
+    const onTick = () => {
+      const elapsed = Date.now() - lastInvalidated.current;
+      if (elapsed >= TICK_INVALIDATE_MS) {
+        // A trailing refresh can still be pending if its timer ran late;
+        // this one supersedes it rather than following it by a few ms.
+        if (trailing.current !== null) clearTimeout(trailing.current);
+        trailing.current = null;
+        invalidate();
+        return;
+      }
+      if (trailing.current !== null) return;
+      trailing.current = setTimeout(() => {
+        trailing.current = null;
+        invalidate();
+      }, TICK_INVALIDATE_MS - elapsed);
+    };
+
+    source.addEventListener("log", onLog);
+    source.addEventListener("tick", onTick);
+    return () => {
+      source.removeEventListener("log", onLog);
+      source.removeEventListener("tick", onTick);
+      source.close();
+      if (frame.current !== null) cancelAnimationFrame(frame.current);
+      frame.current = null;
+      pending.current = [];
+      if (trailing.current !== null) clearTimeout(trailing.current);
+      trailing.current = null;
+      // The window belonged to this stream. A resumed run's new one should
+      // refresh on its first tick rather than wait out the old window.
+      lastInvalidated.current = 0;
+    };
+  }, [runId, enabled, client]);
+
+  return lines;
+}
+
+/**
+ * An SSE frame's payload.
+ *
+ * `addEventListener` on a name outside `EventSourceEventMap` is typed with
+ * a plain `Event`, so the narrowing is real rather than ceremonial — and it
+ * is a narrowing, not an assertion, which is what keeps this out of
+ * `client.ts`.
+ */
+function eventData(event: Event): string {
+  return event instanceof MessageEvent && typeof event.data === "string"
+    ? event.data
+    : "";
 }

@@ -156,13 +156,14 @@ def test_a_database_from_an_older_schema_is_refused(tmp_path):
 
 
 def test_a_real_older_database_is_refused_rather_than_adopted(tmp_path):
-    """Schema 2's tables were `runs` and `topics`; schema 3 declares neither.
-    Probing for a table only the *current* schema names therefore reads a
-    genuine v2 file as fresh, runs the IF NOT EXISTS DDL beside its tables and
-    stamps it 3 — no error, and the surviving topic_scores history stranded
-    behind a join to a run_records that has no rows for it. This builds the
-    file the real transition produces rather than stamping a v3 file with an
-    older number, which is the case the two tests above already cover.
+    """Schema 2's tables were `runs` and `topics`; the current schema declares
+    neither. Probing for a table only the *current* schema names therefore
+    reads a genuine v2 file as fresh, runs the IF NOT EXISTS DDL beside its
+    tables and stamps it with the current version — no error, and the
+    surviving topic_scores history stranded behind a join to a run_records
+    that has no rows for it. This builds the file the real transition
+    produces rather than stamping a current-schema file with an older
+    number, which is the case the two tests above already cover.
     """
     path = tmp_path / "z.db"
     old = sqlite3.connect(path)
@@ -172,7 +173,7 @@ def test_a_real_older_database_is_refused_rather_than_adopted(tmp_path):
     old.commit()
     old.close()
 
-    with pytest.raises(StoreSchemaError, match=r"version 2.*expects 3"):
+    with pytest.raises(StoreSchemaError, match=r"version 2.*expects 4"):
         Store(path).init_schema()
 
 
@@ -456,7 +457,7 @@ def test_a_stale_database_is_rejected_with_an_actionable_message(tmp_path):
     # tests/test_config.py's match="mastodon". Rewording the instruction is
     # a decision; failing to name the file the user must delete is a bug,
     # because the message is the only place that path appears.
-    with pytest.raises(StoreSchemaError, match=r"z\.db.*version 1.*expects 3"):
+    with pytest.raises(StoreSchemaError, match=r"z\.db.*version 1.*expects 4"):
         Store(path).init_schema()
 
 
@@ -647,6 +648,58 @@ def test_check_same_thread_false_permits_cross_thread_use(tmp_path):
     assert error is None
 
 
+def test_a_shared_store_answers_every_concurrent_request_correctly(tmp_path):
+    """The live run screen asks for a run's detail and its ranking at the
+    same moment, once a second, and both handlers call `get_run` on the
+    API's one shared connection from different threadpool threads.
+
+    `threadsafety == 3` keeps SQLite's own C state intact, but not the
+    `sqlite3` module's: its statement cache hands two threads the same
+    prepared statement, and its implicit transactions are one per
+    connection. Unserialised, this is what a real run produced — a live
+    page flashing "No such run." for a run that existed, and 500s carrying
+    `InterfaceError: bad parameter or other API misuse`.
+
+    Reads race each other and a writer, because a request thread writes
+    through this connection too (`enqueue`, `PUT /api/settings`).
+    """
+    store = Store(tmp_path / "z.db", check_same_thread=False)
+    store.init_schema()
+    store.start_run("r1", make_run_config())
+    failures: list[str] = []
+    rounds = 400
+
+    def read() -> None:
+        for _ in range(rounds):
+            try:
+                if store.get_run("r1") is None:
+                    failures.append("get_run returned None for a run that exists")
+            except Exception as exc:  # noqa: BLE001 - collected, asserted below
+                failures.append(repr(exc))
+
+    def write() -> None:
+        for done in range(rounds):
+            try:
+                store.record_stage(
+                    "r1",
+                    make_stage_record(
+                        Stage.ANALYSE, status="running", done=done, total=rounds
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 - collected, asserted below
+                failures.append(repr(exc))
+
+    threads = [threading.Thread(target=read) for _ in range(6)]
+    threads.append(threading.Thread(target=write))
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert failures == []
+    assert store.stages_for_run("r1")[0].done == rounds - 1
+
+
 def test_a_checkpoint_round_trips_through_its_model(tmp_path):
     """This is what resuming a run depends on. A payload that does not round
     trip breaks resume silently rather than loudly."""
@@ -778,6 +831,82 @@ def test_a_queued_stage_round_trips_its_absent_timings(tmp_path):
         None,
         None,
     )
+
+
+def test_record_stage_round_trips_progress_counters(tmp_path):
+    """A running stage's counters survive the write and the read.
+
+    The in-flight stage card draws `17 / 25` and a partial bar from these
+    two numbers; a column that silently dropped them would leave the card
+    rendering a stage that is running with nothing to say about it.
+    """
+    store = Store(tmp_path / "z.db")
+    store.init_schema()
+    store.start_run("20260901T120000Z", make_run_config())
+
+    store.record_stage(
+        "20260901T120000Z",
+        make_stage_record(
+            Stage.ANALYSE,
+            status="running",
+            finished_at=None,
+            payload_bytes=None,
+            summary="distilling airport-cat",
+            done=17,
+            total=25,
+        ),
+    )
+
+    (record,) = store.stages_for_run("20260901T120000Z")
+    assert record.status == "running"
+    assert record.done == 17
+    assert record.total == 25
+    store.close()
+
+
+def test_record_stage_defaults_counters_to_none(tmp_path):
+    """Ingest and evaluate count nothing, and say so.
+
+    `None` here is not an unwritten field: those two stages are single
+    opaque operations. A zero would claim they had done none of a known
+    amount of work.
+    """
+    store = Store(tmp_path / "z.db")
+    store.init_schema()
+    store.start_run("20260901T120000Z", make_run_config())
+
+    store.record_stage("20260901T120000Z", make_stage_record(Stage.INGEST))
+
+    (record,) = store.stages_for_run("20260901T120000Z")
+    assert record.done is None
+    assert record.total is None
+    store.close()
+
+
+def test_record_stage_overwrites_a_running_row_with_its_final_one(tmp_path):
+    """`INSERT OR REPLACE` keyed on (run_id, stage): the completed row must
+    leave no trace of the counters the running row carried, or a finished
+    stage card would draw `17 / 25` beside its duration forever."""
+    store = Store(tmp_path / "z.db")
+    store.init_schema()
+    store.start_run("20260901T120000Z", make_run_config())
+
+    store.record_stage(
+        "20260901T120000Z",
+        make_stage_record(
+            Stage.ANALYSE, status="running", finished_at=None, done=17, total=25
+        ),
+    )
+    store.record_stage(
+        "20260901T120000Z",
+        make_stage_record(Stage.ANALYSE, status="ok", summary="25 topics distilled"),
+    )
+
+    (record,) = store.stages_for_run("20260901T120000Z")
+    assert record.status == "ok"
+    assert record.done is None
+    assert record.total is None
+    store.close()
 
 
 def test_run_topics_round_trip_through_the_store(tmp_path):

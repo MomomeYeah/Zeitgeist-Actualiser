@@ -1,14 +1,24 @@
-import { screen } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
+import { ACTIVE_POLL_MS } from "@/api/queries";
 import { RunsPage } from "@/features/runs/RunsPage";
-import { makeRunPage, makeRunSummary } from "@/test/factories";
+import {
+  makeActiveRuns,
+  makeRunDetail,
+  makeRunPage,
+  makeRunSummary,
+  makeStageRecord,
+} from "@/test/factories";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/server";
 
 function servePage(page = makeRunPage()) {
-  server.use(http.get("/api/runs", () => HttpResponse.json(page)));
+  server.use(
+    http.get("/api/runs", () => HttpResponse.json(page)),
+    http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+  );
 }
 
 describe("RunsPage", () => {
@@ -45,12 +55,46 @@ describe("RunsPage", () => {
     expect(screen.getByText("18 phrases")).toBeInTheDocument();
   });
 
+  it("shows no count for a run whose fan-out was never taken", async () => {
+    // trends_found/topics_kept/phrases_found are written when a run
+    // finishes. A running, aborted or interrupted run has them null, and
+    // format.ts's own convention is an em dash for "there is no value here"
+    // rather than a zero the pipeline never claimed.
+    servePage(
+      makeRunPage([
+        makeRunSummary({ trendsFound: null, topicsKept: null, phrasesFound: null }),
+      ]),
+    );
+
+    renderWithProviders(<RunsPage />);
+
+    expect(await screen.findByText("— trends → — kept")).toBeInTheDocument();
+    expect(screen.getByText("— phrases")).toBeInTheDocument();
+    expect(screen.queryByText(/0 trends/)).not.toBeInTheDocument();
+  });
+
+  it("keeps a genuine zero distinguishable from a count never taken", async () => {
+    // The control case: a run that really did find nothing must still say
+    // so, not disappear behind the null-guard above.
+    servePage(
+      makeRunPage([
+        makeRunSummary({ trendsFound: 0, topicsKept: 0, phrasesFound: 0 }),
+      ]),
+    );
+
+    renderWithProviders(<RunsPage />);
+
+    expect(await screen.findByText("0 trends → 0 kept")).toBeInTheDocument();
+    expect(screen.getByText("0 phrases")).toBeInTheDocument();
+  });
+
   it("links each row to that run's detail page", async () => {
     servePage(makeRunPage([makeRunSummary({ runId: "20260829T090000Z" })]));
 
     renderWithProviders(<RunsPage />);
 
-    expect(await screen.findByRole("link")).toHaveAttribute(
+    const list = await screen.findByRole("list");
+    expect(within(list).getByRole("link")).toHaveAttribute(
       "href",
       "/runs/20260829T090000Z",
     );
@@ -183,6 +227,7 @@ describe("RunsPage", () => {
       http.get("/api/runs", () =>
         HttpResponse.json({ detail: "database is locked" }, { status: 500 }),
       ),
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
     );
 
     renderWithProviders(<RunsPage />);
@@ -214,5 +259,137 @@ describe("RunsPage", () => {
 
     expect(failedRow?.className).toContain("failed");
     expect(okRow?.className).not.toContain("failed");
+  });
+
+  it("pins the in-flight run above the list", async () => {
+    server.use(
+      http.get("/api/runs", () =>
+        HttpResponse.json(makeRunPage([makeRunSummary({ runId: "20260829T090000Z" })])),
+      ),
+      http.get("/api/runs/active", () =>
+        HttpResponse.json(makeActiveRuns({ current: "20260829T140200Z" })),
+      ),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(
+          makeRunDetail({
+            runId: "20260829T140200Z",
+            status: "running",
+            stages: [
+              makeStageRecord({ stage: "ingest" }),
+              makeStageRecord({
+                stage: "analyse",
+                status: "running",
+                finishedAt: null,
+                done: 17,
+                total: 25,
+              }),
+            ],
+          }),
+        ),
+      ),
+    );
+
+    renderWithProviders(<RunsPage />);
+
+    expect(await screen.findByText("RUNNING")).toBeInTheDocument();
+    expect(screen.getByText("20260829T140200Z")).toBeInTheDocument();
+
+    // Above the list, which is the whole point of the card: a run in
+    // flight is the thing you came to look at. Asserting only that it
+    // rendered would pass with it moved to the foot of the page.
+    const card = screen.getByRole("link", { name: /20260829T140200Z/ });
+    const list = screen.getByRole("list");
+    expect(
+      card.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // Four segments, filled from the stage records — `RunRow` draws no
+    // progressbar, so these are the card's own. 17 of 25 is 68%: the
+    // fixture's counters have to reach the DOM as a width, or the card
+    // says a stage is running without saying how far in.
+    expect(
+      screen.getAllByRole("progressbar").map((bar) => bar.getAttribute("aria-valuenow")),
+    ).toEqual(["100", "68", "0", "0"]);
+  });
+
+  it("moves the in-flight card's segments on as the run does", async () => {
+    // This screen opens no stream, so nothing but the card's own poll
+    // refreshes the run's detail. Without it the segments stayed at the
+    // fill they had when the page loaded, for as long as it stayed open.
+    let detailCalls = 0;
+    server.use(
+      http.get("/api/runs", () => HttpResponse.json(makeRunPage())),
+      http.get("/api/runs/active", () =>
+        HttpResponse.json(makeActiveRuns({ current: "20260829T140200Z" })),
+      ),
+      http.get("/api/runs/:runId", () => {
+        detailCalls += 1;
+        return HttpResponse.json(
+          makeRunDetail({
+            runId: "20260829T140200Z",
+            status: "running",
+            stages: [
+              makeStageRecord({ stage: "ingest" }),
+              makeStageRecord({
+                stage: "analyse",
+                status: "running",
+                finishedAt: null,
+                done: detailCalls === 1 ? 5 : 20,
+                total: 25,
+              }),
+            ],
+          }),
+        );
+      }),
+    );
+
+    renderWithProviders(<RunsPage />);
+    await screen.findByText("20260829T140200Z");
+    const analyse = () => screen.getAllByRole("progressbar")[1];
+    expect(analyse()).toHaveAttribute("aria-valuenow", "20");
+
+    await waitFor(() => expect(analyse()).toHaveAttribute("aria-valuenow", "80"), {
+      timeout: ACTIVE_POLL_MS * 2,
+    });
+  });
+
+  it("draws no in-flight card while nothing is running", async () => {
+    server.use(
+      http.get("/api/runs", () => HttpResponse.json(makeRunPage())),
+      http.get("/api/runs/active", () =>
+        HttpResponse.json(makeActiveRuns({ current: null })),
+      ),
+    );
+
+    renderWithProviders(<RunsPage />);
+    await screen.findByRole("heading", { name: "Runs" });
+
+    expect(screen.queryByText("RUNNING")).not.toBeInTheDocument();
+  });
+
+  it("offers New run from the header", async () => {
+    server.use(
+      http.get("/api/runs", () => HttpResponse.json(makeRunPage())),
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+    );
+
+    renderWithProviders(<RunsPage />);
+
+    expect(await screen.findByRole("link", { name: "New run" })).toHaveAttribute(
+      "href",
+      "/runs/new",
+    );
+  });
+
+  it("offers New run from the empty state, which is the only thing to do there", async () => {
+    server.use(
+      http.get("/api/runs", () => HttpResponse.json(makeRunPage([]))),
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+    );
+
+    renderWithProviders(<RunsPage />);
+
+    expect(await screen.findByText("Nothing has run yet")).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "New run" })).toHaveLength(2);
   });
 });

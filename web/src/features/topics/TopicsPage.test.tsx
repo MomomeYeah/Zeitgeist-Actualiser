@@ -5,7 +5,9 @@ import { describe, expect, it } from "vitest";
 
 import { TopicsPage } from "@/features/topics/TopicsPage";
 import {
+  makeActiveRuns,
   makeIndexedTopic,
+  makeRunDetail,
   makeRunPage,
   makeRunSummary,
   makeTopicDetail,
@@ -13,6 +15,8 @@ import {
 } from "@/test/factories";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/server";
+
+import styles from "@/features/runs/RunStrip.module.css";
 
 function serve(
   index = makeTopicIndex(),
@@ -23,6 +27,7 @@ function serve(
     http.get("/api/topics", () => HttpResponse.json(index)),
     http.get("/api/runs", () => HttpResponse.json(runs)),
     http.get("/api/runs/:runId/topics/:topicId", () => HttpResponse.json(detail)),
+    http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
   );
 }
 
@@ -48,6 +53,7 @@ describe("TopicsPage", () => {
       http.get("/api/runs/:runId/topics/:topicId", () =>
         HttpResponse.json(makeTopicDetail()),
       ),
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
     );
 
     renderWithProviders(<TopicsPage />);
@@ -271,6 +277,7 @@ describe("TopicsPage", () => {
       http.get("/api/runs/:runId/topics/:topicId", () =>
         HttpResponse.json(makeTopicDetail()),
       ),
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
     );
 
     renderWithProviders(<TopicsPage />);
@@ -292,6 +299,7 @@ describe("TopicsPage", () => {
       http.get("/api/runs/:runId/topics/:topicId", () =>
         HttpResponse.json(makeTopicDetail()),
       ),
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
     );
 
     renderWithProviders(<TopicsPage />);
@@ -338,5 +346,90 @@ describe("TopicsPage", () => {
     expect(
       await screen.findByRole("heading", { name: "No topics in the last 6 runs" }),
     ).toBeInTheDocument();
+  });
+
+  it("shows the last three runs beside the mood bar", async () => {
+    server.use(
+      http.get("/api/topics", () => HttpResponse.json(makeTopicIndex())),
+      http.get("/api/runs", () =>
+        HttpResponse.json(
+          makeRunPage([
+            makeRunSummary({ runId: "20260829T090000Z" }),
+            makeRunSummary({ runId: "20260828T090000Z", status: "failed" }),
+          ]),
+        ),
+      ),
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(makeTopicDetail()),
+      ),
+    );
+
+    renderWithProviders(<TopicsPage />);
+
+    const strip = await screen.findByTestId("run-strip");
+    expect(within(strip).getByText("…829T090000Z")).toBeInTheDocument();
+    expect(within(strip).getByText("…828T090000Z")).toBeInTheDocument();
+  });
+
+  it("marks only the active run's row, whatever the list says about it", async () => {
+    server.use(
+      http.get("/api/topics", () => HttpResponse.json(makeTopicIndex())),
+      http.get("/api/runs", () =>
+        HttpResponse.json(
+          makeRunPage([
+            makeRunSummary({ runId: "20260829T140200Z", status: "running" }),
+            makeRunSummary({ runId: "20260828T090000Z", status: "ok" }),
+          ]),
+        ),
+      ),
+      http.get("/api/runs/active", () =>
+        HttpResponse.json(makeActiveRuns({ current: "20260829T140200Z" })),
+      ),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(
+          makeRunDetail({ runId: "20260829T140200Z", status: "running" }),
+        ),
+      ),
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(makeTopicDetail()),
+      ),
+    );
+
+    renderWithProviders(<TopicsPage />);
+
+    const strip = await screen.findByTestId("run-strip");
+    const live = within(strip).getByRole("link", { name: /829T140200Z/ });
+    const over = within(strip).getByRole("link", { name: /828T090000Z/ });
+
+    // The accent treatment is the only thing `activeRunId` decides: a run in
+    // flight already carries the status `running` in its own row, so
+    // asserting the word alone would pass with the prop removed entirely.
+    expect(live).toHaveClass(styles.running ?? "");
+    expect(over).not.toHaveClass(styles.running ?? "");
+  });
+
+  it("asks for only the three runs the strip draws", async () => {
+    // `RunStrip` maps over what it is given with no slice of its own, so the
+    // cap is the query's `limit` and this is the only place it is enforced.
+    // Raise it to `DEFAULT_RUN_LIMIT` and twenty-five rows appear beside a
+    // mood bar sized for three, with no other test noticing.
+    let limit: string | null = null;
+    server.use(
+      http.get("/api/topics", () => HttpResponse.json(makeTopicIndex())),
+      http.get("/api/runs", ({ request }) => {
+        limit = new URL(request.url).searchParams.get("limit");
+        return HttpResponse.json(makeRunPage());
+      }),
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(makeTopicDetail()),
+      ),
+    );
+
+    renderWithProviders(<TopicsPage />);
+    await screen.findByTestId("run-strip");
+
+    expect(limit).toBe("3");
   });
 });

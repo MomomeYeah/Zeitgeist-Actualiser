@@ -10,6 +10,7 @@ import logging
 import queue
 import threading
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel
@@ -20,7 +21,7 @@ from zeitgeist.logcapture import RunLogBuffer, capture_run_log
 from zeitgeist.models import STRICT
 from zeitgeist.pipeline import new_run_id, run_pipeline
 from zeitgeist.progress import Aborted, CancelToken, NullObserver, RunObserver
-from zeitgeist.records import RunConfig, RunError, Stage
+from zeitgeist.records import RunConfig, RunError, Stage, StageRecord
 from zeitgeist.settings_source import WRITABLE_KEYS
 from zeitgeist.sources import build_trend_source
 from zeitgeist.store import Store
@@ -143,21 +144,72 @@ def _execute(
     )
 
 
-class _StageTracker(NullObserver):
-    """Records the last stage `stage_started` reported.
+class _RunRecorder(NullObserver):
+    """Writes a stage's progress as it happens, and remembers where the run
+    got to.
 
-    `RunError.stage` must name where a run *died*, not where it *started*:
-    `request.start_at` is the latter, and a run that starts at ingest and
-    fails in generate must not be recorded as failing in ingest. Subclassing
-    `NullObserver` rather than proxying with `__getattr__` because `ty` will
-    not accept a `__getattr__` proxy as a `RunObserver`.
+    Two jobs in one observer because both are the worker's own bookkeeping
+    and both key on the same events. The remembering half is what
+    `_StageTracker` used to do alone: `RunError.stage` must name where a run
+    *died*, not where it *started*, and `request.start_at` is the latter.
+
+    The writing half exists because `pipeline._stage()` records a stage only
+    when it ends, always as `ok`. Nothing else ever writes a `running` row,
+    so without this the in-flight screens can see which stages have finished
+    and nothing about the one happening now.
+
+    Subclasses `NullObserver` rather than proxying with `__getattr__`
+    because `ty` will not accept a `__getattr__` proxy as a `RunObserver`.
+    The two events this does not implement — `topic_distilled` and
+    `render_finished` — are inherited as no-ops deliberately: persisting a
+    topic mid-analyse needs a rank it does not have yet (see the phase 6
+    plan, "Decisions", 2), and a finished render already writes its own row.
+
+    Every store call is guarded. A `RunObserver` may not raise, and a
+    locked or closed database is exactly the kind of thing that would
+    otherwise take a run down at its last stage — costing the run rather
+    than the progress display.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, store: Store, run_id: str) -> None:
+        self._store = store
+        self._run_id = run_id
+        self._started_at: dict[Stage, datetime] = {}
         self.last_stage: Stage | None = None
 
     def stage_started(self, stage: Stage) -> None:
         self.last_stage = stage
+        self._started_at[stage] = datetime.now(UTC)
+        self._write(stage, summary=stage.value, done=None, total=None)
+
+    def stage_progress(self, stage: Stage, done: int, total: int, detail: str) -> None:
+        # `started_at` comes from the dict rather than from now, so the
+        # in-flight card's "how long has this stage been running" does not
+        # reset to zero on every tick. A progress event for a stage that
+        # never announced itself falls back to now, which is the only
+        # honest answer available.
+        self._write(stage, summary=detail, done=done, total=total)
+
+    def _write(
+        self, stage: Stage, *, summary: str, done: int | None, total: int | None
+    ) -> None:
+        started = self._started_at.setdefault(stage, datetime.now(UTC))
+        try:
+            self._store.record_stage(
+                self._run_id,
+                StageRecord(
+                    stage=stage,
+                    status="running",
+                    started_at=started,
+                    finished_at=None,
+                    payload_bytes=None,
+                    summary=summary,
+                    done=done,
+                    total=total,
+                ),
+            )
+        except Exception:  # noqa: BLE001 - an observer may not fail a run
+            log.debug("Could not record progress for %s", stage, exc_info=True)
 
 
 class RunService:
@@ -386,7 +438,10 @@ class RunService:
             if run_id in self._waiting:
                 self._waiting.remove(run_id)
 
-        stage_tracker = _StageTracker()
+        # Built with the worker's own store, not the API's: `sqlite3`
+        # connections are thread-bound and this one is written from the
+        # worker thread for the whole run.
+        recorder = _RunRecorder(store, run_id)
         try:
             # setdefault, not self._tokens[run_id]: the latter raised
             # KeyError for a request with no pre-registered token (only
@@ -427,7 +482,7 @@ class RunService:
             with capture_run_log(run_id, store) as buffer:
                 with self._lock:
                     self._buffers[run_id] = buffer
-                self._execute(settings, request, store, stage_tracker, token)
+                self._execute(settings, request, store, recorder, token)
                 if token.stopping:
                     self._aborted(store, run_id)
         except Aborted:
@@ -439,7 +494,7 @@ class RunService:
                 RunError(
                     kind=type(exc).__name__,
                     message=str(exc),
-                    stage=stage_tracker.last_stage or request.start_at,
+                    stage=recorder.last_stage or request.start_at,
                 ),
             )
         finally:

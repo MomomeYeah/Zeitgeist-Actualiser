@@ -18,6 +18,15 @@
  *   --mood-tail /      white 16% / 8% — the mood bar's third segment and
  *   --mood-rest        its tail.
  *   --border-hover     white 16% — the handoff's suggested hover.
+ *   --accent-border-soft   accent 20% — the in-flight card's border, in the
+ *                      sidebar and on Runs. Softer than --accent-border
+ *                      because the card is a status, not a selection.
+ *   --contrast-confirm rgba(61,99,230,.1) — the fill an inline confirm
+ *                      swaps to, on the abort button and on phase 7's
+ *                      render tile.
+ *   --contrast-border-strong rgba(61,99,230,.45) — the Abort button's own
+ *                      border, one step up from --contrast-border so a
+ *                      destructive action reads as one before it is asked.
  *
  * Ranged tokens in the handoff (radius-panel 11-12px, gap-page 20-22px)
  * take the value the mockups use most; a range describes the design and is
@@ -34,14 +43,17 @@
   --accent-tint: rgba(255, 217, 61, 0.14);
   --accent-border: rgba(255, 217, 61, 0.3);
   --accent-border-strong: rgba(255, 217, 61, 0.35);
+  --accent-border-soft: rgba(255, 217, 61, 0.2);
   --accent-half: rgba(255, 217, 61, 0.5);
   --on-accent: #17140e;
 
   --contrast: #3d63e6;
   --contrast-light: #8aa4ff;
   --contrast-border: rgba(61, 99, 230, 0.35);
+  --contrast-border-strong: rgba(61, 99, 230, 0.45);
   --contrast-wash: rgba(61, 99, 230, 0.08);
   --contrast-fill: rgba(61, 99, 230, 0.2);
+  --contrast-confirm: rgba(61, 99, 230, 0.1);
 
   --text: #f5f1e6;
   --text-70: rgba(245, 241, 230, 0.7);

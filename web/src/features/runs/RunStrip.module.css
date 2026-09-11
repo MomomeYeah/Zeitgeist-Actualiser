@@ -1,0 +1,59 @@
+.strip {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 6px 1fr auto auto;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  transition: border-color var(--transition);
+}
+
+.row:hover {
+  border-color: var(--border-hover);
+}
+
+.running {
+  border-color: var(--accent-border);
+  background: var(--accent-wash);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-30);
+}
+
+.dotRunning {
+  background: var(--accent);
+}
+
+.runId {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-70);
+}
+
+.state {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-55);
+}
+
+.when {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-35);
+}

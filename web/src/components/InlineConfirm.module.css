@@ -1,0 +1,93 @@
+/* The handoff's abort confirmation: contrast at 10% fill, a contrast
+   border, the question in contrast-light, and yes/no in mono 700/10
+   separated by a middle dot. 140ms ease-out, which is --transition. */
+.trigger {
+  padding: 8px 14px;
+  border: 1px solid var(--contrast-border-strong);
+  border-radius: var(--radius-pill);
+  background: none;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--contrast-light);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.trigger:hover:not(:disabled) {
+  background: var(--contrast-confirm);
+}
+
+/* The resting accent pill — Resume's look, per the design — for a
+   confirmed control that must not read as Abort's contrast/destructive
+   style. The same pill as NewRunButton.module.css's `.button`, written out
+   again here rather than shared. Sharing it is possible — CSS Modules'
+   `composes: button from "…"` pulls one module's class into another — but
+   folding the duplicated pills together is a follow-up, not part of the
+   change that gave Resume this confirm. */
+.accentTrigger {
+  padding: 9px 16px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--on-accent);
+  cursor: pointer;
+  transition: filter var(--transition);
+}
+
+.accentTrigger:hover:not(:disabled) {
+  filter: brightness(0.94);
+}
+
+.trigger:disabled,
+.accentTrigger:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.asking {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-tight);
+  padding: 7px 13px;
+  border: 1px solid var(--contrast-border);
+  border-radius: var(--radius-pill);
+  background: var(--contrast-confirm);
+  transition: background var(--transition);
+}
+
+.question {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--contrast-light);
+}
+
+.answer {
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--contrast-light);
+  cursor: pointer;
+}
+
+.answer:hover,
+.answer:focus-visible {
+  color: var(--text);
+}
+
+.dot {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--contrast-light);
+}

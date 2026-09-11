@@ -8,8 +8,12 @@
  * alone.
  */
 import type {
+  ActiveRuns,
+  ConfigOptions,
   Dossier,
   IndexedTopic,
+  LogLine,
+  QueuedRun,
   RankedTopic,
   RenderRecord,
   RunConfig,
@@ -19,6 +23,8 @@ import type {
   RunRecordRow,
   RunStatus,
   RunSummary,
+  SettingField,
+  SettingSource,
   Stage,
   StageRecord,
   StageStatus,
@@ -85,6 +91,7 @@ export function makeRunSummary(
     finishedAt?: string | null;
     trendsFound?: number | null;
     topicsKept?: number | null;
+    phrasesFound?: number | null;
     config?: Partial<RunConfig>;
   } = {},
 ): RunSummary {
@@ -110,6 +117,8 @@ export function makeStageRecord(
     finishedAt?: string | null;
     payloadBytes?: number | null;
     summary?: string;
+    done?: number | null;
+    total?: number | null;
   } = {},
 ): StageRecord {
   return {
@@ -121,6 +130,8 @@ export function makeStageRecord(
     payload_bytes:
       options.payloadBytes === undefined ? 1_363_148 : options.payloadBytes,
     summary: options.summary ?? "25 trends, 750 posts",
+    done: options.done ?? null,
+    total: options.total ?? null,
   };
 }
 
@@ -128,6 +139,7 @@ export function makeRunDetail(
   options: {
     runId?: string;
     status?: RunStatus;
+    finishedAt?: string | null;
     error?: RunError | null;
     stages?: StageRecord[];
     resumeStage?: Stage | null;
@@ -315,4 +327,111 @@ export function makeTopicIndex(
       mundane: 3,
     },
   };
+}
+
+export function makeActiveRuns(
+  options: { current?: string | null; queued?: string[] } = {},
+): ActiveRuns {
+  return {
+    current: options.current === undefined ? null : options.current,
+    queued: options.queued ?? [],
+  };
+}
+
+export function makeQueuedRun(
+  options: { runId?: string; position?: number } = {},
+): QueuedRun {
+  return {
+    run_id: options.runId ?? "20260829T140200Z",
+    position: options.position ?? 0,
+  };
+}
+
+export function makeLogLine(
+  options: {
+    seq?: number;
+    level?: string;
+    logger?: string;
+    message?: string;
+    loggedAt?: string;
+  } = {},
+): LogLine {
+  return {
+    seq: options.seq ?? 1,
+    logged_at: options.loggedAt ?? FIXED_START,
+    level: options.level ?? "INFO",
+    logger: options.logger ?? "zeitgeist.pipeline",
+    message: options.message ?? "Fetched 25 trends",
+  };
+}
+
+export function makeConfigOptions(
+  options: {
+    models?: Record<string, string[]>;
+    platforms?: ConfigOptions["platforms"];
+    templates?: ConfigOptions["templates"];
+    defaults?: Record<string, string>;
+    anthropicKeyPresent?: boolean;
+  } = {},
+): ConfigOptions {
+  return {
+    models: options.models ?? {
+      anthropic: ["claude-opus-5", "claude-sonnet-5"],
+      ollama: ["qwen3.5:latest"],
+    },
+    platforms: options.platforms ?? [
+      { name: "lemmy", enabled: false },
+      { name: "wikipedia", enabled: false },
+      { name: "bluesky", enabled: true },
+    ],
+    templates: options.templates ?? [
+      { id: "drake", slots: ["rejected", "preferred"] },
+      { id: "two_buttons", slots: ["left", "right", "sweating"] },
+    ],
+    defaults: options.defaults ?? {
+      bluesky_fetch_concurrency: "8",
+      bluesky_posts_per_trend: "10",
+      bluesky_trend_limit: "25",
+      distil_char_budget: "24000",
+      distil_concurrency: "4",
+      llm_model: "claude-sonnet-5",
+      llm_provider: "anthropic",
+      meme_potential_weight: "0.3",
+      phrase_min_authors: "3",
+      // The Python repr, because `options.py` builds every default with
+      // `str(...)` and `Settings.sources` is a list. The New run screen
+      // deliberately ignores this key; the fixture carries it so a screen
+      // that started reading it would be tested against what the server
+      // really sends.
+      sources: "['bluesky']",
+      topic_count: "5",
+    },
+    anthropic_key_present: options.anthropicKeyPresent ?? true,
+  };
+}
+
+export function makeSettingField(
+  options: { key?: string; value?: number; source?: SettingSource } = {},
+): SettingField {
+  return {
+    key: options.key ?? "phrase_min_authors",
+    value: options.value ?? 3,
+    source: options.source ?? "default",
+  };
+}
+
+/** All seven, in the order `GET /api/settings` returns them: sorted by key. */
+export function makeSettingFields(
+  overrides: Partial<Record<string, Partial<SettingField>>> = {},
+): SettingField[] {
+  const base: SettingField[] = [
+    { key: "bluesky_fetch_concurrency", value: 8, source: "default" },
+    { key: "bluesky_posts_per_trend", value: 10, source: "default" },
+    { key: "bluesky_trend_limit", value: 25, source: "default" },
+    { key: "distil_char_budget", value: 24000, source: "default" },
+    { key: "distil_concurrency", value: 4, source: "default" },
+    { key: "meme_potential_weight", value: 0.3, source: "default" },
+    { key: "phrase_min_authors", value: 3, source: "default" },
+  ];
+  return base.map((field) => ({ ...field, ...(overrides[field.key] ?? {}) }));
 }

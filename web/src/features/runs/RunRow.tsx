@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import type { RunSummary } from "@/api/types";
 import { MemeTile } from "@/components/MemeTile";
 import { StatusPill } from "@/components/StatusPill";
-import { formatDuration, formatRelative, shortRunId } from "@/format";
+import { formatCount, formatDuration, formatRelative, shortRunId } from "@/format";
 import { resumeStageFor, survivedFor } from "@/features/runs/survived";
 
 import styles from "./RunRow.module.css";
@@ -43,9 +43,9 @@ export function RunRow({ summary }: { summary: RunSummary }) {
       ) : (
         <span className={styles.counts}>
           <span>
-            {run.trends_found ?? 0} trends → {run.topics_kept ?? 0} kept
+            {formatCount(run.trends_found)} trends → {formatCount(run.topics_kept)} kept
           </span>
-          <span className={styles.phrases}>{run.phrases_found ?? 0} phrases</span>
+          <span className={styles.phrases}>{formatCount(run.phrases_found)} phrases</span>
         </span>
       )}
 

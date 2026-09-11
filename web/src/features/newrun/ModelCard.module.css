@@ -1,0 +1,97 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 17px 19px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+}
+
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-tight);
+}
+
+/* Same treatment as `StatusFilters`' chip row: mono, pill radius, the
+   unselected fill everywhere in the app that isn't a chosen state. */
+.pill {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--chip-fill);
+  color: var(--text-70);
+  transition: background var(--transition), color var(--transition);
+}
+
+.pillOn {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.keyLine {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-35);
+}
+
+/* The one line on this card that has to read as a warning, so it borrows
+   the app's one warning colour rather than inventing a second. */
+.keyMissing {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--contrast-light);
+}
+
+.models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-tight);
+}
+
+.none {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-35);
+}
+
+/* The radio row: `radius-tile`, `10px 12px` padding, mono 600/11.5 for the
+   id, per the handoff. */
+.model {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+  background: transparent;
+  color: var(--text-70);
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.model:hover {
+  border-color: var(--border-hover);
+}
+
+.modelOn {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 10px 12px;
+  border: 1px solid var(--accent-border-strong);
+  border-radius: var(--radius-tile);
+  background: var(--accent-wash);
+  color: var(--text);
+}

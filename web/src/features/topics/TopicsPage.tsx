@@ -1,11 +1,13 @@
 import { useState } from "react";
 
 import type { TrendStatus } from "@/api/types";
-import { useRuns, useTopicIndex } from "@/api/queries";
+import { useActiveRun, useRuns, useTopicIndex } from "@/api/queries";
 import { EmptyState } from "@/components/EmptyState";
 import { MetaLine } from "@/components/MetaLine";
 import { QueryBoundary } from "@/components/QueryBoundary";
 import { SectionLabel } from "@/components/SectionLabel";
+import { NewRunButton } from "@/features/newrun/NewRunButton";
+import { RunStrip } from "@/features/runs/RunStrip";
 import { HeroTopic } from "@/features/topics/HeroTopic";
 import { MoodBar } from "@/features/topics/MoodBar";
 import { RecentTable } from "@/features/topics/RecentTable";
@@ -24,6 +26,7 @@ export function TopicsPage() {
   const [status, setStatus] = useState<TrendStatus | undefined>(undefined);
   const index = useTopicIndex({ status });
   const runs = useRuns(RUN_STRIP);
+  const active = useActiveRun();
 
   return (
     <QueryBoundary query={index} missing="No topics.">
@@ -42,7 +45,10 @@ export function TopicsPage() {
         return (
           <div className={styles.page}>
             <header className={styles.header}>
-              <h1 className={styles.title}>Right now</h1>
+              <div className={styles.titleRow}>
+                <h1 className={styles.title}>Right now</h1>
+                <NewRunButton />
+              </div>
               <MetaLine>
                 {[
                   `${data.status_totals.trending ?? 0} trending`,
@@ -63,6 +69,7 @@ export function TopicsPage() {
               <EmptyState
                 headline="Nothing has run yet"
                 body="A run reads Bluesky, works out what is trending, and generates memes about it. The first one takes a few minutes."
+                action={<NewRunButton />}
               />
             ) : (
               <>
@@ -72,12 +79,21 @@ export function TopicsPage() {
                   </div>
                 )}
 
-                <div className={styles.mood}>
-                  <SectionLabel>The mood today</SectionLabel>
-                  <MoodBar
-                    totals={data.sentiment_totals}
-                    previous={data.previous_sentiment_totals}
-                  />
+                <div className={styles.bottom}>
+                  <div>
+                    <SectionLabel>The mood today</SectionLabel>
+                    <MoodBar
+                      totals={data.sentiment_totals}
+                      previous={data.previous_sentiment_totals}
+                    />
+                  </div>
+                  <div className={styles.runs}>
+                    <SectionLabel>Runs</SectionLabel>
+                    <RunStrip
+                      runs={runs.data?.runs ?? []}
+                      activeRunId={active.data?.current ?? null}
+                    />
+                  </div>
                 </div>
 
                 <div className={styles.filters}>

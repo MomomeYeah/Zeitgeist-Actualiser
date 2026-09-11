@@ -1,0 +1,106 @@
+.page {
+  max-width: var(--content-width);
+}
+
+.header {
+  margin-bottom: var(--gap-page);
+}
+
+.title {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 18px;
+  align-items: start;
+}
+
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.card {
+  padding: 17px 19px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+}
+
+.side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 17px 19px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+}
+
+.save {
+  width: 100%;
+  padding: 14px;
+  border: none;
+  border-radius: 9px;
+  background: var(--accent);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--on-accent);
+  cursor: pointer;
+  transition: filter var(--transition);
+}
+
+.save:hover:not(:disabled) {
+  filter: brightness(0.94);
+}
+
+/* A ghost sibling of .save: same footprint, no fill, so Reset reads as the
+   lesser action without a wholesale duplicate of the accent button. */
+.reset {
+  width: 100%;
+  padding: 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: none;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-70);
+  cursor: pointer;
+  transition: border-color var(--transition), color var(--transition);
+}
+
+.reset:hover:not(:disabled) {
+  border-color: var(--border-hover);
+  color: var(--text);
+}
+
+.save:disabled,
+.reset:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.note {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-35);
+  line-height: 1.5;
+}
+
+.failure {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--contrast-light);
+}

@@ -39,6 +39,17 @@ export type RenderStatus = RenderRecord["status"];
 export type LogLine = Schemas["LogLine"];
 export type SettingField = Schemas["SettingField"];
 
+export type ActiveRuns = Schemas["ActiveRuns"];
+export type QueuedRun = Schemas["QueuedRun"];
+export type RunActionAck = Schemas["RunActionAck"];
+export type StartRunBody = Schemas["StartRunBody"];
+export type ResumeBody = Schemas["ResumeBody"];
+export type SettingsUpdate = Schemas["SettingsUpdate"];
+export type SettingSource = SettingField["source"];
+export type ConfigOptions = Schemas["ConfigOptions"];
+export type PlatformOption = Schemas["PlatformOption"];
+export type TemplateOption = Schemas["TemplateOption"];
+
 /** The four stages in the order they run — the order the stage cards draw. */
 export const STAGES: readonly Stage[] = ["ingest", "analyse", "evaluate", "generate"];
 

@@ -120,3 +120,22 @@ def test_the_env_defaults_report_the_configured_value(tmp_path, monkeypatch):
 
     assert defaults["topic_count"] == "9"
     assert "anthropic_api_key" not in defaults
+
+
+def test_the_defaults_follow_a_value_the_settings_screen_saved(tmp_path):
+    """Found by running a real run, not by a fixture: after the settings
+    screen lowered `bluesky_trend_limit` to 4, the New run screen still read
+    "of 25 trends analysed" — and the run it started really did analyse 4.
+
+    `read_options` read `app.state.settings`, frozen once at startup, where
+    `init_settings` outranks the settings table. The same bug
+    `test_a_get_after_a_put_reports_the_new_value` pins for
+    `GET /api/settings`, one endpoint over. Both requests share one
+    `TestClient`, and so the one frozen object that served the stale value.
+    """
+    client = seeded_client(tmp_path)
+
+    client.put("/api/settings", json={"values": {"bluesky_trend_limit": "4"}})
+    defaults = client.get("/api/config/options").json()["defaults"]
+
+    assert defaults["bluesky_trend_limit"] == "4"

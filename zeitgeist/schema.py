@@ -9,7 +9,7 @@ open a mismatched database *is* the strategy. Bumping SCHEMA_VERSION means
 deleting the file.
 """
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 -- The four stage artifacts, held whole rather than normalised. Nothing
@@ -45,6 +45,11 @@ CREATE TABLE IF NOT EXISTS run_stages (
     finished_at   TEXT,
     payload_bytes INTEGER,
     summary       TEXT NOT NULL,
+    -- Stage-relative counters, NULL for the two stages that count nothing.
+    -- Phase 6's in-flight stage card reads them as `17 / 25` and as the
+    -- partial fill on its top bar.
+    done          INTEGER,
+    total         INTEGER,
     PRIMARY KEY (run_id, stage)
 );
 

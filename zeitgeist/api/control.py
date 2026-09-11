@@ -76,7 +76,7 @@ def resume_run(
     store: Store = Depends(get_store),
     runner: RunService = Depends(get_runner),
 ) -> QueuedRun:
-    _run_or_404(store, run_id)
+    run = _run_or_404(store, run_id)
     stage = body.stage or resume_stage(store, run_id)
     if stage is None:
         # `resume_stage` returns None when nothing was written at all, which
@@ -109,7 +109,28 @@ def resume_run(
             RunRequest(
                 run_id=run_id,
                 start_at=stage,
-                template_ids=body.template_ids,
+                # A body template_ids still wins: that is the tuning loop
+                # the API table describes ("template_ids narrows the
+                # library"). Omitted, the run's own frozen list survives —
+                # dropping to None ("the whole library") here would silently
+                # widen what a resume renders against.
+                template_ids=(
+                    body.template_ids
+                    if body.template_ids is not None
+                    else run.config.template_ids
+                ),
+                # The run's frozen config, replayed in full (the ruling: "The
+                # run's frozen config. Resume replays the run's stored
+                # RunConfig in full."). Before this, resume enqueued with no
+                # overrides at all, so the worker built Settings from
+                # whatever the settings table/.env said *now* and
+                # Store.start_run overwrote the run's stored config with
+                # that — a run started with top_count 3 could resume reading
+                # top_count 5. bluesky_fetch_concurrency is the one tunable
+                # this does not replay: RunConfig has no field for it, so it
+                # still resolves from current settings (see
+                # RunConfig.as_overrides's docstring).
+                overrides=run.config.as_overrides(),
             )
         )
     except RunAlreadyActive as exc:
@@ -117,8 +138,17 @@ def resume_run(
         # resume from, this means it does not need resuming at all right
         # now — a double-clicked Resume button, or a second tab racing the
         # first. A client that cannot tell the two apart cannot render two
-        # different messages for them.
+        # different messages for them. Caught before `ValueError` below, for
+        # the reason `start_run` gives: a conflict is not a bad request.
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        # The replayed frozen config no longer validates — a run frozen
+        # with a source that has since gone dormant, say. `enqueue` refuses
+        # it on this thread, before any id is issued, exactly as it refuses
+        # a bad `POST /api/runs`, and it is the same kind of refusal: the
+        # request's (here, the run's) fault, not the server's. Uncaught, it
+        # came out a 500.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post(

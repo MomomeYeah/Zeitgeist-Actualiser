@@ -16,6 +16,8 @@ from datetime import UTC, datetime
 
 from zeitgeist.store import Store
 
+log = logging.getLogger(__name__)
+
 LOGGER_NAME = "zeitgeist"
 DEFAULT_MAXLEN = 2000
 DEFAULT_BATCH_SIZE = 50
@@ -91,18 +93,11 @@ class RunLogHandler(logging.Handler):
     multi-thread-touched `Store`.
 
     `Store.__init__`'s docstring on `check_same_thread` says why that is
-    safe here: `sqlite3.threadsafety == 3` in this environment means the
-    library is built in serialized mode, so one connection cannot be
-    corrupted by two threads touching it at once. That docstring is also
-    explicit that this is *narrower* than safe for concurrent writes in
-    general — interleaved multi-statement transactions on one connection
-    can still stomp on each other. `flush` stays inside the narrower
-    guarantee on purpose: every write is exactly one
-    `store.write_log_lines` call — one `executemany` plus one commit (see
-    `Store.write_log_lines`) — so there is no second statement for another
-    thread's call to land in the middle of. Two threads calling `flush`
-    concurrently serialize at SQLite's own per-connection mutex instead of
-    interleaving.
+    safe here: every public `Store` method holds that store's lock for its
+    whole body, so two threads calling `flush` at once write one batch
+    after the other rather than racing the connection's one transaction.
+    SQLite's own serialized mode is not enough on its own — see that
+    docstring for what a real run showed without the lock.
 
     The one real trade-off left by capturing every thread rather than only
     the owner: a request thread logging under the `zeitgeist` namespace
@@ -121,6 +116,7 @@ class RunLogHandler(logging.Handler):
         buffer: RunLogBuffer,
         store: Store,
         batch_size: int = DEFAULT_BATCH_SIZE,
+        after_seq: int = 0,
     ) -> None:
         super().__init__(level=logging.DEBUG)
         self._run_id = run_id
@@ -128,10 +124,12 @@ class RunLogHandler(logging.Handler):
         self._store = store
         self._batch_size = batch_size
         self._pending: list[CapturedLine] = []
-        # Starts at 1, and is the handler's rather than the database's:
-        # two lines can share a timestamp at the resolution recorded here,
-        # and the live log's ordering has to be total.
-        self._seq = 0
+        # The handler's rather than the database's: two lines can share a
+        # timestamp at the resolution recorded here, and the live log's
+        # ordering has to be total. Starts after `after_seq` — the last line
+        # a previous attempt at this run recorded, 0 for a fresh run — so a
+        # resume continues the numbering rather than colliding with it.
+        self._seq = after_seq
         # Guards `_seq` and `_pending` only — never held across the store
         # write in `flush`. Matters more now than it used to: with no
         # thread filter ahead of it, every thread logging under the
@@ -183,29 +181,52 @@ def capture_run_log(
     caller's `store` is typically the worker's own, opened
     `check_same_thread=True`.
 
-    The `finally` is load-bearing, in two ways now: runs fail, and an
-    abort unwinds through here, so a handler detached only on the success
-    path would leak onto the `zeitgeist` logger for the life of the
-    process the first time a run failed, and capture the next run's lines
-    into the previous run's rows; and the dedicated connection opened
-    below must be closed on every path, or it leaks one open `sqlite3`
-    connection per run for the life of the process.
+    The two `finally`s are load-bearing, one each. The inner one detaches
+    the handler: runs fail, and an abort unwinds through here, so a handler
+    detached only on the success path would leak onto the `zeitgeist`
+    logger for the life of the process the first time a run failed, and
+    capture the next run's lines into the previous run's rows. The outer
+    one closes the dedicated connection, which has to happen on every path
+    — including a failure reading `last_log_seq` before the handler even
+    exists, which is why the connection's `try` starts the moment it is
+    opened — or it leaks one open `sqlite3` connection per run for the
+    life of the process.
+
+    The last flush cannot fail the run. It runs after the pipeline has
+    already written the run's terminal status, and an error escaping from
+    here reached the worker's `except Exception`, whose `Store.fail_run`
+    has no `status = 'running'` guard — so a run that had rendered every
+    meme was recorded as failed. It also skipped the close. A lost batch
+    of log lines is reported, as an error on this module's own logger
+    (the handler is detached by then, so the report cannot recurse into
+    it), and the run keeps the status it earned.
     """
     buffer = RunLogBuffer(maxlen=maxlen)
     log_store = Store(store.path, check_same_thread=False)
-    handler = RunLogHandler(run_id, buffer, log_store, batch_size=batch_size)
-    logger = logging.getLogger(LOGGER_NAME)
-    # The server always captures at DEBUG and the toggle filters what is
-    # *returned*, which is what lets flipping it work retroactively on lines
-    # already recorded. A logger left at WARNING would make the toggle a
-    # permanent no-op no matter what the endpoint does.
-    previous_level = logger.level
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(handler)
     try:
-        yield buffer
+        handler = RunLogHandler(
+            run_id,
+            buffer,
+            log_store,
+            batch_size=batch_size,
+            after_seq=log_store.last_log_seq(run_id),
+        )
+        logger = logging.getLogger(LOGGER_NAME)
+        # The server always captures at DEBUG and the toggle filters what is
+        # *returned*, which is what lets flipping it work retroactively on
+        # lines already recorded. A logger left at WARNING would make the
+        # toggle a permanent no-op no matter what the endpoint does.
+        previous_level = logger.level
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(handler)
+        try:
+            yield buffer
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous_level)
+            try:
+                handler.flush()
+            except Exception:  # noqa: BLE001 - the run's status outranks its log
+                log.exception("Could not write the last log lines for run %s", run_id)
     finally:
-        logger.removeHandler(handler)
-        logger.setLevel(previous_level)
-        handler.flush()
         log_store.close()

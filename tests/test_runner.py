@@ -1,14 +1,16 @@
+import logging
 import os
 import sqlite3
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from tests.run_factory import make_run_config
 from zeitgeist.config import Settings
 from zeitgeist.progress import Aborted
-from zeitgeist.records import RunConfig, Stage
+from zeitgeist.records import RunConfig, Stage, StageRecord
 from zeitgeist.runner import (
     ActiveRuns,
     RunAlreadyActive,
@@ -71,6 +73,18 @@ def _service(tmp_path, execute) -> RunService:
     service = RunService(_settings(tmp_path), _open_store(tmp_path), execute=execute)
     service.start()
     return service
+
+
+def _run_to_completion(service: RunService, request: RunRequest) -> str:
+    """Enqueue, let the worker finish, and hand back the run id.
+
+    `shutdown` puts a sentinel behind the request on the same FIFO queue, so
+    joining the worker is what waits for the run — no sleeping, no polling.
+    """
+    service.start()
+    queued = service.enqueue(request)
+    service.shutdown(timeout=10.0)
+    return queued.run_id
 
 
 def test_a_run_starts_immediately_when_the_worker_is_idle(tmp_path):
@@ -713,6 +727,48 @@ def test_a_run_failing_after_a_later_stage_is_recorded_with_that_stage(tmp_path)
     assert record.error.stage == Stage.GENERATE
 
 
+def test_a_log_flush_failing_after_the_run_finished_leaves_it_finished(tmp_path):
+    """The companion to `test_logcapture`'s flush-failure test, one level
+    up. `capture_run_log`'s last flush runs after the pipeline has already
+    written the run's terminal status. When that flush raised, the error
+    escaped into `_run_one`'s `except Exception`, and `Store.fail_run` —
+    which has no `status = 'running'` guard — relabelled a run that had
+    rendered every meme as failed. The walk hit this once.
+
+    The executor here does what `run_pipeline` does at its end: writes
+    `ok`, with a line still pending in the handler's batch.
+    """
+
+    def execute(settings, request, store, observer, token) -> None:
+        run_id = request.run_id or ""
+        store.start_run(run_id, make_run_config())
+        logging.getLogger("zeitgeist.testing.lateflush").info("the last line")
+        store.finish_run(
+            run_id,
+            status="ok",
+            item_count=1,
+            trends_found=1,
+            topics_kept=1,
+            phrases_found=0,
+        )
+
+    service = RunService(_settings(tmp_path), _open_store(tmp_path), execute=execute)
+    with patch.object(
+        Store,
+        "write_log_lines",
+        side_effect=sqlite3.OperationalError("database is locked"),
+    ):
+        run_id = _run_to_completion(service, RunRequest())
+
+    store = Store(_settings(tmp_path).db_path)
+    store.init_schema()
+    record = store.get_run(run_id)
+    store.close()
+    assert record is not None
+    assert record.status == "ok"
+    assert record.error is None
+
+
 def test_aborting_a_completed_run_reports_that_it_did_nothing(tmp_path):
     """A stale token for a run that finished hours ago must not trip and
     report `True`: the endpoint turns `False` into a 404, and returning
@@ -799,3 +855,82 @@ def test_resolve_settings_keeps_fields_a_run_cannot_set(tmp_path):
     resolved = resolve_settings(base, {})
 
     assert resolved.output_dir == tmp_path / "somewhere"
+
+
+def test_a_running_stage_gets_a_row_while_it_is_still_running(tmp_path):
+    """Without this, `GET /api/runs/{id}` during a run reports only the
+    stages that already finished, and the in-flight screen has no way to say
+    which stage is live except by guessing from the gap."""
+    seen: list[list[StageRecord]] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        observer.stage_started(Stage.ANALYSE)
+        seen.append(store.stages_for_run(request.run_id or ""))
+
+    service = _service(tmp_path, execute=execute)
+    _run_to_completion(service, RunRequest())
+
+    (during,) = seen
+    assert [record.stage for record in during] == [Stage.ANALYSE]
+    assert during[0].status == "running"
+    assert during[0].started_at is not None
+    assert during[0].finished_at is None
+
+
+def test_stage_progress_updates_the_running_row_in_place(tmp_path):
+    """One row per (run_id, stage), rewritten — not a row per tick. Twenty
+    five distilled topics must not leave twenty five analyse rows for
+    `stages_for_run` to sort."""
+    seen: list[list[StageRecord]] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        observer.stage_started(Stage.ANALYSE)
+        observer.stage_progress(Stage.ANALYSE, done=1, total=25, detail="cat")
+        observer.stage_progress(Stage.ANALYSE, done=17, total=25, detail="rat")
+        seen.append(store.stages_for_run(request.run_id or ""))
+
+    service = _service(tmp_path, execute=execute)
+    _run_to_completion(service, RunRequest())
+
+    (during,) = seen
+    assert len(during) == 1
+    assert during[0].done == 17
+    assert during[0].total == 25
+    assert during[0].summary == "rat"
+
+
+def test_progress_keeps_the_started_at_the_stage_began_with(tmp_path):
+    """The in-flight card shows how long the *stage* has been running. A
+    progress write that reset `started_at` to now would make that read zero
+    on every tick."""
+    seen: list[list[StageRecord]] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        observer.stage_started(Stage.ANALYSE)
+        first = store.stages_for_run(request.run_id or "")[0].started_at
+        observer.stage_progress(Stage.ANALYSE, done=3, total=25, detail="cat")
+        seen.append([first, store.stages_for_run(request.run_id or "")[0].started_at])
+
+    service = _service(tmp_path, execute=execute)
+    _run_to_completion(service, RunRequest())
+
+    (at_start, at_progress) = seen[0]
+    assert at_start == at_progress
+
+
+def test_a_store_failure_in_the_observer_never_fails_the_run(tmp_path):
+    """`RunObserver`'s contract: a run must not fail because something
+    watching it did. A closed connection under the observer is the realistic
+    version of that — it must cost the progress display, not the run."""
+    reached_the_end = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        store.close()
+        observer.stage_started(Stage.ANALYSE)
+        observer.stage_progress(Stage.ANALYSE, done=1, total=2, detail="cat")
+        reached_the_end.append(True)
+
+    service = _service(tmp_path, execute=execute)
+    _run_to_completion(service, RunRequest())
+
+    assert reached_the_end == [True]

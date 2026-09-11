@@ -93,6 +93,8 @@ def make_stage_record(
     finished_at: datetime | None = FIXED_TIME,
     payload_bytes: int | None = 1024,
     summary: str = "25 trends",
+    done: int | None = None,
+    total: int | None = None,
 ) -> StageRecord:
     return StageRecord(
         stage=stage,
@@ -101,6 +103,8 @@ def make_stage_record(
         finished_at=finished_at,
         payload_bytes=payload_bytes,
         summary=summary,
+        done=done,
+        total=total,
     )
 
 

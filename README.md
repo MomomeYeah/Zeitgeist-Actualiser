@@ -103,7 +103,10 @@ The pipeline runs four stages, each checkpointed before the next begins:
 
 Stage checkpoints are written to SQLite at `data/zeitgeist.db`; rendered
 memes land in `output/<run-id>/renders/`, one PNG and one 96px thumbnail
-per meme. Read a checkpoint back with:
+per meme. A `data/zeitgeist.db` written before phase 6 is refused at startup
+(schema version 3, where this build expects 4); there are no migrations, so
+the fix is to delete it, which loses cross-run trend history and nothing else.
+Read a checkpoint back with:
 
 ```bash
 sqlite3 data/zeitgeist.db "select payload from checkpoints where run_id='...' and stage='analyse'" | jq
@@ -111,7 +114,9 @@ sqlite3 data/zeitgeist.db "select payload from checkpoints where run_id='...' an
 
 Resuming a run from a later stage — the loop for tuning meme templates and
 the caption prompt without re-scraping or re-paying for distillation — is
-not available from this harness; it arrives with the API in phase 3.
+not available from this harness. It is done through the API instead:
+`POST /api/runs/{id}/resume` (below), or **Resume from &lt;stage&gt;** on a
+finished run's page in the browser.
 
 Check the template library after editing a manifest:
 
@@ -285,16 +290,79 @@ uv run zeitgeist
 npm --prefix web run dev
 ```
 
-Vite serves the SPA and proxies `/api` to uvicorn on 8000, so the app is
-same-origin in development and there is no CORS anywhere in the project.
-Open the URL Vite prints.
+The two do different jobs. `uv run zeitgeist` serves the API on 8000 and
+nothing else — open `127.0.0.1:8000` itself and you get a 404, not the app.
+`npm --prefix web run dev` serves the SPA and proxies `/api` to uvicorn on
+8000, so the app is same-origin in development and there is no CORS
+anywhere in the project. Open the URL Vite prints. Both must be running.
 
-Five screens, all read-only in this phase: Topics (`/`), Runs (`/runs`), run
-detail (`/runs/<id>`), topic detail (`/topics/<run>/<topic>`) and the
-full-size meme view (`/runs/<run>/renders/<id>`). Starting a run, the live
-log and the settings screen are phase 6; generating a meme from the browser
-is phase 7. Until then a run is started with `scripts/run_pipeline.py` or
-`POST /api/runs`, and the UI shows what it produced.
+Seven screens: Topics (`/`), Runs (`/runs`), run detail (`/runs/<id>`),
+topic detail (`/topics/<run>/<topic>`), the full-size meme view
+(`/runs/<run>/renders/<id>`), New run (`/runs/new`) and Settings
+(`/settings`). Generating a meme from the browser is phase 7.
+`scripts/run_pipeline.py` and `POST /api/runs` still work, and a run started
+either way shows up in the browser like any other.
+
+### Starting and watching a run
+
+Phase 6 makes the browser the way in. **New run**, on the Topics and Runs
+headers, opens four cards: the provider and model (switching provider swaps
+the model list — for Ollama it is whatever `ollama list` would show, and the
+card says so when that is nothing), the platform, how many ranked topics get
+memes, and which templates to draw from. Everything else a run uses comes
+from the settings screen, below. **Start run** lands on the run's own page.
+
+While a run is in flight its page counts up from when it started, fills each
+stage's bar as the stage reports progress (`7 / 25` topics distilled), and
+streams the log. The log follows new lines until you scroll up, then offers
+**jump to latest**; **verbose** adds the DEBUG lines — the per-topic
+`Distilled ... in 6.8s` timings among them — to the ones already shown. The
+sidebar and the Runs screen show the same run in flight wherever you are.
+
+Two ways to end it early:
+
+- **Stop after this stage** lets the current stage finish and write its
+  checkpoint, then ends the run `aborted`. **Resume from &lt;stage&gt;** then
+  picks it up at the next one.
+- **Abort** asks first, in place (`yes` · `no`, and Escape backs out), then
+  ends the run now.
+
+Starting a run while one is in flight queues it: New run names the run it
+will wait behind, and the queued run's page opens straight away and starts
+streaming when its turn comes. A finished run's page offers **Re-run
+config**, which opens New run with that run's whole frozen config: the four
+cards, prefilled and editable, plus the six tunables it was frozen with
+(trend limit, posts per trend, meme potential weight, phrase min authors,
+distil char budget, distil concurrency), sent exactly as they were then —
+not whatever the settings screen says now. **Resume from &lt;stage&gt;**
+replays the same frozen config server-side, and — because the header's
+buttons swap in place the instant a run ends, and a click aimed at Abort as
+that happens can land on Resume instead — asks first, in place, the same
+way Abort does.
+
+### The settings screen
+
+`/settings` edits the seven fields a run is tuned with and nothing else:
+`bluesky_trend_limit`, `bluesky_posts_per_trend`,
+`bluesky_fetch_concurrency`, `meme_potential_weight`, `phrase_min_authors`,
+`distil_char_budget` and `distil_concurrency`. The default provider and
+model, the API key, and where the database and output live stay in `.env` —
+a screen that could rewrite where the database lives, or read a key back
+out, would be a different and worse thing than a tuning screen. (New run
+still picks the provider and model per run.)
+
+Each field says where its value came from: `SET HERE` (saved on this
+screen), `FROM ENV` (a variable in the shell that started `zeitgeist`),
+`FROM .env` or `DEFAULT`. The shell outranks this screen, and this screen
+outranks `.env`: saving a field the shell sets writes the row but changes
+nothing until that variable is gone, which is what `FROM ENV` is warning
+you about. A value `Settings` would reject — `meme_potential_weight` above 1,
+say — is refused with the server's own sentence and nothing is written.
+**Reset to .env** deletes every saved row, so each field falls back to
+`.env` or its default rather than pinning today's value.
+
+Changes apply to the next run. A run already in flight keeps the config it
+froze when it started, which its page's config line shows.
 
 The client's TypeScript types are generated from the API's own OpenAPI
 schema and checked in. After changing any response model, regenerate both:

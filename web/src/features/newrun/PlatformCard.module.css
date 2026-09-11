@@ -1,0 +1,67 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 17px 19px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--gap-tight);
+}
+
+/* The radio row: `radius-tile`, `10px 12px` padding, per the handoff. Two
+   lines rather than one, so the sublabel can carry why a dormant platform
+   is dormant. */
+.option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+  background: transparent;
+  text-align: left;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.option:hover:not(:disabled) {
+  border-color: var(--border-hover);
+}
+
+.name {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.sublabel {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-35);
+}
+
+.chosen {
+  border-color: var(--accent-border-strong);
+  background: var(--accent-wash);
+}
+
+/* Shown, not hidden — see the component doc — so the row still needs to
+   read as unavailable rather than merely unselected. */
+.dormant {
+  cursor: not-allowed;
+}
+
+.dormant .name {
+  color: var(--text-35);
+}
+
+.dormant .sublabel {
+  color: var(--text-30);
+}
