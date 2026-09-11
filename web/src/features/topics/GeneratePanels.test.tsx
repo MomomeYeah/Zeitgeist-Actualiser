@@ -126,6 +126,17 @@ describe("Ask the LLM", () => {
     ).toBeInTheDocument();
   });
 
+  it("names a mood once when the sentiment and the register are the same word", async () => {
+    // Found on a real run: a topic whose sentiment and register were both
+    // "outrage" read "suit outrage / outrage".
+    serveTopic({ topic: { sentiment: "outrage", register: "outrage" } });
+    renderPage();
+
+    expect(
+      await screen.findByText("picks the templates that suit outrage"),
+    ).toBeInTheDocument();
+  });
+
   it("offers every template in the library as an override, with its slot count", async () => {
     // Driven by the loaded manifests, not by the four the handoff drew. One
     // slot reads "1 slot": phase 5's walk found a "1 memes".

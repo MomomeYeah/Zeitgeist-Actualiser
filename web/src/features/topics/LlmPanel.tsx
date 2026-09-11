@@ -16,9 +16,13 @@ const DEFAULT_COUNT = 3;
  * than ending on an empty "suit ".
  */
 function suits(topic: TopicRow): string {
-  const traits = [topic.event_sentiment, topic.conversation_register].filter(
-    (trait): trait is string => typeof trait === "string" && trait !== "",
-  );
+  const traits = [
+    ...new Set(
+      [topic.event_sentiment, topic.conversation_register].filter(
+        (trait): trait is string => typeof trait === "string" && trait !== "",
+      ),
+    ),
+  ];
   return traits.length === 0
     ? "picks the templates that suit this topic"
     : `picks the templates that suit ${traits.join(" / ")}`;
