@@ -61,6 +61,19 @@
   border-radius: inherit;
 }
 
+/* The row is no longer one anchor, so the title's own focus ring would
+   otherwise wrap only the title text. This puts the ring back around the
+   whole row, and the rule below suppresses the title's own so there are
+   not two. */
+.row:has(.label:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.label:focus-visible {
+  outline: none;
+}
+
 .subline,
 .components,
 .final,

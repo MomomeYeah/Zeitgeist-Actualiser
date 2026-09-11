@@ -322,6 +322,12 @@ export function useSaveSettings() {
  * without them, and with nothing generating in it the poll that would
  * have found them again would stop.
  *
+ * Only cancels a fetch already in flight, not one that already landed: a
+ * poll, a window-focus refetch, or another render's "finished" invalidation
+ * can read the rows this POST just committed and have its reply land first,
+ * so appended ids already present in the cache are skipped rather than
+ * drawn a second time.
+ *
  * Nothing else is invalidated. A generating row is counted nowhere —
  * every count is ready renders only — so the counts change when a render
  * finishes, which `useTopicDetail` watches for.
@@ -338,9 +344,14 @@ export function useGenerateRenders(runId: string, topicId: string) {
     onSuccess: async (created) => {
       const key = queryKeys.topicDetail(runId, topicId);
       await client.cancelQueries({ queryKey: key, exact: true });
-      client.setQueryData<TopicDetail>(key, (held) =>
-        held === undefined ? held : { ...held, renders: [...held.renders, ...created] },
-      );
+      client.setQueryData<TopicDetail>(key, (held) => {
+        if (held === undefined) return held;
+        const ids = new Set(created.map((render) => render.id));
+        return {
+          ...held,
+          renders: [...held.renders.filter((row) => !ids.has(row.id)), ...created],
+        };
+      });
     },
   });
 }
@@ -381,6 +392,11 @@ export function useDeleteRender() {
           : { ...held, renders: held.renders.filter((row) => row.id !== render.id) },
       );
       invalidateRenderViews(client);
+      // Marked stale without a refetch: the full-size view is navigating
+      // away on success, and a fetch of a page nobody is looking at would
+      // be wasted. Without this, the app's 30s staleTime let pressing Back
+      // show the deleted render from cache.
+      void client.invalidateQueries({ queryKey: queryKeys.render(render.id), refetchType: "none" });
     },
   });
 }

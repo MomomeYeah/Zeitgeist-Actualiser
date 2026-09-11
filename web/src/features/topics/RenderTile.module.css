@@ -75,9 +75,14 @@
   }
 }
 
+/* Full width at reduced opacity rather than the animated 45%-wide segment
+   sitting still: a static partial bar would read as "45% done", exactly
+   the claim Decision 4 avoids by making progress indeterminate. */
 @media (prefers-reduced-motion: reduce) {
   .sweep {
     animation: none;
+    width: 100%;
+    opacity: 0.5;
   }
 }
 

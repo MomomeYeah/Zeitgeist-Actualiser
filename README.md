@@ -389,13 +389,14 @@ a PNG someone may want, so its `✕` asks first: `Delete this render?`,
 
 Below the cut on run detail, a ranked-out topic's row offers `generate ↗`
 instead of a meme count: it briefs one meme with the model choosing and
-opens straight to that topic. The full-size meme view carries the same
-**Delete**, in place of the image once it is gone.
+opens straight to that topic. The full-size meme view carries its own
+**Delete**, in the footer beside Download PNG — offered whether or not the
+image loaded, and returning you to the topic once it succeeds.
 
-On-demand generation reads its provider and model from Settings and
-`.env`, not a per-run choice — the panels have no form of their own for
-it — and runs on its own executor, so it keeps working while a run is in
-flight.
+On-demand generation reads its provider and model from `.env`, or the
+shell environment — Settings does not edit either, and the panels have no
+form of their own for it — and runs on its own executor, so it keeps
+working while a run is in flight.
 
 The client's TypeScript types are generated from the API's own OpenAPI
 schema and checked in. After changing any response model, regenerate both:

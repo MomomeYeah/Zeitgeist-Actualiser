@@ -31,9 +31,10 @@ export function RenderDetailPage() {
         // Used for both the page title and its own breadcrumb entry, so the
         // two can never drift apart.
         const topicLabel = topic.data?.topic.label ?? record.topic_id;
-        // None only on a render whose model never chose a template — a
-        // brief that failed before it picked one. The breadcrumb, the chip
-        // and the file name still need a word.
+        // None on a render whose model has not chosen a template yet: a
+        // `generating` row whose request left the choice to the model, or
+        // a `failed` row whose brief failed before the model chose. The
+        // breadcrumb, the chip and the file name still need a word.
         const templateLabel = record.template_id ?? "no template chosen";
 
         return (

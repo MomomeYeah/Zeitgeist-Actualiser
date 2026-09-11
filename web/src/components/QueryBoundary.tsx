@@ -17,6 +17,12 @@ import styles from "./QueryBoundary.module.css";
  * This is deliberately not an error boundary. TanStack Query already holds
  * the failure as data; throwing it so a boundary could catch it would lose
  * the status code that makes the distinction above possible.
+ *
+ * A background refetch that fails leaves `isError` set alongside the last
+ * good `data`, so data is checked first: a page with a form must not be
+ * unmounted, and whatever someone was typing lost, over a poll's transient
+ * failure. The error and missing states are for when there is no data to
+ * fall back on.
  */
 export function QueryBoundary<T>({
   query,
@@ -27,6 +33,9 @@ export function QueryBoundary<T>({
   missing: string;
   children: (data: T) => ReactNode;
 }) {
+  if (query.data !== undefined) {
+    return <>{children(query.data)}</>;
+  }
   if (query.isPending) {
     return <p className={styles.state}>Loading…</p>;
   }

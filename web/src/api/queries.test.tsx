@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
@@ -752,6 +753,59 @@ describe("useGenerateRenders", () => {
       "new",
     ]);
   });
+
+  it("does not draw a row twice when a fetch already brought it in", async () => {
+    // A poll or a refocus can read the database after the post committed
+    // its rows and land before the post's own reply. The rows are then
+    // already in the cache, and appending the reply again would draw each
+    // tile twice under one key.
+    //
+    // The fixture's initial GET already answers with both rows — that is
+    // the scenario itself — so the pre-mutation snapshot and the desired
+    // post-mutation state are the same array. A plain `waitFor` right after
+    // `mutateAsync` can therefore pass on its very first, synchronous check
+    // against that stale pre-mutation snapshot, before TanStack's
+    // `setTimeout(0)` observer-notify batch has run at all — which would
+    // "pass" identically whether or not the bug is fixed. The explicit
+    // macrotask flush below forces that batch to run first, so the
+    // assertion reads the mutation's actual cache write, not a snapshot the
+    // mutation never touched.
+    const created = makeRenderRecord({
+      id: "new",
+      status: "generating",
+      templateId: null,
+      captionSlots: {},
+    });
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(
+          makeTopicDetail({ renders: [makeRenderRecord({ id: "old" }), created] }),
+        ),
+      ),
+      http.post("/api/runs/:runId/topics/:topicId/renders", () =>
+        HttpResponse.json([created], { status: 202 }),
+      ),
+    );
+
+    const { result } = renderHook(
+      () => ({ detail: useTopicDetail("r1", "t1"), generate: useGenerateRenders("r1", "t1") }),
+      { wrapper: renderWithProviders.Wrapper },
+    );
+    await waitFor(() => expect(result.current.detail.isSuccess).toBe(true));
+
+    await act(async () => {
+      await result.current.generate.mutateAsync({ mode: "llm", template_id: null, count: 1 });
+    });
+    // Flush the pending observer-notify macrotask before reading `data`.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(result.current.detail.data?.renders.map((render) => render.id)).toEqual([
+      "old",
+      "new",
+    ]);
+  });
 });
 
 describe("useDeleteRender", () => {
@@ -917,5 +971,44 @@ describe("useDeleteRender", () => {
       "keep",
       "stuck",
     ]);
+  });
+
+  it("invalidates the render's own query, so Back does not show it from a stale cache", async () => {
+    // With the app's 30s staleTime, pressing Back after deleting from the
+    // full-size view would otherwise show the deleted render from cache,
+    // with no refetch. The test client's default staleTime is 0, so
+    // `isStale` can't tell "invalidated" apart from "always stale" —
+    // `isInvalidated` on the cache's own query state is a marker
+    // `invalidateQueries` sets independently of staleTime, so it is the
+    // honest observable here.
+    serveDetailOnce([makeRenderRecord({ id: "gone" })]);
+    server.use(
+      http.get("/api/renders/:renderId", () =>
+        HttpResponse.json(makeRenderRecord({ id: "gone" })),
+      ),
+      http.delete("/api/renders/:renderId", () => new HttpResponse(null, { status: 204 })),
+    );
+
+    const { result } = renderHook(
+      () => ({
+        detail: useTopicDetail(RUN, TOPIC),
+        render: useRender("gone"),
+        remove: useDeleteRender(),
+        client: useQueryClient(),
+      }),
+      { wrapper: renderWithProviders.Wrapper },
+    );
+    await waitFor(() => expect(result.current.detail.isSuccess).toBe(true));
+    await waitFor(() => expect(result.current.render.isSuccess).toBe(true));
+
+    await act(async () => {
+      await result.current.remove.mutateAsync(makeRenderRecord({ id: "gone" }));
+    });
+
+    await waitFor(() =>
+      expect(
+        result.current.client.getQueryState(queryKeys.render("gone"))?.isInvalidated,
+      ).toBe(true),
+    );
   });
 });
