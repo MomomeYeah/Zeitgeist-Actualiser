@@ -1,10 +1,11 @@
 import { useParams } from "react-router-dom";
 
-import { useRun, useTopicDetail } from "@/api/queries";
+import { useConfigOptions, useGenerateRenders, useRun, useTopicDetail } from "@/api/queries";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { Chip } from "@/components/Chip";
 import { QueryBoundary } from "@/components/QueryBoundary";
 import { DossierCards } from "@/features/topics/DossierCards";
+import { GeneratePanels } from "@/features/topics/GeneratePanels";
 import { PhraseCard } from "@/features/topics/PhraseCard";
 import { RenderGrid } from "@/features/topics/RenderGrid";
 import { ReplyList } from "@/features/topics/ReplyList";
@@ -18,6 +19,14 @@ export function TopicDetailPage() {
   // Only for `phrase_min_authors`: TopicDetail carries no config, and the
   // phrases footer names the run's own frozen threshold.
   const run = useRun(runId);
+  // The template library the panel offers: the loaded manifests, never the
+  // four templates the handoff happened to draw.
+  const options = useConfigOptions();
+  // Owned here rather than by the panel: the grid draws a placeholder for
+  // every meme a request in flight asked for, and the page is what the
+  // panel and the grid share. See the plan's "Decisions", 8.
+  const llm = useGenerateRenders(runId ?? "", topicId ?? "");
+  const pending = llm.isPending && llm.variables !== undefined ? [llm.variables] : [];
 
   return (
     <QueryBoundary query={detail} missing="No such topic in this run.">
@@ -77,7 +86,13 @@ export function TopicDetailPage() {
               />
             </div>
 
-            <RenderGrid renders={data.renders} runId={topic.run_id} pending={[]} />
+            <QueryBoundary query={options} missing="No template library was found.">
+              {(choices) => (
+                <GeneratePanels topic={topic} templates={choices.templates} llm={llm} />
+              )}
+            </QueryBoundary>
+
+            <RenderGrid renders={data.renders} runId={topic.run_id} pending={pending} />
           </div>
         );
       }}

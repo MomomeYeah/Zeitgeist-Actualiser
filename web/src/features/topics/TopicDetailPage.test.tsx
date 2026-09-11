@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { TopicDetail } from "@/api/types";
 import { TopicDetailPage } from "@/features/topics/TopicDetailPage";
 import {
+  makeConfigOptions,
   makeDossier,
   makeRenderRecord,
   makeRunDetail,
@@ -21,6 +22,7 @@ function serve(detail: TopicDetail = makeTopicDetail()) {
   server.use(
     http.get("/api/runs/:runId/topics/:topicId", () => HttpResponse.json(detail)),
     http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+    http.get("/api/config/options", () => HttpResponse.json(makeConfigOptions())),
   );
 }
 
@@ -212,6 +214,7 @@ describe("TopicDetailPage", () => {
         HttpResponse.json(makeTopicDetail({ renders })),
       ),
       http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+      http.get("/api/config/options", () => HttpResponse.json(makeConfigOptions())),
       http.delete("/api/renders/:renderId", ({ params }) => {
         renders = renders.filter((render) => render.id !== params.renderId);
         return new HttpResponse(null, { status: 204 });
@@ -235,6 +238,7 @@ describe("TopicDetailPage", () => {
         HttpResponse.json({ detail: "No such topic" }, { status: 404 }),
       ),
       http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+      http.get("/api/config/options", () => HttpResponse.json(makeConfigOptions())),
     );
 
     renderPage();
