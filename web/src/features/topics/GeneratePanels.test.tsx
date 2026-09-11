@@ -274,3 +274,190 @@ describe("Ask the LLM", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("Write it yourself", () => {
+  async function manualPanel() {
+    return within(await screen.findByRole("region", { name: "Write it yourself" }));
+  }
+
+  it("writes one field per slot of the chosen template, named for the slot", async () => {
+    serveTopic();
+    renderPage();
+
+    const panel = await manualPanel();
+    expect(panel.getByRole("combobox", { name: "Template" })).toHaveValue("drake");
+    expect(panel.getByRole("textbox", { name: "rejected" })).toBeInTheDocument();
+    expect(panel.getByRole("textbox", { name: "preferred" })).toBeInTheDocument();
+    expect(panel.getAllByRole("textbox")).toHaveLength(2);
+  });
+
+  it("swaps the fields when the template changes", async () => {
+    serveTopic();
+    const user = userEvent.setup();
+    renderPage();
+
+    const panel = await manualPanel();
+    await user.selectOptions(panel.getByRole("combobox", { name: "Template" }), "two_buttons");
+
+    expect(panel.getByRole("textbox", { name: "left" })).toBeInTheDocument();
+    expect(panel.getByRole("textbox", { name: "sweating" })).toBeInTheDocument();
+    expect(panel.queryByRole("textbox", { name: "rejected" })).not.toBeInTheDocument();
+  });
+
+  it("keeps what was typed for a template while another is looked at", async () => {
+    serveTopic();
+    const user = userEvent.setup();
+    renderPage();
+
+    const panel = await manualPanel();
+    const picker = panel.getByRole("combobox", { name: "Template" });
+    await user.type(panel.getByRole("textbox", { name: "rejected" }), "Filing an incident report");
+    await user.selectOptions(picker, "two_buttons");
+    await user.selectOptions(picker, "drake");
+
+    expect(panel.getByRole("textbox", { name: "rejected" })).toHaveValue(
+      "Filing an incident report",
+    );
+  });
+
+  it("will not render until every slot has a caption", async () => {
+    // The server refuses a blank slot with a 400; the button refusing first
+    // saves the round trip. Whitespace is blank to both.
+    serveTopic();
+    const user = userEvent.setup();
+    renderPage();
+
+    const panel = await manualPanel();
+    const render = panel.getByRole("button", { name: "Render" });
+    expect(render).toBeDisabled();
+
+    await user.type(panel.getByRole("textbox", { name: "rejected" }), "Filing an incident report");
+    expect(render).toBeDisabled();
+
+    await user.type(panel.getByRole("textbox", { name: "preferred" }), "   ");
+    expect(render).toBeDisabled();
+
+    await user.type(panel.getByRole("textbox", { name: "preferred" }), "Becoming the incident");
+    expect(render).toBeEnabled();
+  });
+
+  it("posts the chosen template's captions, trimmed", async () => {
+    const served = serveTopic({
+      created: [
+        makeRenderRecord({ id: "new-1", status: "generating", rationale: null }),
+      ],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const panel = await manualPanel();
+    await user.type(panel.getByRole("textbox", { name: "rejected" }), " Filing an incident report ");
+    await user.type(panel.getByRole("textbox", { name: "preferred" }), "Becoming the incident");
+    await user.click(panel.getByRole("button", { name: "Render" }));
+
+    await waitFor(() =>
+      expect(served.posted).toEqual([
+        {
+          mode: "manual",
+          template_id: "drake",
+          caption_slots: {
+            rejected: "Filing an incident report",
+            preferred: "Becoming the incident",
+          },
+        },
+      ]),
+    );
+  });
+
+  it("posts only the slots of the template it ends on", async () => {
+    // Captions typed for one template are kept while another is looked at,
+    // so switching back does not lose them — but they are not the new
+    // template's slots, and the server refuses unknown ones.
+    const served = serveTopic({
+      created: [
+        makeRenderRecord({ id: "new-1", status: "generating", rationale: null }),
+      ],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const panel = await manualPanel();
+    await user.type(panel.getByRole("textbox", { name: "rejected" }), "Filing an incident report");
+    await user.selectOptions(panel.getByRole("combobox", { name: "Template" }), "two_buttons");
+    await user.type(panel.getByRole("textbox", { name: "left" }), "Board the plane");
+    await user.type(panel.getByRole("textbox", { name: "right" }), "Stay with the cat");
+    await user.type(panel.getByRole("textbox", { name: "sweating" }), "Passenger 14C");
+    await user.click(panel.getByRole("button", { name: "Render" }));
+
+    await waitFor(() =>
+      expect(served.posted).toEqual([
+        {
+          mode: "manual",
+          template_id: "two_buttons",
+          caption_slots: {
+            left: "Board the plane",
+            right: "Stay with the cat",
+            sweating: "Passenger 14C",
+          },
+        },
+      ]),
+    );
+  });
+
+  it("draws a rendering placeholder while the request is in flight", async () => {
+    serveTopic({
+      created: [
+        makeRenderRecord({ id: "new-1", status: "generating", rationale: null }),
+      ],
+      hold: true,
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const panel = await manualPanel();
+    await user.type(panel.getByRole("textbox", { name: "rejected" }), "Filing an incident report");
+    await user.type(panel.getByRole("textbox", { name: "preferred" }), "Becoming the incident");
+    await user.click(panel.getByRole("button", { name: "Render" }));
+
+    expect(await screen.findByText("rendering…")).toBeInTheDocument();
+    expect(screen.getByText("drake · manual")).toBeInTheDocument();
+  });
+
+  it("will not post the same captions twice while the first render is on its way", async () => {
+    // `disabled` has two halves — every slot filled, and nothing in flight
+    // — and a double-click tests the second: two identical renders.
+    const served = serveTopic({
+      created: [makeRenderRecord({ id: "new-1", status: "generating", rationale: null })],
+      hold: true,
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const panel = await manualPanel();
+    await user.type(panel.getByRole("textbox", { name: "rejected" }), "Filing an incident report");
+    await user.type(panel.getByRole("textbox", { name: "preferred" }), "Becoming the incident");
+    const render = panel.getByRole("button", { name: "Render" });
+    await user.click(render);
+    await waitFor(() => expect(render).toBeDisabled());
+    await user.click(render);
+
+    served.release();
+    expect(await screen.findByRole("button", { name: "Cancel render" })).toBeInTheDocument();
+    expect(served.posted).toHaveLength(1);
+  });
+
+  it("shows the server's reason when it will not render", async () => {
+    serveTopic({ refuse: "unknown slots for 'drake': extra" });
+    const user = userEvent.setup();
+    renderPage();
+
+    const panel = await manualPanel();
+    await user.type(panel.getByRole("textbox", { name: "rejected" }), "a");
+    await user.type(panel.getByRole("textbox", { name: "preferred" }), "b");
+    await user.click(panel.getByRole("button", { name: "Render" }));
+
+    expect(await panel.findByRole("alert")).toHaveTextContent(
+      "unknown slots for 'drake': extra",
+    );
+  });
+});

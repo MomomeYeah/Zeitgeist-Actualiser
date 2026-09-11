@@ -25,8 +25,15 @@ export function TopicDetailPage() {
   // Owned here rather than by the panel: the grid draws a placeholder for
   // every meme a request in flight asked for, and the page is what the
   // panel and the grid share. See the plan's "Decisions", 8.
+  // One mutation per panel, so one panel's error or pending state is never
+  // the other's.
   const llm = useGenerateRenders(runId ?? "", topicId ?? "");
-  const pending = llm.isPending && llm.variables !== undefined ? [llm.variables] : [];
+  const manual = useGenerateRenders(runId ?? "", topicId ?? "");
+  const pending = [llm, manual].flatMap((generation) =>
+    generation.isPending && generation.variables !== undefined
+      ? [generation.variables]
+      : [],
+  );
 
   return (
     <QueryBoundary query={detail} missing="No such topic in this run.">
@@ -88,7 +95,12 @@ export function TopicDetailPage() {
 
             <QueryBoundary query={options} missing="No template library was found.">
               {(choices) => (
-                <GeneratePanels topic={topic} templates={choices.templates} llm={llm} />
+                <GeneratePanels
+                  topic={topic}
+                  templates={choices.templates}
+                  llm={llm}
+                  manual={manual}
+                />
               )}
             </QueryBoundary>
 

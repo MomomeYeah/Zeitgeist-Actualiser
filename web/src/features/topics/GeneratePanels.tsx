@@ -1,6 +1,7 @@
 import type { GenerateMutation } from "@/api/queries";
 import type { TemplateOption, TopicRow } from "@/api/types";
 import { LlmPanel } from "@/features/topics/LlmPanel";
+import { ManualPanel } from "@/features/topics/ManualPanel";
 
 import styles from "./GeneratePanels.module.css";
 
@@ -15,14 +16,17 @@ export function GeneratePanels({
   topic,
   templates,
   llm,
+  manual,
 }: {
   topic: TopicRow;
   templates: TemplateOption[];
   llm: GenerateMutation;
+  manual: GenerateMutation;
 }) {
   return (
     <div className={styles.panels}>
       <LlmPanel topic={topic} templates={templates} generation={llm} />
+      <ManualPanel templates={templates} generation={manual} />
     </div>
   );
 }
