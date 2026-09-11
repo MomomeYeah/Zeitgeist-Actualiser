@@ -25,26 +25,7 @@
   color: var(--text);
 }
 
-.accent {
-  padding: 9px 16px;
-  border: none;
-  border-radius: var(--radius-pill);
-  background: var(--accent);
-  font-family: var(--font-ui);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  color: var(--on-accent);
-  cursor: pointer;
-  transition: filter var(--transition);
-}
-
-.accent:hover:not(:disabled) {
-  filter: brightness(0.94);
-}
-
-.ghost:disabled,
-.accent:disabled {
+.ghost:disabled {
   opacity: 0.5;
   cursor: default;
 }

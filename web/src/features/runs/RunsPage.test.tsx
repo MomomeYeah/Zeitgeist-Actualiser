@@ -1,7 +1,8 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
+import { ACTIVE_POLL_MS } from "@/api/queries";
 import { RunsPage } from "@/features/runs/RunsPage";
 import {
   makeActiveRuns,
@@ -309,6 +310,47 @@ describe("RunsPage", () => {
     expect(
       screen.getAllByRole("progressbar").map((bar) => bar.getAttribute("aria-valuenow")),
     ).toEqual(["100", "68", "0", "0"]);
+  });
+
+  it("moves the in-flight card's segments on as the run does", async () => {
+    // This screen opens no stream, so nothing but the card's own poll
+    // refreshes the run's detail. Without it the segments stayed at the
+    // fill they had when the page loaded, for as long as it stayed open.
+    let detailCalls = 0;
+    server.use(
+      http.get("/api/runs", () => HttpResponse.json(makeRunPage())),
+      http.get("/api/runs/active", () =>
+        HttpResponse.json(makeActiveRuns({ current: "20260829T140200Z" })),
+      ),
+      http.get("/api/runs/:runId", () => {
+        detailCalls += 1;
+        return HttpResponse.json(
+          makeRunDetail({
+            runId: "20260829T140200Z",
+            status: "running",
+            stages: [
+              makeStageRecord({ stage: "ingest" }),
+              makeStageRecord({
+                stage: "analyse",
+                status: "running",
+                finishedAt: null,
+                done: detailCalls === 1 ? 5 : 20,
+                total: 25,
+              }),
+            ],
+          }),
+        );
+      }),
+    );
+
+    renderWithProviders(<RunsPage />);
+    await screen.findByText("20260829T140200Z");
+    const analyse = () => screen.getAllByRole("progressbar")[1];
+    expect(analyse()).toHaveAttribute("aria-valuenow", "20");
+
+    await waitFor(() => expect(analyse()).toHaveAttribute("aria-valuenow", "80"), {
+      timeout: ACTIVE_POLL_MS * 2,
+    });
   });
 
   it("draws no in-flight card while nothing is running", async () => {

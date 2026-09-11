@@ -24,11 +24,18 @@ export function InlineConfirm({
   onConfirm,
   className,
   tone = "contrast",
+  disabled = false,
 }: {
   label: string;
   question: string;
   onConfirm: () => void;
   className?: string;
+  /**
+   * Disables the trigger, for an action already on its way: Resume, between
+   * its 202 and the refetch that replaces it, uses this the way Stop uses
+   * its own `disabled`.
+   */
+  disabled?: boolean;
   /**
    * Which resting look the trigger gets. Defaults to today's contrast
    * look, so Abort and phase 7's delete are unchanged.
@@ -83,6 +90,7 @@ export function InlineConfirm({
         ]
           .filter(Boolean)
           .join(" ")}
+        disabled={disabled}
         onClick={() => setAsking(true)}
       >
         {label}

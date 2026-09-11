@@ -697,6 +697,125 @@ describe("RunDetailPage", () => {
     ).toBeDisabled();
   });
 
+  it("keeps focus on the run's header once an abort is accepted", async () => {
+    // After "yes", focus goes back to the Abort trigger — which the accepted
+    // abort then replaces with "Aborting…". The focused button unmounted,
+    // and a keyboard user was dropped at the top of the document: the
+    // walk's D5 again, by a different route.
+    const user = userEvent.setup();
+    server.use(
+      ...liveRun(),
+      http.post("/api/runs/:runId/abort", () =>
+        HttpResponse.json(
+          { run_id: "20260829T140200Z", requested: "abort" },
+          { status: 202 },
+        ),
+      ),
+    );
+    renderDetail();
+
+    await user.click(await screen.findByRole("button", { name: "Abort" }));
+    await user.click(screen.getByRole("button", { name: "yes" }));
+    await screen.findByRole("button", { name: "Aborting…" });
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toContainElement(screen.getByText("20260829T140200Z"));
+  });
+
+  it("keeps focus on the run's header once a resume is accepted and the run goes live", async () => {
+    // The actions remount when the run goes live (they are keyed on it), so
+    // every button that could have held focus is replaced at once.
+    const user = userEvent.setup();
+    let resumed = false;
+    server.use(
+      http.get("/api/runs/active", () =>
+        HttpResponse.json(
+          makeActiveRuns({ current: resumed ? "20260829T090000Z" : null }),
+        ),
+      ),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(
+          resumed
+            ? makeRunDetail({
+                runId: "20260829T090000Z",
+                status: "running",
+                finishedAt: null,
+                stages: [
+                  makeStageRecord({ stage: "ingest" }),
+                  makeStageRecord({ stage: "analyse" }),
+                  makeStageRecord({ stage: "evaluate" }),
+                  makeStageRecord({
+                    stage: "generate",
+                    status: "running",
+                    finishedAt: null,
+                  }),
+                ],
+              })
+            : makeRunDetail({ runId: "20260829T090000Z", resumeStage: "generate" }),
+        ),
+      ),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
+      http.post("/api/runs/:runId/resume", () => {
+        resumed = true;
+        return HttpResponse.json(makeQueuedRun({ runId: "20260829T090000Z" }), {
+          status: 202,
+        });
+      }),
+    );
+    renderDetail("20260829T090000Z");
+
+    await user.click(
+      await screen.findByRole("button", { name: "Resume from generate" }),
+    );
+    await user.click(screen.getByRole("button", { name: "yes" }));
+    expect(
+      await screen.findByRole("button", { name: "Stop after this stage" }),
+    ).toBeInTheDocument();
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toContainElement(screen.getByText("20260829T090000Z"));
+  });
+
+  it("posts one resume, however often it is asked before the run goes live", async () => {
+    // Stop is disabled while pending and after it succeeds; Resume was not.
+    // Between the 202 and the refetch that flips the page live it could be
+    // armed and confirmed again, and the second POST drew a 409 that
+    // flashed on screen until the remount cleared it.
+    const user = userEvent.setup();
+    let posts = 0;
+    server.use(
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(
+          makeRunDetail({ runId: "20260829T090000Z", resumeStage: "generate" }),
+        ),
+      ),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
+      http.post("/api/runs/:runId/resume", () => {
+        posts += 1;
+        return HttpResponse.json(makeQueuedRun({ runId: "20260829T090000Z" }), {
+          status: 202,
+        });
+      }),
+    );
+    renderDetail("20260829T090000Z");
+
+    await user.click(
+      await screen.findByRole("button", { name: "Resume from generate" }),
+    );
+    await user.click(screen.getByRole("button", { name: "yes" }));
+    await waitFor(() => expect(posts).toBe(1));
+
+    const again = screen.getByRole("button", { name: "Resume from generate" });
+    await user.click(again);
+
+    expect(screen.queryByRole("button", { name: "yes" })).not.toBeInTheDocument();
+    expect(again).toBeDisabled();
+    expect(posts).toBe(1);
+  });
+
   it("clears a pending stop or abort label once the run itself has ended", async () => {
     // The pending state is client-side only and must not leak: a resumed
     // run goes live again on the same page, and a stale `isSuccess` from
@@ -805,6 +924,51 @@ describe("RunDetailPage", () => {
 
     expect(await screen.findByText("Fetched 25 trends")).toBeInTheDocument();
     expect(FakeEventSource.instances).toHaveLength(0);
+  });
+
+  it("says a finished run's log could not be read, rather than that it logged nothing", async () => {
+    // `history.data ?? []` threw the log query's error away, so a failed
+    // `/log` read "This run logged nothing." for good — a false statement
+    // standing in for an error.
+    server.use(
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+      http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      http.get("/api/runs/:runId/log", () =>
+        HttpResponse.json({ detail: "log_lines is unreadable" }, { status: 500 }),
+      ),
+    );
+
+    renderDetail("20260829T090000Z");
+
+    expect(await screen.findByText("log_lines is unreadable")).toBeInTheDocument();
+    expect(screen.queryByText("This run logged nothing.")).not.toBeInTheDocument();
+  });
+
+  it("says a finished run's log is loading while it is", async () => {
+    // The same `?? []` read a log still in flight as an empty one.
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+      http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      http.get("/api/runs/:runId/log", async () => {
+        await gate;
+        return HttpResponse.json([makeLogLine({ message: "Fetched 25 trends" })]);
+      }),
+    );
+
+    renderDetail("20260829T090000Z");
+
+    expect(await screen.findByText("Loading the log…")).toBeInTheDocument();
+    expect(screen.queryByText("This run logged nothing.")).not.toBeInTheDocument();
+
+    release?.();
+    expect(await screen.findByText("Fetched 25 trends")).toBeInTheDocument();
+    expect(screen.queryByText("Loading the log…")).not.toBeInTheDocument();
   });
 
   it("asks the log endpoint for nothing while the run is live", async () => {

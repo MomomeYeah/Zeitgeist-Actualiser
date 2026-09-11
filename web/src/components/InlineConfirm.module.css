@@ -15,16 +15,17 @@
   transition: background var(--transition), border-color var(--transition);
 }
 
-.trigger:hover {
+.trigger:hover:not(:disabled) {
   background: var(--contrast-confirm);
 }
 
 /* The resting accent pill — Resume's look, per the design — for a
    confirmed control that must not read as Abort's contrast/destructive
-   style. Mirrors RunActions.module.css's `.accent` and
-   NewRunButton.module.css's `.button`, which draw the same pill on the
-   other accent controls; kept as its own rule rather than shared across
-   modules because CSS Modules scope each stylesheet to its component. */
+   style. The same pill as NewRunButton.module.css's `.button`, written out
+   again here rather than shared. Sharing it is possible — CSS Modules'
+   `composes: button from "…"` pulls one module's class into another — but
+   folding the duplicated pills together is a follow-up, not part of the
+   change that gave Resume this confirm. */
 .accentTrigger {
   padding: 9px 16px;
   border: none;
@@ -39,8 +40,14 @@
   transition: filter var(--transition);
 }
 
-.accentTrigger:hover {
+.accentTrigger:hover:not(:disabled) {
   filter: brightness(0.94);
+}
+
+.trigger:disabled,
+.accentTrigger:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .asking {

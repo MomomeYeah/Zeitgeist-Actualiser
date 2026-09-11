@@ -103,7 +103,10 @@ The pipeline runs four stages, each checkpointed before the next begins:
 
 Stage checkpoints are written to SQLite at `data/zeitgeist.db`; rendered
 memes land in `output/<run-id>/renders/`, one PNG and one 96px thumbnail
-per meme. Read a checkpoint back with:
+per meme. A `data/zeitgeist.db` written before phase 6 is refused at startup
+(schema version 3, where this build expects 4); there are no migrations, so
+the fix is to delete it, which loses cross-run trend history and nothing else.
+Read a checkpoint back with:
 
 ```bash
 sqlite3 data/zeitgeist.db "select payload from checkpoints where run_id='...' and stage='analyse'" | jq
@@ -111,7 +114,9 @@ sqlite3 data/zeitgeist.db "select payload from checkpoints where run_id='...' an
 
 Resuming a run from a later stage — the loop for tuning meme templates and
 the caption prompt without re-scraping or re-paying for distillation — is
-not available from this harness; it arrives with the API in phase 3.
+not available from this harness. It is done through the API instead:
+`POST /api/runs/{id}/resume` (below), or **Resume from &lt;stage&gt;** on a
+finished run's page in the browser.
 
 Check the template library after editing a manifest:
 

@@ -51,8 +51,23 @@ export function NewRunPage() {
           {/* The form owns its state and seeds it from props, so the
               seeding happens once, at mount, rather than in an effect that
               has to decide whether the user has since edited a field. That
-              means waiting for the source run before mounting it. */}
-          {from !== undefined && source.data === undefined ? (
+              means waiting for the source run before mounting it — and
+              reading its error too, or a `?from=` naming no run leaves the
+              loading line up for good. A 404 is split from other failures
+              for the reason `QueryBoundary` gives: a mistyped id and a
+              broken server are different problems. The fresh form is a
+              link rather than mounted here, because the header above is
+              still describing a re-run. */}
+          {from !== undefined && source.isError ? (
+            <>
+              <p className={styles.failure}>
+                {source.error.status === 404 ? "No such run to re-run." : source.error.detail}
+              </p>
+              <p className={styles.fresh}>
+                <Link to="/runs/new">Start a fresh run instead</Link>
+              </p>
+            </>
+          ) : from !== undefined && source.data === undefined ? (
             <p className={styles.loading}>Loading that run's config…</p>
           ) : (
             <NewRunForm config={config} preset={source.data?.run.config} />

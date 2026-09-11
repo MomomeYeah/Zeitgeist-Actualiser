@@ -35,17 +35,29 @@ const RECENT = 20;
  * different ones — which is what makes flipping it work retroactively, and
  * is what anyone toggling it mid-run wants. The stream sends everything
  * regardless (`control.py` applies no filter of its own).
+ *
+ * `loading` and `failure` are a finished run's log query's own states,
+ * shown in place of the lines. Without them an empty `lines` could only
+ * read "This run logged nothing." — which is false while the log is still
+ * on its way, and false for good when it could not be read. They are
+ * props rather than a `QueryBoundary` around this component so the
+ * section and its verbose toggle stay put while a toggled log reloads.
  */
 export function LiveLog({
   lines,
   live,
   verbose,
   onVerboseChange,
+  loading = false,
+  failure,
 }: {
   lines: LogLine[];
   live: boolean;
   verbose: boolean;
   onVerboseChange: (verbose: boolean) => void;
+  loading?: boolean;
+  /** The server's own sentence for why the log could not be read. */
+  failure?: string;
 }) {
   const scroller = useRef<HTMLDivElement | null>(null);
   const following = useRef(true);
@@ -117,7 +129,11 @@ export function LiveLog({
       </SectionLabel>
 
       <div className={styles.block} data-testid="log-scroller" ref={scroller}>
-        {shown.length === 0 ? (
+        {failure !== undefined ? (
+          <p className={styles.failure}>{failure}</p>
+        ) : loading ? (
+          <p className={styles.empty}>Loading the log…</p>
+        ) : shown.length === 0 ? (
           <p className={styles.empty}>
             {live ? "Waiting for the first line…" : "This run logged nothing."}
           </p>

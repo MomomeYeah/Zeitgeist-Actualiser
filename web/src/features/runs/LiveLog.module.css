@@ -57,12 +57,21 @@
   color: var(--accent);
 }
 
-.empty {
+.empty,
+.failure {
   margin: 0;
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.9;
+}
+
+.empty {
   color: var(--text-35);
+}
+
+/* QueryBoundary's error colour, for the same kind of sentence. */
+.failure {
+  color: var(--contrast-light);
 }
 
 .controls {

@@ -19,6 +19,12 @@
   color: var(--text-35);
 }
 
+.fresh {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
 .layout {
   display: grid;
   grid-template-columns: 1fr 320px;

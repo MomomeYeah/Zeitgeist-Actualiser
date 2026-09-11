@@ -119,12 +119,21 @@ describe("InlineConfirm", () => {
   it("stays open while focus moves between yes and no", async () => {
     // The blur revert must not fire on the tab from `yes` to `no`, or the
     // keyboard path through this control would be unusable.
+    //
+    // Asserted twice. The first Tab here passes through `document.body`
+    // with a null `relatedTarget`, which the component answers with a check
+    // deferred 100ms — so an assertion made straight after the tabs runs
+    // before that check has, and passes however broken it is. That branch
+    // has regressed once already. Waiting past the deferral is what makes
+    // this test able to see it.
     const { user } = setup();
 
     await user.click(screen.getByRole("button", { name: "Abort" }));
     await user.tab();
     await user.tab();
 
+    expect(screen.getByText("Abort run?")).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 150));
     expect(screen.getByText("Abort run?")).toBeInTheDocument();
   });
 });

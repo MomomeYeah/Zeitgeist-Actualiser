@@ -1,3 +1,5 @@
+import { useRef } from "react";
+
 import type { RunDetail } from "@/api/types";
 import { useAbortRun, useResumeRun, useStopRun } from "@/api/queries";
 import { InlineConfirm } from "@/components/InlineConfirm";
@@ -44,17 +46,51 @@ import styles from "./RunActions.module.css";
  * ever has a button to click, so at most one of `stop`, `abort` and
  * `resume` can ever hold an error at a time. The mount boundary already
  * scopes it; a second check here would be redundant.
+ *
+ * Resume carries the same pending guard as Stop. Between its 202 and the
+ * refetch that flips the page live, the button was still there and still
+ * worked, and a second confirm drew a 409 that flashed until the remount
+ * cleared it.
+ *
+ * An accepted abort or resume hands focus to `onFocusHome` — the run's
+ * header, which is the one place in the page that outlives both. After
+ * "yes", focus is back on the trigger; an accepted abort then replaces
+ * that trigger with "Aborting…", and an accepted resume remounts this whole
+ * component once the run goes live. Either way the focused button is gone
+ * and a keyboard user landed on `<body>`. Focus is moved only if it is
+ * still here, or already lost: someone who has moved on in the moment the
+ * request took is left where they went.
  */
-export function RunActions({ detail, live }: { detail: RunDetail; live: boolean }) {
+export function RunActions({
+  detail,
+  live,
+  onFocusHome,
+}: {
+  detail: RunDetail;
+  live: boolean;
+  onFocusHome: () => void;
+}) {
   const runId = detail.run.run_id;
   const stop = useStopRun(runId);
   const abort = useAbortRun(runId);
   const resume = useResumeRun(runId);
+  const actions = useRef<HTMLDivElement | null>(null);
 
   const failure = stop.error ?? abort.error ?? resume.error ?? null;
 
+  function keepFocus() {
+    const focused = document.activeElement;
+    if (
+      focused === null ||
+      focused === document.body ||
+      (actions.current?.contains(focused) ?? false)
+    ) {
+      onFocusHome();
+    }
+  }
+
   return (
-    <div className={styles.actions}>
+    <div className={styles.actions} ref={actions}>
       {live ? (
         <>
           <button
@@ -73,7 +109,7 @@ export function RunActions({ detail, live }: { detail: RunDetail; live: boolean 
             <InlineConfirm
               label="Abort"
               question="Abort run?"
-              onConfirm={() => abort.mutate()}
+              onConfirm={() => abort.mutate(undefined, { onSuccess: keepFocus })}
             />
           )}
         </>
@@ -85,10 +121,11 @@ export function RunActions({ detail, live }: { detail: RunDetail; live: boolean 
               label={`Resume from ${detail.resume_stage}`}
               question={`Resume from ${detail.resume_stage}?`}
               tone="accent"
+              disabled={resume.isPending || resume.isSuccess}
               // An empty body: the stage is the server's own computation
               // (`resume_stage`), and echoing it back could send a stale
               // one if the run gained a checkpoint since this render.
-              onConfirm={() => resume.mutate({})}
+              onConfirm={() => resume.mutate({}, { onSuccess: keepFocus })}
             />
           )}
         </>

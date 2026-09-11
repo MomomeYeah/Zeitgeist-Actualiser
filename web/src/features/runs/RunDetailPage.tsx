@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import type { RankedTopic, RunDetail, StageRecord } from "@/api/types";
@@ -73,6 +73,7 @@ export function RunDetailPage() {
   const ranking = useRanking(runId);
   const active = useActiveRun();
   const [verbose, setVerbose] = useState(false);
+  const header = useRef<HTMLElement | null>(null);
 
   // The run's own row, not `active`: a run that has just ended is no longer
   // current, and the screen must stop following it the moment its status
@@ -109,7 +110,13 @@ export function RunDetailPage() {
               ]}
             />
 
-            <header className={styles.header}>
+            {/* Focusable by script only (-1 keeps it out of the tab order):
+                it is where `RunActions` sends focus when an accepted abort
+                or resume replaces the button that held it, because the
+                header is the one element that survives both. Reached
+                there, a screen reader reads the run's status and id — what
+                the action just changed. */}
+            <header className={styles.header} ref={header} tabIndex={-1}>
               <div className={styles.headRow}>
                 <div className={styles.identity}>
                   <StatusPill status={detail.run.status} />
@@ -131,6 +138,7 @@ export function RunDetailPage() {
                   key={live ? "live" : "over"}
                   detail={detail}
                   live={live}
+                  onFocusHome={() => header.current?.focus()}
                 />
               </div>
               <MetaLine>{configLine(detail, live)}</MetaLine>
@@ -179,6 +187,11 @@ export function RunDetailPage() {
               live={live}
               verbose={verbose}
               onVerboseChange={setVerbose}
+              // The history query's own states, which `?? []` alone threw
+              // away: a finished run read "This run logged nothing." while
+              // its log was still loading, and for good if `/log` failed.
+              loading={!live && history.isPending}
+              failure={!live && history.isError ? history.error.detail : undefined}
             />
           </div>
         );

@@ -21,9 +21,12 @@ import styles from "./InFlightCard.module.css";
  * loading. The card appearing a moment late is invisible; a placeholder
  * card that then becomes a real one is a layout shift on the screen's most
  * prominent element.
+ *
+ * Polls the run's detail (`poll`), because this screen opens no stream:
+ * without it the four segments stayed at whatever they read on arrival.
  */
 export function InFlightCard({ runId }: { runId: string }) {
-  const run = useRun(runId);
+  const run = useRun(runId, { poll: true });
   const now = useNow(true);
 
   if (run.data === undefined) return null;

@@ -5,8 +5,10 @@
  *
  * `useActiveRun` and `useRunEvents` are the two hooks that carry live
  * behaviour: the first polls while a run is in flight, and the second opens
- * an SSE stream through the injectable transport in `client.ts`. Every
- * other hook here fires once per mount, like phase 5's read hooks did.
+ * an SSE stream through the injectable transport in `client.ts`. `useRun`
+ * polls too, but only when a caller showing the run in flight asks it to
+ * (`poll`). Every other hook here fires once per mount, like phase 5's read
+ * hooks did.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
@@ -62,11 +64,23 @@ export function useRuns(limit: number = DEFAULT_RUN_LIMIT) {
   });
 }
 
-export function useRun(runId: string | undefined) {
+/**
+ * One run's detail.
+ *
+ * `poll` is for the surfaces that show the run in flight away from its own
+ * page — the sidebar card and the Runs list's pinned card. Run detail keeps
+ * itself current from its stream's ticks, but no other screen opens one, so
+ * without a poll of their own those cards froze at the stage they first
+ * loaded: `useActiveRun`'s poll refreshes `["runs", "active"]`, which says
+ * *which* run is in flight and nothing about how far it has got. Same
+ * interval as that poll, because the two answer halves of one question.
+ */
+export function useRun(runId: string | undefined, options: { poll?: boolean } = {}) {
   return useQuery<RunDetail, ApiError>({
     queryKey: queryKeys.run(runId ?? ""),
     queryFn: () => apiGet<RunDetail>(`/api/runs/${encodeURIComponent(runId ?? "")}`),
     enabled: runId !== undefined,
+    refetchInterval: options.poll === true ? ACTIVE_POLL_MS : false,
   });
 }
 
@@ -261,6 +275,21 @@ export function useSaveSettings() {
  * Incoming lines are batched to an animation frame. A DEBUG run emits a
  * line per distilled topic from a thread pool, so appending one at a time
  * would re-render the log once per line.
+ *
+ * A line at or below the highest `seq` already taken is dropped. The server
+ * sends no `id:` lines, so an `EventSource` that reconnects mid-run starts
+ * the server's generator again at `since(0)` and gets the whole buffer a
+ * second time; appended as it came, that doubled the log and repeated the
+ * `seq` each row is keyed by. `seq` is the handler's total order over one
+ * run's lines, so it is the right thing to deduplicate on.
+ *
+ * The tick throttle has a trailing edge as well as a leading one. The tick
+ * after a run's final status write usually lands inside the window the
+ * previous one opened, and a leading-edge-only throttle dropped it — so the
+ * page stayed live, "Stopping…" and a counting clock, until the stream
+ * reconnected about three seconds later. A throttled tick now leaves one
+ * refresh for the end of its window, and a burst of them leaves only that
+ * one.
  */
 export function useRunEvents(runId: string | undefined, enabled: boolean) {
   const client = useQueryClient();
@@ -268,10 +297,17 @@ export function useRunEvents(runId: string | undefined, enabled: boolean) {
   const pending = useRef<LogLine[]>([]);
   const frame = useRef<number | null>(null);
   const lastInvalidated = useRef(0);
+  const trailing = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Negative infinity rather than 0: nothing has been taken yet, so no
+  // `seq` — whatever the server starts numbering at — is a replay.
+  const highestSeq = useRef(Number.NEGATIVE_INFINITY);
 
   useEffect(() => {
     if (runId === undefined || !enabled) return;
     setLines([]);
+    // Reset with the lines they describe: a resumed run's new stream is a
+    // new buffer, and its numbering is checked against nothing held.
+    highestSeq.current = Number.NEGATIVE_INFINITY;
     const source = openRunEvents(runId);
 
     const flush = () => {
@@ -288,17 +324,39 @@ export function useRunEvents(runId: string | undefined, enabled: boolean) {
     };
 
     const onLog = (event: Event) => {
-      pending.current = [...pending.current, ...parseLogEvent(eventData(event))];
+      const fresh = parseLogEvent(eventData(event)).filter(
+        (line) => line.seq > highestSeq.current,
+      );
+      if (fresh.length === 0) return;
+      for (const line of fresh) {
+        highestSeq.current = Math.max(highestSeq.current, line.seq);
+      }
+      pending.current = [...pending.current, ...fresh];
       if (frame.current === null) {
         frame.current = requestAnimationFrame(flush);
       }
     };
 
-    const onTick = () => {
-      const now = Date.now();
-      if (now - lastInvalidated.current < TICK_INVALIDATE_MS) return;
-      lastInvalidated.current = now;
+    const invalidate = () => {
+      lastInvalidated.current = Date.now();
       void client.invalidateQueries({ queryKey: ["runs"] });
+    };
+
+    const onTick = () => {
+      const elapsed = Date.now() - lastInvalidated.current;
+      if (elapsed >= TICK_INVALIDATE_MS) {
+        // A trailing refresh can still be pending if its timer ran late;
+        // this one supersedes it rather than following it by a few ms.
+        if (trailing.current !== null) clearTimeout(trailing.current);
+        trailing.current = null;
+        invalidate();
+        return;
+      }
+      if (trailing.current !== null) return;
+      trailing.current = setTimeout(() => {
+        trailing.current = null;
+        invalidate();
+      }, TICK_INVALIDATE_MS - elapsed);
     };
 
     source.addEventListener("log", onLog);
@@ -310,6 +368,11 @@ export function useRunEvents(runId: string | undefined, enabled: boolean) {
       if (frame.current !== null) cancelAnimationFrame(frame.current);
       frame.current = null;
       pending.current = [];
+      if (trailing.current !== null) clearTimeout(trailing.current);
+      trailing.current = null;
+      // The window belonged to this stream. A resumed run's new one should
+      // refresh on its first tick rather than wait out the old window.
+      lastInvalidated.current = 0;
     };
   }, [runId, enabled, client]);
 

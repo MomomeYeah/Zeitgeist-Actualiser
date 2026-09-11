@@ -1,3 +1,5 @@
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 import { Link, NavLink } from "react-router-dom";
 
 import { useActiveRun, useRun } from "@/api/queries";
@@ -50,13 +52,39 @@ export function Sidebar() {
  * Two queries rather than one: `active` says *whether*, and is the app's
  * single source of truth for that; the run's own detail says *which stage*,
  * which `ActiveRuns` does not carry. The second is `enabled` only when the
- * first names a run, so an idle app issues neither.
+ * first names a run, so an idle app issues neither. It polls at the same
+ * rate as the first, because run detail's stream is the only other thing
+ * that refreshes it and the sidebar is on every screen but that one.
+ *
+ * This is also where the app notices a run starting or ending, wherever
+ * someone happens to be looking. The sidebar is the one component mounted
+ * on every screen, and `active` is already polled here. When the run it
+ * names changes — a queued run starting, or `null` because the run ended
+ * — everything under `["runs"]` and `["topics"]` is invalidated: the Runs
+ * list and the Topics run strip would otherwise keep saying "running"
+ * until a 30s stale time ran out, and the Topics index would never pick up
+ * what the run produced while it stayed open.
+ *
+ * The first answer is not a change. Invalidating on it would refetch every
+ * list on the screen a second time on every page load.
  */
 function InFlight() {
+  const client = useQueryClient();
   const active = useActiveRun();
-  const runId = active.data?.current ?? undefined;
-  const run = useRun(runId);
+  const current = active.data?.current;
+  const runId = current ?? undefined;
+  const run = useRun(runId, { poll: true });
   const now = useNow(runId !== undefined);
+  const previous = useRef(current);
+
+  useEffect(() => {
+    if (previous.current === current) return;
+    const answered = previous.current !== undefined;
+    previous.current = current;
+    if (!answered) return;
+    void client.invalidateQueries({ queryKey: ["runs"] });
+    void client.invalidateQueries({ queryKey: ["topics"] });
+  }, [current, client]);
 
   if (runId === undefined || run.data === undefined) return null;
 

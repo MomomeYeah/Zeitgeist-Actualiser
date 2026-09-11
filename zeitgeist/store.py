@@ -136,9 +136,20 @@ class Store:
         So every public method holds `_lock` for its whole body (see
         `_serialized`) — one query or one transaction at a time per
         `Store`, which is all a single connection can honestly offer. The
-        cost is small: every method here is a query of a few milliseconds,
-        and the worker thread has its own `Store` and its own lock, so a
-        run's writes never queue behind the API's reads.
+        cost is small: nearly every method here is a query of a few
+        milliseconds, and the worker thread has its own `Store` and its own
+        lock, so a run's writes never queue behind the API's reads.
+
+        `read_checkpoint` is the exception. Called for `INGEST` — as
+        `api/runs.py`'s `_replies_for` does for every topic detail page — it
+        parses the run's whole evidence payload, about 1.3 MB on a real
+        run, with the lock held, and every other API request on this
+        `Store` waits behind it. That is tolerable rather than free: most of
+        its time is `json.loads` and `model_validate`, CPU work that holds
+        the GIL while it runs, so the other request threads would be
+        waiting on the interpreter for most of that time anyway. Releasing
+        the lock before the parse would buy back little concurrency; the
+        parse is what costs, not the lock.
         """
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)

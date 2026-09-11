@@ -361,6 +361,44 @@ def test_resuming_with_no_template_ids_keeps_the_frozen_list(tmp_path):
     assert seen == [["drake"]]
 
 
+def test_resuming_a_run_whose_frozen_config_no_longer_validates_is_a_400(tmp_path):
+    """Resume replays the run's frozen config as overrides, so `enqueue` can
+    now refuse it with the same `ValueError` a bad `POST /api/runs` gets.
+    `start_run` turned that into a 400; `resume_run` caught only
+    `RunAlreadyActive`, so the same refusal came out a 500 — telling the
+    user the server was broken rather than the run.
+
+    The run was frozen with `lemmy`, which `Settings` now refuses as a
+    dormant source: a config that validated once and no longer does, which
+    is the realistic way a replay goes bad. `seen` pins that the refusal
+    happens at the door, not on the worker thread after a 202.
+    """
+    seen: list[str] = []
+
+    def execute(settings, request, store, observer, token) -> None:
+        seen.append(request.run_id or "")
+
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id="20260901T120000Z",
+                config=make_run_config(sources=["lemmy"]),
+                evidence=[make_evidence(["p1"])],
+            )
+        ],
+        execute=execute,
+    )
+
+    response = client.post(
+        "/api/runs/20260901T120000Z/resume", json={"stage": "evaluate"}
+    )
+
+    assert response.status_code == 400
+    assert "dormant" in response.json()["detail"]
+    assert seen == []
+
+
 def test_resuming_an_unknown_run_is_a_404(tmp_path):
     client = seeded_client(tmp_path)
 

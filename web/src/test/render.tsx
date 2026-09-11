@@ -8,6 +8,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import type { ReactElement, ReactNode } from "react";
+import { useState } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 function newClient(): QueryClient {
@@ -34,10 +35,19 @@ export function renderWithProviders(ui: ReactElement, options: Options = {}) {
   );
 }
 
-/** The `wrapper` form, for `renderHook`. */
+/**
+ * The `wrapper` form, for `renderHook`.
+ *
+ * One client per mount, held in state rather than built in the body:
+ * `renderHook`'s `rerender` renders the wrapper again, and a client built
+ * on every render handed the hook under test an empty cache — so a hook
+ * invalidating after a rerender invalidated nothing, and a test of it
+ * could only fail.
+ */
 renderWithProviders.Wrapper = function Wrapper({ children }: { children: ReactNode }) {
+  const [client] = useState(newClient);
   return (
-    <QueryClientProvider client={newClient()}>
+    <QueryClientProvider client={client}>
       <MemoryRouter>{children}</MemoryRouter>
     </QueryClientProvider>
   );

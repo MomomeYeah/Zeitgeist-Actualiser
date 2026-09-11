@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   ACTIVE_POLL_MS,
   MAX_LOG_LINES,
+  TICK_INVALIDATE_MS,
   queryKeys,
   useAbortRun,
   useActiveRun,
@@ -317,6 +318,100 @@ describe("useRunEvents", () => {
     await waitFor(() => expect(detailCalls).toBe(2));
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(detailCalls).toBe(2);
+  });
+
+  it("holds each line once when a reconnected stream replays the buffer", async () => {
+    // The server sends no `id:` lines, so an `EventSource` that reconnects
+    // mid-run starts again at `since(0)` and replays everything the buffer
+    // still holds. Appended as they came, those lines doubled the log and
+    // repeated the `seq` the rows are keyed by.
+    const { result } = renderHook(() => useRunEvents("r1", true), {
+      wrapper: renderWithProviders.Wrapper,
+    });
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+
+    const upTo = (last: number) =>
+      Array.from({ length: last }, (_, index) =>
+        makeLogLine({ seq: index + 1, message: `line ${index + 1}` }),
+      );
+    act(() => FakeEventSource.latest().emitLog(upTo(3)));
+    await waitFor(() => expect(result.current).toHaveLength(3));
+
+    act(() => FakeEventSource.latest().emitLog(upTo(5)));
+
+    await waitFor(() =>
+      expect(result.current.map((line) => line.seq)).toEqual([1, 2, 3, 4, 5]),
+    );
+  });
+
+  it("refreshes once more at the end of a window a tick was throttled in", async () => {
+    // The tick after a run's final status write usually lands inside the
+    // window the previous tick opened, and was dropped — so run detail kept
+    // saying "Stopping…", clock still counting, until the stream
+    // reconnected seconds later. A throttled tick now leaves one refresh
+    // for the window's end.
+    let detailCalls = 0;
+    server.use(
+      http.get("/api/runs/r1", () => {
+        detailCalls += 1;
+        return HttpResponse.json(makeRunDetail({ runId: "r1", status: "running" }));
+      }),
+    );
+
+    const { result } = renderHook(
+      () => ({ run: useRun("r1"), lines: useRunEvents("r1", true) }),
+      { wrapper: renderWithProviders.Wrapper },
+    );
+    await waitFor(() => expect(result.current.run.isSuccess).toBe(true));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+
+    act(() => {
+      FakeEventSource.latest().emitTick();
+      FakeEventSource.latest().emitTick();
+    });
+    await waitFor(() => expect(detailCalls).toBe(2));
+
+    await waitFor(() => expect(detailCalls).toBe(3), {
+      timeout: TICK_INVALIDATE_MS * 2,
+    });
+    // One trailing refresh for the window, not one per throttled tick.
+    await new Promise((resolve) => setTimeout(resolve, TICK_INVALIDATE_MS + 200));
+    expect(detailCalls).toBe(3);
+  });
+
+  it("refreshes on the first tick of a reopened stream, without waiting out the old window", async () => {
+    // A resumed run goes live again on the same page, which closes the
+    // stream and opens a new one. The throttle's clock belonged to the old
+    // stream; carried over, the new stream's first tick waited out a window
+    // that had nothing to do with it.
+    let detailCalls = 0;
+    server.use(
+      http.get("/api/runs/r1", () => {
+        detailCalls += 1;
+        return HttpResponse.json(makeRunDetail({ runId: "r1", status: "running" }));
+      }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ live }: { live: boolean }) => ({
+        run: useRun("r1"),
+        lines: useRunEvents("r1", live),
+      }),
+      { wrapper: renderWithProviders.Wrapper, initialProps: { live: true } },
+    );
+    await waitFor(() => expect(result.current.run.isSuccess).toBe(true));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    act(() => FakeEventSource.latest().emitTick());
+    await waitFor(() => expect(detailCalls).toBe(2));
+
+    rerender({ live: false });
+    rerender({ live: true });
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
+    act(() => FakeEventSource.latest().emitTick());
+
+    await waitFor(() => expect(detailCalls).toBe(3), {
+      timeout: TICK_INVALIDATE_MS / 2,
+    });
   });
 
   it("opens no stream, and closes an open one, when it is not enabled", async () => {

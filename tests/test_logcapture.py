@@ -1,9 +1,14 @@
 import logging
+import sqlite3
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from tests.run_factory import make_run_config
 from zeitgeist.logcapture import CapturedLine, RunLogBuffer, capture_run_log
@@ -14,6 +19,36 @@ def _store(tmp_path) -> Store:
     store = Store(tmp_path / "z.db")
     store.init_schema()
     return store
+
+
+@contextmanager
+def _tracking_stores() -> Iterator[tuple[list[Store], list[Store]]]:
+    """Every `Store` opened and every one closed while the block runs.
+
+    `capture_run_log` opens its handler's connection internally and hands
+    no reference back, so the only way to see whether it closed it is to
+    watch the class. Both wrappers delegate to the real methods.
+    """
+    opened: list[Store] = []
+    closed: list[Store] = []
+    original_init = Store.__init__
+    original_close = Store.close
+
+    def tracking_init(
+        self: Store, path: Path, *, check_same_thread: bool = True
+    ) -> None:
+        original_init(self, path, check_same_thread=check_same_thread)
+        opened.append(self)
+
+    def tracking_close(self: Store) -> None:
+        closed.append(self)
+        original_close(self)
+
+    with (
+        patch.object(Store, "__init__", tracking_init),
+        patch.object(Store, "close", tracking_close),
+    ):
+        yield opened, closed
 
 
 def _line(seq: int, message: str = "hello") -> CapturedLine:
@@ -189,6 +224,66 @@ def test_the_handler_detaches_even_when_the_run_raises(tmp_path):
 
     assert len(logging.getLogger("zeitgeist").handlers) == before
     assert [line.message for line in store.log_lines("r1", verbose=True)] == ["during"]
+
+
+def test_the_log_connection_closes_even_when_reading_the_last_seq_fails(tmp_path):
+    """`capture_run_log` promises its own connection closes on every path.
+    It used to open that connection, then ask it for the run's last `seq`
+    *before* the `try` that closes it — so a failure there (a locked file,
+    a disk error) leaked one open `sqlite3` connection per attempt, for the
+    life of the process.
+    """
+    store = _store(tmp_path)
+    store.start_run("r1", make_run_config())
+
+    with (
+        _tracking_stores() as (opened, closed),
+        patch.object(
+            Store, "last_log_seq", side_effect=sqlite3.OperationalError("locked")
+        ),
+        pytest.raises(sqlite3.OperationalError),
+        capture_run_log("r1", store),
+    ):
+        pass
+
+    assert opened, "capture_run_log opened no connection of its own"
+    assert closed == opened
+
+
+def test_a_flush_that_fails_on_the_way_out_is_logged_and_closes_the_connection(
+    tmp_path, caplog
+):
+    """The last flush runs in the `finally`, after the run itself is over —
+    its terminal status already written. Raising from there did two kinds
+    of harm: it skipped `log_store.close()`, and it escaped into the
+    worker's `except Exception`, which recorded a run that had finished as
+    failed (see `test_runner`'s companion test). The walk hit this once.
+
+    A lost batch of log lines is worth reporting and not worth failing a
+    run over, so the failure is logged and the close still runs.
+    """
+    store = _store(tmp_path)
+    store.start_run("r1", make_run_config())
+    log = logging.getLogger("zeitgeist.testing.flushfails")
+
+    with (
+        _tracking_stores() as (opened, closed),
+        patch.object(
+            Store,
+            "write_log_lines",
+            side_effect=sqlite3.OperationalError("database is locked"),
+        ),
+        caplog.at_level(logging.ERROR, logger="zeitgeist.logcapture"),
+        capture_run_log("r1", store),
+    ):
+        log.info("still pending when the run ends")
+
+    assert opened, "capture_run_log opened no connection of its own"
+    assert closed == opened
+    assert any(
+        record.name == "zeitgeist.logcapture" and record.exc_info is not None
+        for record in caplog.records
+    )
 
 
 def test_debug_lines_are_captured_so_the_toggle_can_filter_them(tmp_path):

@@ -138,8 +138,17 @@ def resume_run(
         # resume from, this means it does not need resuming at all right
         # now — a double-clicked Resume button, or a second tab racing the
         # first. A client that cannot tell the two apart cannot render two
-        # different messages for them.
+        # different messages for them. Caught before `ValueError` below, for
+        # the reason `start_run` gives: a conflict is not a bad request.
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        # The replayed frozen config no longer validates — a run frozen
+        # with a source that has since gone dormant, say. `enqueue` refuses
+        # it on this thread, before any id is issued, exactly as it refuses
+        # a bad `POST /api/runs`, and it is the same kind of refusal: the
+        # request's (here, the run's) fault, not the server's. Uncaught, it
+        # came out a 500.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post(

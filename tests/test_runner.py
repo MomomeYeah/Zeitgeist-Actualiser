@@ -1,7 +1,9 @@
+import logging
 import os
 import sqlite3
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -723,6 +725,48 @@ def test_a_run_failing_after_a_later_stage_is_recorded_with_that_stage(tmp_path)
     assert record.status == "failed"
     assert record.error is not None
     assert record.error.stage == Stage.GENERATE
+
+
+def test_a_log_flush_failing_after_the_run_finished_leaves_it_finished(tmp_path):
+    """The companion to `test_logcapture`'s flush-failure test, one level
+    up. `capture_run_log`'s last flush runs after the pipeline has already
+    written the run's terminal status. When that flush raised, the error
+    escaped into `_run_one`'s `except Exception`, and `Store.fail_run` —
+    which has no `status = 'running'` guard — relabelled a run that had
+    rendered every meme as failed. The walk hit this once.
+
+    The executor here does what `run_pipeline` does at its end: writes
+    `ok`, with a line still pending in the handler's batch.
+    """
+
+    def execute(settings, request, store, observer, token) -> None:
+        run_id = request.run_id or ""
+        store.start_run(run_id, make_run_config())
+        logging.getLogger("zeitgeist.testing.lateflush").info("the last line")
+        store.finish_run(
+            run_id,
+            status="ok",
+            item_count=1,
+            trends_found=1,
+            topics_kept=1,
+            phrases_found=0,
+        )
+
+    service = RunService(_settings(tmp_path), _open_store(tmp_path), execute=execute)
+    with patch.object(
+        Store,
+        "write_log_lines",
+        side_effect=sqlite3.OperationalError("database is locked"),
+    ):
+        run_id = _run_to_completion(service, RunRequest())
+
+    store = Store(_settings(tmp_path).db_path)
+    store.init_schema()
+    record = store.get_run(run_id)
+    store.close()
+    assert record is not None
+    assert record.status == "ok"
+    assert record.error is None
 
 
 def test_aborting_a_completed_run_reports_that_it_did_nothing(tmp_path):
