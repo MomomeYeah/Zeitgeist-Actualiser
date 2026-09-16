@@ -118,7 +118,7 @@ export interface paths {
          *     Polls the run's buffer rather than being pushed to. A quarter-second of
          *     latency on a log line is invisible, and polling keeps the logging handler
          *     free of any reference to the event loop — which is what lets the same
-         *     handler work under `TestClient` and under the dev harness.
+         *     handler work under `TestClient` and under a real server alike.
          *
          *     A tick carries no payload. The observer has already written
          *     `run_records`, `run_stages` and `run_topics` from the worker thread, so
@@ -260,7 +260,26 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read Log */
+        /**
+         * Read Log
+         * @description One run's whole log, every time.
+         *
+         *     No `since_seq`. Phase 2 left the question open because incremental
+         *     polling was the only way a live log could have worked; phase 3's
+         *     `GET /api/runs/{id}/events` settled it by making this endpoint the
+         *     *other* half of a pair. The stream carries a live run's lines, keyed on
+         *     exactly the `seq` a `since_seq` here would have taken, and the client
+         *     enables the two exclusively — `RunDetailPage` opens the stream while
+         *     the run's status is `running` and only calls this once it is not.
+         *
+         *     So the one caller asks a finished run for its whole log, once, and a
+         *     `since_seq` would be a parameter nothing passes: a second cursor
+         *     protocol, a second set of tests, and a second way for the log to arrive
+         *     with a hole in it. A finished run's log is bounded by the run, and the
+         *     verbose toggle filters what is *returned* rather than what was
+         *     captured, which is what lets flipping it work retroactively — that only
+         *     holds while the endpoint serves the whole thing.
+         */
         get: operations["read_log_api_runs__run_id__log_get"];
         put?: never;
         post?: never;
@@ -761,6 +780,11 @@ export interface components {
              * Format: date-time
              */
             started_at: string;
+            /**
+             * Attempt Started At
+             * Format: date-time
+             */
+            attempt_started_at: string;
             /** Finished At */
             finished_at: string | null;
             config: components["schemas"]["RunConfig"];

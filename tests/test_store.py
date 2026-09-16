@@ -23,7 +23,13 @@ from zeitgeist.models import (
 )
 from zeitgeist.projection import flatten
 from zeitgeist.records import AutoOrigin, ManualOrigin, RunError, Stage
-from zeitgeist.store import SCHEMA_VERSION, MissingCheckpoint, Store, StoreSchemaError
+from zeitgeist.store import (
+    SCHEMA_VERSION,
+    MissingCheckpoint,
+    Store,
+    StoreSchemaError,
+    run_cursor,
+)
 
 
 def _topic(label: str, components: dict[str, float]) -> Topic:
@@ -64,9 +70,26 @@ def _trend_evidence() -> TrendEvidence:
     )
 
 
-def _store(tmp_path) -> Store:
+def _store(tmp_path, *runs: str) -> Store:
+    """A store with `runs` already opened.
+
+    Opening them is part of the fixture rather than scaffolding around it.
+    Every table but `settings` references `run_records` by `run_id` and
+    foreign keys are enforced, so a checkpoint, a stage row, a topic, a
+    render or a log line for a run nobody opened is refused — which is the
+    constraint doing its job. Production opens the row in
+    `RunService.enqueue`, before the worker has touched anything, so a test
+    writing without it would be exercising a state that cannot occur.
+
+    Named explicitly per test rather than defaulted, because several tests
+    here assert over *all* the runs there are — `list_runs`,
+    `recent_run_ids`, `reconcile_interrupted` — and a run opened behind
+    their back would change the answer.
+    """
     store = Store(tmp_path / "test.db")
     store.init_schema()
+    for run_id in runs:
+        store.start_run(run_id, make_run_config())
     return store
 
 
@@ -125,9 +148,13 @@ def test_a_reader_is_not_blocked_by_an_open_write(tmp_path):
     writer.start_run("r1", make_run_config())
 
     writer._conn.execute("BEGIN IMMEDIATE")
+    # Against r1, the run opened above, rather than an id with no row:
+    # `checkpoints.run_id` references `run_records` and foreign keys are
+    # enforced, so an orphan insert is refused before it can hold a write
+    # lock open — which would make this test pass for the wrong reason.
     writer._conn.execute(
         "INSERT INTO checkpoints (run_id, stage, payload, written_at) "
-        "VALUES ('r2', 'ingest', '[]', '2026-09-01T00:00:00+00:00')"
+        "VALUES ('r1', 'ingest', '[]', '2026-09-01T00:00:00+00:00')"
     )
 
     # timeout=0.1 so a rollback-journal database fails fast rather than
@@ -173,7 +200,7 @@ def test_a_real_older_database_is_refused_rather_than_adopted(tmp_path):
     old.commit()
     old.close()
 
-    with pytest.raises(StoreSchemaError, match=r"version 2.*expects 5"):
+    with pytest.raises(StoreSchemaError, match=r"version 2.*expects 6"):
         Store(path).init_schema()
 
 
@@ -457,7 +484,7 @@ def test_a_stale_database_is_rejected_with_an_actionable_message(tmp_path):
     # tests/test_config.py's match="mastodon". Rewording the instruction is
     # a decision; failing to name the file the user must delete is a bug,
     # because the message is the only place that path appears.
-    with pytest.raises(StoreSchemaError, match=r"z\.db.*version 1.*expects 5"):
+    with pytest.raises(StoreSchemaError, match=r"z\.db.*version 1.*expects 6"):
         Store(path).init_schema()
 
 
@@ -703,7 +730,7 @@ def test_a_shared_store_answers_every_concurrent_request_correctly(tmp_path):
 def test_a_checkpoint_round_trips_through_its_model(tmp_path):
     """This is what resuming a run depends on. A payload that does not round
     trip breaks resume silently rather than loudly."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1")
     topics = [make_topic("airport-cat"), make_topic("stadium-rat")]
 
     store.write_checkpoint("r1", Stage.ANALYSE, topics)
@@ -715,7 +742,7 @@ def test_a_checkpoint_round_trips_through_its_model(tmp_path):
 def test_a_checkpoint_round_trips_a_discriminated_union(tmp_path):
     """Metrics is discriminated on platform. A payload that deserialises to
     the wrong union member would score the topic with the wrong scorer."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1")
     evidence = [_trend_evidence()]
 
     store.write_checkpoint("r1", Stage.INGEST, evidence)
@@ -726,7 +753,7 @@ def test_a_checkpoint_round_trips_a_discriminated_union(tmp_path):
 
 def test_writing_a_checkpoint_twice_replaces_it(tmp_path):
     """Resuming rewrites the stages it re-runs."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1")
     store.write_checkpoint("r1", Stage.ANALYSE, [make_topic("first")])
 
     store.write_checkpoint("r1", Stage.ANALYSE, [make_topic("second")])
@@ -739,7 +766,7 @@ def test_write_checkpoint_reports_the_payload_size(tmp_path):
     """The stage card shows this number, so it has to be the size of what
     was actually written - not merely some positive number. Returning
     len(models) would satisfy `> 0` and be wrong by three orders."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1")
 
     size = store.write_checkpoint("r1", Stage.ANALYSE, [make_topic()])
 
@@ -763,14 +790,14 @@ def test_reading_a_checkpoint_that_was_never_written_raises(tmp_path):
 def test_an_empty_checkpoint_is_not_a_missing_one(tmp_path):
     """A generate stage that briefed nothing wrote an empty list. That is a
     result, and resuming past it must not raise."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1")
     store.write_checkpoint("r1", Stage.GENERATE, [])
 
     assert store.read_checkpoint("r1", Stage.GENERATE, MediaBrief) == []
 
 
 def test_written_stages_reports_only_what_was_checkpointed(tmp_path):
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1")
     store.write_checkpoint("r1", Stage.INGEST, [make_topic()])
     store.write_checkpoint("r1", Stage.EVALUATE, [])
 
@@ -780,7 +807,7 @@ def test_written_stages_reports_only_what_was_checkpointed(tmp_path):
 def test_stages_come_back_in_pipeline_order(tmp_path):
     """The four stage cards are drawn left to right in the order they run,
     not the order rows happened to be written."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1")
     store.record_stage("r1", make_stage_record(Stage.GENERATE))
     store.record_stage("r1", make_stage_record(Stage.INGEST))
     store.record_stage("r1", make_stage_record(Stage.EVALUATE))
@@ -798,7 +825,7 @@ def test_stages_come_back_in_pipeline_order(tmp_path):
 
 def test_recording_a_stage_twice_replaces_it(tmp_path):
     """A stage moves queued to running to ok, rewriting its row each time."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1")
     store.record_stage(
         "r1", make_stage_record(Stage.INGEST, status="running", finished_at=None)
     )
@@ -811,7 +838,7 @@ def test_recording_a_stage_twice_replaces_it(tmp_path):
 
 
 def test_a_queued_stage_round_trips_its_absent_timings(tmp_path):
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1")
     store.record_stage(
         "r1",
         make_stage_record(
@@ -910,7 +937,7 @@ def test_record_stage_overwrites_a_running_row_with_its_final_one(tmp_path):
 
 
 def test_run_topics_round_trip_through_the_store(tmp_path):
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1")
     rows = flatten("r1", [make_topic("airport-cat")], meme_potential_weight=0.3)
 
     store.write_run_topics(rows)
@@ -921,7 +948,7 @@ def test_run_topics_round_trip_through_the_store(tmp_path):
 
 
 def test_the_analyse_checkpoint_and_its_rows_commit_together(tmp_path):
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1")
 
     store.write_analyse_checkpoint(
         "r1", [make_topic("airport-cat")], meme_potential_weight=0.3
@@ -968,7 +995,7 @@ def test_a_failure_partway_leaves_none_of_the_three(tmp_path, monkeypatch):
     written inside the transaction and have to be rolled back — a test that
     failed the first would pass against three independent commits.
     """
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1")
 
     def boom(*args, **kwargs):
         raise RuntimeError("interrupted")
@@ -988,7 +1015,7 @@ def test_a_failure_partway_leaves_none_of_the_three(tmp_path, monkeypatch):
 
 
 def test_a_render_round_trips_with_its_origin_intact(tmp_path):
-    store = _store(tmp_path)
+    store = _store(tmp_path, "20260901T120000Z")
     record = make_render_record("rnd1", origin=AutoOrigin(rationale="it fits"))
 
     store.add_render(record)
@@ -1001,7 +1028,7 @@ def test_a_render_round_trips_with_its_origin_intact(tmp_path):
 def test_a_hand_written_render_comes_back_manual(tmp_path):
     """The union is what makes 'was this written by a person' a type check
     rather than a string comparison."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "20260901T120000Z")
     store.add_render(make_render_record("rnd2", origin=ManualOrigin()))
 
     restored = store.get_render("rnd2")
@@ -1013,7 +1040,7 @@ def test_a_hand_written_render_comes_back_manual(tmp_path):
 def test_a_failed_render_keeps_its_error(tmp_path):
     """The renderer fails per meme, so a partial failure is real. The tile
     shows the message rather than vanishing."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "20260901T120000Z")
     store.add_render(
         make_render_record("rnd3", status="failed", error="caption does not fit")
     )
@@ -1028,7 +1055,7 @@ def test_a_failed_render_keeps_its_error(tmp_path):
 def test_add_renders_writes_every_record_in_one_transaction(tmp_path):
     """The happy path: a `count=4` seed lands as four rows from one call,
     exactly as four calls to `add_render` would, but through one commit."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "20260901T120000Z")
     records = [
         make_render_record("a", status="generating"),
         make_render_record("b", status="generating"),
@@ -1047,7 +1074,7 @@ def test_add_renders_leaves_nothing_behind_when_one_insert_fails(tmp_path):
     rows nobody will ever finish. `executemany` plus a single `commit`
     means a `PRIMARY KEY` collision partway through rolls the lot back,
     rather than committing what came before it."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "20260901T120000Z")
     store.add_render(make_render_record("dup", status="ready"))
 
     with pytest.raises(sqlite3.IntegrityError):
@@ -1067,7 +1094,7 @@ def test_add_renders_leaves_nothing_behind_when_one_insert_fails(tmp_path):
 
 
 def test_renders_for_a_run_come_back_oldest_first(tmp_path):
-    store = _store(tmp_path)
+    store = _store(tmp_path, "20260901T120000Z")
     store.add_render(
         make_render_record("second", created_at=datetime(2026, 9, 1, 13, tzinfo=UTC))
     )
@@ -1109,7 +1136,7 @@ def test_the_cursor_resumes_after_the_last_row_of_the_previous_page(tmp_path):
         store.start_run(run_id, make_run_config())
 
     first = store.list_runs(limit=2)
-    second = store.list_runs(limit=2, cursor=first[-1].started_at.isoformat())
+    second = store.list_runs(limit=2, cursor=run_cursor(first[-1]))
 
     assert [row.run_id for row in first] == [
         "20260901T120000Z",
@@ -1118,10 +1145,270 @@ def test_the_cursor_resumes_after_the_last_row_of_the_previous_page(tmp_path):
     assert [row.run_id for row in second] == ["20260901T100000Z"]
 
 
+def _share_a_timestamp(store: Store, *run_ids: str) -> None:
+    """Open every run in `run_ids` and force them onto one `started_at`.
+
+    Backdated with SQL rather than by mocking the clock, because
+    `start_run` stamps `_now()` inside the INSERT: there is no seam between
+    "the row is written" and "the timestamp is chosen". Two runs really can
+    land on one microsecond — `_now()` is all that separates them — even
+    though `new_run_id` keeps the *ids* a millisecond apart.
+    """
+    for run_id in run_ids:
+        store.start_run(run_id, make_run_config())
+    store._conn.execute(
+        "UPDATE run_records SET started_at = ?", ("2026-09-01T12:00:00+00:00",)
+    )
+    store._conn.commit()
+
+
+def test_runs_sharing_a_timestamp_come_back_in_a_stable_order(tmp_path):
+    """`ORDER BY started_at DESC` alone is not a total order, so SQLite may
+    return tied rows in whatever order it finds them, and the Runs list
+    would disagree with itself between two identical requests. The run id
+    breaks the tie, and it is unique, so the order is total.
+
+    `idx_run_records_started` is dropped first, and that is the whole test.
+    With it in place SQLite answers this query from the covering index,
+    which walks `(started_at, run_id)` and hands back the tiebreak order
+    for free — so the assertion below passes whether or not the query asks
+    for it, and proves nothing about the query. Dropped, SQLite sorts
+    instead, and a sort with no tiebreak is stable on scan order: the two
+    runs come back oldest-id-first, which is backwards. The ordering has to
+    be the query's own, because an index exists for speed and can be
+    changed for speed; the run this test built is the same either way.
+    """
+    store = _store(tmp_path)
+    _share_a_timestamp(store, "20260901T120000Z", "20260901T120001Z")
+    store._conn.execute("DROP INDEX idx_run_records_started")
+    store._conn.commit()
+
+    assert [row.run_id for row in store.list_runs(limit=10)] == [
+        "20260901T120001Z",
+        "20260901T120000Z",
+    ]
+
+
+def test_a_page_seam_inside_a_shared_timestamp_loses_no_run(tmp_path):
+    """The failure a `started_at < ?` cursor causes: *every* run sharing the
+    boundary timestamp is skipped, not just the one the client already saw,
+    so a page boundary landing inside a tie silently drops runs from the
+    Runs list. Paging one row at a time is what makes it visible — page two
+    came back empty, and the run it should have held never appeared.
+    """
+    store = _store(tmp_path)
+    _share_a_timestamp(store, "20260901T120000Z", "20260901T120001Z")
+
+    seen: list[str] = []
+    cursor: str | None = None
+    while True:
+        page = store.list_runs(limit=1, cursor=cursor)
+        if not page:
+            break
+        seen.extend(row.run_id for row in page)
+        cursor = run_cursor(page[-1])
+
+    assert seen == ["20260901T120001Z", "20260901T120000Z"]
+
+
+def test_a_cursor_with_no_run_id_still_pages(tmp_path):
+    """`run_cursor` is opaque and nothing persists one, but its two halves
+    are joined by a separator and a caller could hand back only the first.
+    Read as a bare `started_at` it lands on the empty run id — below every
+    real one — which is exactly what the single-column cursor used to do.
+    """
+    store = _store(tmp_path)
+    for run_id in ("20260901T100000Z", "20260901T110000Z"):
+        store.start_run(run_id, make_run_config())
+
+    first = store.list_runs(limit=1)
+    second = store.list_runs(limit=1, cursor=first[-1].started_at.isoformat())
+
+    assert [row.run_id for row in second] == ["20260901T100000Z"]
+
+
+def test_topic_labels_for_runs_groups_by_run_in_rank_order(tmp_path):
+    """The Runs list draws every row's topic labels, top-ranked first. Read
+    per row it cost a query each; read in a batch it has to come back both
+    keyed by run and still in rank order.
+
+    Written in an order no correct answer shares — `shelter-dog` ranks
+    first on trend score but goes in last — so a batch that returned
+    insertion order, or that grouped by nothing, cannot match. `r2` exists
+    to hold the grouping honest: with one run, a query that ignored
+    `run_id` entirely would look right.
+    """
+    store = _store(tmp_path, "r1", "r2")
+    store.write_run_topics(
+        flatten(
+            "r1",
+            [
+                make_topic("airport-cat", trend_score=0.2),
+                make_topic("train-strike", trend_score=0.5),
+                make_topic("shelter-dog", trend_score=0.9),
+            ],
+            meme_potential_weight=0.3,
+        )
+    )
+    store.write_run_topics(
+        flatten("r2", [make_topic("stadium-rat")], meme_potential_weight=0.3)
+    )
+
+    assert store.topic_labels_for_runs(["r1", "r2"]) == {
+        "r1": ["Shelter Dog", "Train Strike", "Airport Cat"],
+        "r2": ["Stadium Rat"],
+    }
+
+
+def test_render_ids_for_runs_groups_by_run_oldest_first(tmp_path):
+    """The other half of the Runs list. `renders_for_run` orders by
+    `created_at` then `id`, which is what decides which thumbnails a row
+    shows, and the batch read has to reproduce it.
+
+    The three `r1` renders share `make_render_record`'s fixed `created_at`,
+    so `id` is the tiebreak and inserting them `c, a, b` gives a literal
+    `["a", "b", "c"]` that insertion order cannot produce.
+    """
+    store = _store(tmp_path, "r1", "r2")
+    for rid in ("c", "a", "b"):
+        store.add_render(make_render_record(rid, run_id="r1"))
+    store.add_render(make_render_record("z", run_id="r2"))
+
+    assert store.render_ids_for_runs(["r1", "r2"]) == {
+        "r1": ["a", "b", "c"],
+        "r2": ["z"],
+    }
+
+
+def test_a_batch_read_of_no_runs_returns_nothing(tmp_path):
+    """An empty page is the ordinary state of a fresh install, and
+    `WHERE run_id IN ()` is a syntax error — so the early return is
+    load-bearing, not defensive. Without it this raises rather than fails.
+    """
+    store = _store(tmp_path)
+
+    assert store.topic_labels_for_runs([]) == {}
+    assert store.render_ids_for_runs([]) == {}
+
+
+def test_a_run_with_nothing_behind_it_is_absent_from_a_batch_read(tmp_path):
+    """The caller reads these with `.get(run_id, [])`, so a run that
+    rendered nothing must simply not be a key. Asserting the absence is
+    what stops the two conventions drifting apart.
+    """
+    store = _store(tmp_path, "r1")
+
+    assert store.topic_labels_for_runs(["r1"]) == {}
+    assert store.render_ids_for_runs(["r1"]) == {}
+
+
+def test_a_checkpoint_for_a_run_that_was_never_opened_is_refused(tmp_path):
+    """Foreign keys are declared *and* enforced. SQLite enforces none
+    unless the connection asks, and asks per connection, so a schema full
+    of REFERENCES clauses without `PRAGMA foreign_keys = ON` is
+    documentation. Unenforced, an orphan checkpoint is written happily and
+    surfaces much later as a run page with stage artifacts and no run.
+    """
+    store = _store(tmp_path)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store.write_checkpoint("never-opened", Stage.INGEST, [])
+
+
+def test_every_child_table_refuses_a_run_that_does_not_exist(tmp_path):
+    """One test per table would be five tests asserting one property. The
+    property is that `run_records` parents all of them: a row in any of
+    these naming a run nobody opened is refused.
+    """
+    store = _store(tmp_path)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store.record_stage("ghost", make_stage_record())
+    with pytest.raises(sqlite3.IntegrityError):
+        store.add_render(make_render_record("rnd1", run_id="ghost"))
+    with pytest.raises(sqlite3.IntegrityError):
+        store.write_log_lines(
+            "ghost",
+            [
+                CapturedLine(
+                    seq=1,
+                    logged_at=datetime(2026, 9, 1, tzinfo=UTC),
+                    level="INFO",
+                    logger="zeitgeist.pipeline",
+                    message="hello",
+                )
+            ],
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        store.write_run_topics(
+            flatten("ghost", [make_topic("airport-cat")], meme_potential_weight=0.3)
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        store.write_analyse_checkpoint(
+            "ghost", [make_topic("airport-cat")], meme_potential_weight=0.3
+        )
+
+
+def test_a_fresh_run_starts_its_attempt_clock_where_it_started(tmp_path):
+    """`attempt_started_at` is what the in-flight elapsed clock counts
+    from. On a run that has never been resumed it has to be the run's own
+    start, or every first-time run would report an elapsed time measured
+    from somewhere else.
+    """
+    store = _store(tmp_path, "r1")
+
+    record = store.get_run("r1")
+    assert record is not None
+    assert record.attempt_started_at == record.started_at
+
+
+def test_resuming_moves_the_attempt_clock_but_not_the_start(tmp_path):
+    """The two timestamps answer different questions, and a resume is what
+    separates them: the Runs list still orders by when the run first began,
+    while the run page's elapsed clock counts from the resume. Before this,
+    a run resumed a day later drew "1d 0h" and climbing the moment it went
+    live again.
+    """
+    store = _store(tmp_path, "r1")
+    began = datetime(2026, 8, 1, 9, 30, tzinfo=UTC)
+    store._conn.execute(
+        "UPDATE run_records SET started_at = ?, attempt_started_at = ?",
+        (began.isoformat(), began.isoformat()),
+    )
+    store._conn.commit()
+    store.abort_run("r1")
+
+    store.start_run("r1", make_run_config())
+
+    resumed = store.get_run("r1")
+    assert resumed is not None
+    assert resumed.started_at == began
+    assert resumed.attempt_started_at > began
+
+
+def test_reopening_a_running_row_leaves_the_attempt_clock_alone(tmp_path):
+    """`start_run` is called three times for one attempt — `enqueue` on the
+    request thread, `_run_one` on the worker, then `run_pipeline` — and only
+    the first finds the row not already `running`. Without that guard the
+    elapsed clock would jump back to zero as the worker picked the run up,
+    throwing away however long it sat in the queue.
+    """
+    store = _store(tmp_path, "r1")
+    opened = store.get_run("r1")
+    assert opened is not None
+
+    store.start_run("r1", make_run_config())
+    store.start_run("r1", make_run_config())
+
+    again = store.get_run("r1")
+    assert again is not None
+    assert again.attempt_started_at == opened.attempt_started_at
+
+
 def test_render_counts_are_keyed_by_topic(tmp_path):
     """Meme counts are a COUNT(*) at query time rather than a column, so
     this is the only thing standing between the UI and a wrong number."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "20260901T120000Z")
     store.add_render(make_render_record("a", topic_id="cats"))
     store.add_render(make_render_record("b", topic_id="cats"))
     store.add_render(make_render_record("c", topic_id="dogs"))
@@ -1130,7 +1417,7 @@ def test_render_counts_are_keyed_by_topic(tmp_path):
 
 
 def test_render_counts_are_scoped_to_the_run(tmp_path):
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1", "r2")
     store.add_render(make_render_record("a", run_id="r1", topic_id="cats"))
     store.add_render(make_render_record("b", run_id="r2", topic_id="cats"))
 
@@ -1142,7 +1429,7 @@ def test_render_counts_excludes_generating_and_failed_rows(tmp_path):
     for. A row still `generating` has no image yet, and a `failed` one
     never will; neither should inflate the number, and a topic with only
     such rows must not appear in the mapping at all."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "20260901T120000Z")
     store.add_render(make_render_record("a", topic_id="cats", status="ready"))
     store.add_render(make_render_record("b", topic_id="cats", status="generating"))
     store.add_render(make_render_record("c", topic_id="cats", status="failed"))
@@ -1190,7 +1477,7 @@ def _log(store, run_id: str, seq: int, level: str, message: str) -> None:
 
 
 def test_log_lines_come_back_in_sequence(tmp_path):
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1")
     _log(store, "r1", 2, "INFO", "second")
     _log(store, "r1", 1, "INFO", "first")
 
@@ -1203,7 +1490,7 @@ def test_log_lines_come_back_in_sequence(tmp_path):
 def test_a_quiet_log_omits_debug_lines(tmp_path):
     """The toggle filters what was already captured, so flipping it works
     retroactively rather than showing nothing until the next line."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1")
     _log(store, "r1", 1, "DEBUG", "noisy")
     _log(store, "r1", 2, "INFO", "useful")
     _log(store, "r1", 3, "WARNING", "important")
@@ -1214,7 +1501,7 @@ def test_a_quiet_log_omits_debug_lines(tmp_path):
 
 
 def test_a_verbose_log_keeps_everything(tmp_path):
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1")
     _log(store, "r1", 1, "DEBUG", "noisy")
     _log(store, "r1", 2, "INFO", "useful")
 
@@ -1224,7 +1511,7 @@ def test_a_verbose_log_keeps_everything(tmp_path):
 
 
 def test_log_lines_are_scoped_to_the_run(tmp_path):
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1", "r2")
     _log(store, "r1", 1, "INFO", "mine")
     _log(store, "r2", 1, "INFO", "theirs")
 
@@ -1317,7 +1604,7 @@ def test_topics_for_no_runs_is_empty(tmp_path):
 def test_update_render_replaces_the_mutable_columns(tmp_path):
     """A generating render is finished in place: the brief arrives after
     the row does."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "20260901T120000Z")
     store.add_render(make_render_record("rnd1", status="generating", caption_slots={}))
 
     updated = store.update_render(
@@ -1341,7 +1628,7 @@ def test_update_render_does_not_resurrect_a_deleted_row(tmp_path):
     """`add_render` is INSERT OR REPLACE, so finishing a job with it would
     bring back a render somebody deleted while it was still generating.
     That is why the finishing path is an UPDATE."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "20260901T120000Z")
     store.add_render(make_render_record("rnd1", status="generating"))
     store.delete_render("rnd1")
 
@@ -1354,7 +1641,7 @@ def test_update_render_does_not_resurrect_a_deleted_row(tmp_path):
 def test_update_render_cannot_move_a_render_to_another_run(tmp_path):
     """run_id, topic_id and created_at are fixed at insert. A job
     finishing writes the brief, not the identity."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "run-1", "run-2")
     store.add_render(
         make_render_record("rnd1", run_id="run-1", topic_id="cat", status="generating")
     )
@@ -1369,7 +1656,7 @@ def test_update_render_cannot_move_a_render_to_another_run(tmp_path):
 
 
 def test_delete_render_removes_the_row(tmp_path):
-    store = _store(tmp_path)
+    store = _store(tmp_path, "20260901T120000Z")
     store.add_render(make_render_record("rnd1"))
 
     assert store.delete_render("rnd1") is True
@@ -1384,7 +1671,7 @@ def test_delete_render_reports_an_unknown_id(tmp_path):
 
 
 def test_renders_for_topic_excludes_other_topics_and_other_runs(tmp_path):
-    store = _store(tmp_path)
+    store = _store(tmp_path, "r1", "r2")
     store.add_render(make_render_record("a", run_id="r1", topic_id="cat"))
     store.add_render(make_render_record("b", run_id="r1", topic_id="dog"))
     store.add_render(make_render_record("c", run_id="r2", topic_id="cat"))
@@ -1397,7 +1684,7 @@ def test_renders_for_topic_excludes_other_topics_and_other_runs(tmp_path):
 def test_renders_for_topic_returns_oldest_first(tmp_path):
     """Topic detail's grid reads in creation order, so the newest tile is
     last rather than wherever SQLite happened to put it."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "20260901T120000Z")
     store.add_render(
         make_render_record("second", created_at=datetime(2026, 9, 2, tzinfo=UTC))
     )

@@ -19,33 +19,18 @@
   background: var(--contrast-confirm);
 }
 
-/* The resting accent pill — Resume's look, per the design — for a
-   confirmed control that must not read as Abort's contrast/destructive
-   style. The same pill as NewRunButton.module.css's `.button`, written out
-   again here rather than shared. Sharing it is possible — CSS Modules'
-   `composes: button from "…"` pulls one module's class into another — but
-   folding the duplicated pills together is a follow-up, not part of the
-   change that gave Resume this confirm. */
+/* Resume's resting look: the design's accent pill, not Abort's contrast
+   one. The same pill `NewRunButton` draws, from the one place that defines
+   it — `composes` rather than a second class in `className`, because two
+   single-class selectors from different stylesheets can land in either
+   cascade order depending on import order, which this component does not
+   control. See `styles/pills.module.css`. */
 .accentTrigger {
-  padding: 9px 16px;
-  border: none;
-  border-radius: var(--radius-pill);
-  background: var(--accent);
-  font-family: var(--font-ui);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  color: var(--on-accent);
+  composes: accent from "../styles/pills.module.css";
   cursor: pointer;
-  transition: filter var(--transition);
 }
 
-.accentTrigger:hover:not(:disabled) {
-  filter: brightness(0.94);
-}
-
-.trigger:disabled,
-.accentTrigger:disabled {
+.trigger:disabled {
   opacity: 0.5;
   cursor: default;
 }

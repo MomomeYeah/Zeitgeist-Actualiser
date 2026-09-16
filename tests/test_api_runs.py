@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from tests.api_factory import SeededRun, api_settings, seeded_client
+from tests.api_factory import SeededRun, api_settings, app_of, seeded_client
 from tests.run_factory import (
     make_dossier,
     make_render_record,
@@ -625,3 +625,142 @@ def test_the_log_of_an_unknown_run_is_a_404(tmp_path):
     client = seeded_client(tmp_path)
 
     assert client.get("/api/runs/nope/log").status_code == 404
+
+
+def _select_count(client, url: str, **params) -> int:
+    """How many SELECTs the app's own connection runs answering one request.
+
+    `sqlite3`'s trace callback rather than a spy on `Store`: what matters
+    is how many times the *database* is asked, and a counter on the Python
+    methods would keep passing if one of them grew a second query inside
+    it. Detached afterwards so counts cannot bleed between requests.
+    """
+    seen: list[str] = []
+
+    def record(statement: str) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            seen.append(statement)
+
+    connection = app_of(client).state.store._conn
+    connection.set_trace_callback(record)
+    try:
+        assert client.get(url, params=params).status_code == 200
+    finally:
+        connection.set_trace_callback(None)
+    return len(seen)
+
+
+def test_the_runs_list_does_not_query_per_row(tmp_path):
+    """Read per row — a `run_topics` and a `renders_for_run` inside the
+    loop — the endpoint cost `1 + 2 x limit` queries a page: 51 to draw the
+    default 25 rows, each paying `Store`'s lock and the thread pool's hop
+    for a handful of columns.
+
+    The assertion is that the cost does not move with the page, not that it
+    equals three. A ceiling would pass for a per-row read on a one-row page,
+    and an exact count is a change detector: a fourth batch query added on
+    purpose would fail it while the N+1 this exists to catch stayed fixed.
+    Comparing two page sizes fails only on the thing that is actually
+    wrong — a query whose count is a function of the row count.
+    """
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id=f"20260901T1{hour}0000Z",
+                topics=[make_topic("cats"), make_topic("dogs")],
+                renders=[
+                    make_render_record(
+                        f"r{hour}", run_id=f"20260901T1{hour}0000Z", topic_id="cats"
+                    )
+                ],
+            )
+            for hour in ("0", "1", "2")
+        ],
+    )
+
+    one = _select_count(client, "/api/runs", limit=1)
+    three = _select_count(client, "/api/runs", limit=3)
+
+    # Guards the guard: three runs really are being drawn, so `three` is a
+    # page of three and not an empty one that trivially matches.
+    assert len(client.get("/api/runs", params={"limit": 3}).json()["runs"]) == 3
+    assert one == three
+
+
+def test_the_runs_list_still_carries_every_rows_labels_and_renders(tmp_path):
+    """The batch read replaced a per-row one, so the response has to be
+    what the loop produced — grouped by run, in the same order. A batch
+    that grouped wrongly would hand one run's memes to another, which is a
+    worse bug than the N+1 it replaced.
+    """
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id="20260901T100000Z",
+                topics=[make_topic("cats")],
+                renders=[
+                    make_render_record(
+                        "old", run_id="20260901T100000Z", topic_id="cats"
+                    )
+                ],
+            ),
+            SeededRun(
+                run_id="20260901T120000Z",
+                topics=[make_topic("dogs"), make_topic("birds", trend_score=0.1)],
+                renders=[
+                    make_render_record(
+                        "new", run_id="20260901T120000Z", topic_id="dogs"
+                    )
+                ],
+            ),
+        ],
+    )
+
+    body = client.get("/api/runs").json()
+
+    by_run = {entry["run"]["run_id"]: entry for entry in body["runs"]}
+    assert by_run["20260901T120000Z"]["topic_labels"] == ["Dogs", "Birds"]
+    assert by_run["20260901T120000Z"]["render_ids"] == ["new"]
+    assert by_run["20260901T100000Z"]["topic_labels"] == ["Cats"]
+    assert by_run["20260901T100000Z"]["render_ids"] == ["old"]
+
+
+def test_a_run_with_no_topics_or_renders_reports_empty_lists(tmp_path):
+    """The batch reads omit a run with nothing behind it, and the endpoint
+    fills the gap with `[]`. Missing keys would come out of FastAPI as a
+    validation error on a run that is simply young.
+    """
+    client = seeded_client(tmp_path, runs=[SeededRun(topics=[])])
+
+    [entry] = client.get("/api/runs").json()["runs"]
+
+    assert entry["topic_labels"] == []
+    assert entry["render_ids"] == []
+
+
+def test_the_next_cursor_pages_the_runs_list(tmp_path):
+    """`next_cursor` is opaque, and the client's only contract with it is
+    that handing it back returns the next page and nothing already seen.
+    """
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(run_id="20260901T100000Z"),
+            SeededRun(run_id="20260901T110000Z"),
+            SeededRun(run_id="20260901T120000Z"),
+        ],
+    )
+
+    first = client.get("/api/runs", params={"limit": 2}).json()
+    second = client.get(
+        "/api/runs", params={"limit": 2, "cursor": first["next_cursor"]}
+    ).json()
+
+    assert [entry["run"]["run_id"] for entry in first["runs"]] == [
+        "20260901T120000Z",
+        "20260901T110000Z",
+    ]
+    assert [entry["run"]["run_id"] for entry in second["runs"]] == ["20260901T100000Z"]
+    assert second["next_cursor"] is None

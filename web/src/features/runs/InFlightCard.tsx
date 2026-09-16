@@ -24,6 +24,10 @@ import styles from "./InFlightCard.module.css";
  *
  * Polls the run's detail (`poll`), because this screen opens no stream:
  * without it the four segments stayed at whatever they read on arrival.
+ *
+ * The elapsed clock reads `attempt_started_at`, not `started_at`: a resumed
+ * run keeps the time it first began, so counting from there opens at
+ * "1d 0h" on a run that restarted a minute ago. See `Store.start_run`.
  */
 export function InFlightCard({ runId }: { runId: string }) {
   const run = useRun(runId, { poll: true });
@@ -40,7 +44,7 @@ export function InFlightCard({ runId }: { runId: string }) {
         <StatusPill status="running" />
         <span className={styles.runId}>{runId}</span>
         <span className={styles.elapsed}>
-          {formatElapsed(run.data.run.started_at, now)}
+          {formatElapsed(run.data.run.attempt_started_at, now)}
         </span>
         {current !== undefined && <span className={styles.stage}>{current}</span>}
       </div>

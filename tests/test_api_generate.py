@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from tests.api_factory import SeededRun, api_settings, seed_run, seeded_client
+from tests.api_factory import SeededRun, api_settings, app_of, seed_run, seeded_client
 from tests.run_factory import make_render_record, make_topic
 from tests.template_factory import make_manifest, make_slot, write_library
 from zeitgeist.api import create_app
@@ -265,3 +265,44 @@ def test_the_generation_pool_does_not_outlive_the_app(tmp_path):
         for thread in threading.enumerate()
         if thread.name.startswith("zeitgeist-generate")
     ]
+
+
+def test_a_request_landing_on_a_closed_service_is_a_503(tmp_path):
+    """`submit` obtains the pool before it validates anything, so a closed
+    service refuses before `_seed` has committed a row. That ordering is
+    right and stays — but it also means a request that would have earned a
+    404 or a 400 comes out of a closed service as whatever the pool check
+    raises, and a bare 500 reads as "the server is broken" for what is only
+    ever an app-shutdown race.
+
+    503 is what it actually is, and it is the honest answer to all of them:
+    during shutdown there is nothing to generate against regardless of what
+    the request asked for. Asserted with a topic that does not exist —
+    which on a live service is a 404 — so this cannot pass by accident on a
+    request that was fine.
+    """
+    client = _client(tmp_path)
+    app_of(client).state.generator.shutdown()
+
+    response = client.post(
+        f"/api/runs/{RUN}/topics/no-such-topic/renders",
+        json={"mode": "manual", "template_id": TEMPLATE, "caption_slots": SLOTS},
+    )
+
+    assert response.status_code == 503
+    assert "shutting down" in response.json()["detail"]
+
+
+def test_a_closed_service_writes_no_render_row(tmp_path):
+    """The other half of refusing early: a 503 must leave nothing behind.
+    A `generating` row written before the refusal would sit there forever,
+    indistinguishable from real in-flight work, because the pool that would
+    have finished it is gone.
+    """
+    client = _client(tmp_path)
+    app_of(client).state.generator.shutdown()
+
+    client.post(_url(), json={"mode": "llm", "template_id": TEMPLATE})
+
+    detail = client.get(f"/api/runs/{RUN}/topics/airport-cat").json()
+    assert detail["renders"] == []

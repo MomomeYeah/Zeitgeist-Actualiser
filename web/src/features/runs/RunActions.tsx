@@ -52,14 +52,25 @@ import styles from "./RunActions.module.css";
  * worked, and a second confirm drew a 409 that flashed until the remount
  * cleared it.
  *
- * An accepted abort or resume hands focus to `onFocusHome` — the run's
- * header, which is the one place in the page that outlives both. After
- * "yes", focus is back on the trigger; an accepted abort then replaces
- * that trigger with "Aborting…", and an accepted resume remounts this whole
+ * Every finished action hands focus to `onFocusHome` — the run's header,
+ * which is the one place in the page that outlives all three. After "yes",
+ * focus is back on the trigger; an accepted abort then replaces that
+ * trigger with "Aborting…", and an accepted resume remounts this whole
  * component once the run goes live. Either way the focused button is gone
  * and a keyboard user landed on `<body>`. Focus is moved only if it is
  * still here, or already lost: someone who has moved on in the moment the
  * request took is left where they went.
+ *
+ * `onSettled`, not `onSuccess`, and Stop carries it too. Both are cases
+ * where the button that was focused stops being focusable without being
+ * replaced by anything: Stop disables itself the instant it succeeds, and
+ * a *refused* Resume spends its pending moment disabled — long enough for
+ * the browser to drop focus to `<body>` — before coming back enabled with
+ * a 409 beside it. A disabled button cannot hold focus, so in both cases
+ * the keyboard user was left at the top of the document with no
+ * indication that anything had happened. Abort already had `onSuccess`
+ * and works either way; it is on `onSettled` now so all three read the
+ * same and none of them can regress on the refusal path alone.
  */
 export function RunActions({
   detail,
@@ -97,7 +108,7 @@ export function RunActions({
             type="button"
             className={styles.ghost}
             disabled={stop.isPending || stop.isSuccess || abort.isSuccess}
-            onClick={() => stop.mutate()}
+            onClick={() => stop.mutate(undefined, { onSettled: keepFocus })}
           >
             {stop.isSuccess ? "Stopping…" : "Stop after this stage"}
           </button>
@@ -109,7 +120,7 @@ export function RunActions({
             <InlineConfirm
               label="Abort"
               question="Abort run?"
-              onConfirm={() => abort.mutate(undefined, { onSuccess: keepFocus })}
+              onConfirm={() => abort.mutate(undefined, { onSettled: keepFocus })}
             />
           )}
         </>
@@ -125,7 +136,7 @@ export function RunActions({
               // An empty body: the stage is the server's own computation
               // (`resume_stage`), and echoing it back could send a stale
               // one if the run gained a checkpoint since this render.
-              onConfirm={() => resume.mutate({}, { onSuccess: keepFocus })}
+              onConfirm={() => resume.mutate({}, { onSettled: keepFocus })}
             />
           )}
         </>

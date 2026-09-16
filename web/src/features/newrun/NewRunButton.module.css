@@ -1,35 +1,13 @@
+/* The design's two header pills. Both bodies live in
+   `styles/pills.module.css`; what stays here is the one thing that differs
+   from the shared rule — these are anchors, so they need a display. */
 .button {
+  composes: accent from "../../styles/pills.module.css";
   display: inline-block;
-  padding: 9px 16px;
-  border-radius: var(--radius-pill);
-  background: var(--accent);
-  font-family: var(--font-ui);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  color: var(--on-accent);
-  transition: filter var(--transition);
-}
-
-.button:hover {
-  filter: brightness(0.94);
 }
 
 /* Re-run config: the ghost pill `RunActions` draws beside Resume. */
 .ghost {
+  composes: ghost from "../../styles/pills.module.css";
   display: inline-block;
-  padding: 8px 14px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-pill);
-  font-family: var(--font-ui);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  color: var(--text-70);
-  transition: border-color var(--transition), color var(--transition);
-}
-
-.ghost:hover {
-  border-color: var(--border-hover);
-  color: var(--text);
 }

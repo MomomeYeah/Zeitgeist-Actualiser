@@ -3,7 +3,7 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.api_factory import api_settings, seeded_client
+from tests.api_factory import api_settings, app_of, seeded_client
 from tests.run_factory import make_run_config
 from zeitgeist.api import create_app
 from zeitgeist.config import Settings
@@ -67,7 +67,7 @@ def test_seeded_client_runs_the_apps_lifespan(tmp_path):
     from tests import api_factory
 
     client = api_factory.seeded_client(tmp_path)
-    store = client.app.state.store
+    store = app_of(client).state.store
 
     # api_factory._open_clients is what conftest's autouse fixture drains
     # after the test body finishes; exiting it here, from inside the test,

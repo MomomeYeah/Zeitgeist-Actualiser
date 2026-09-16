@@ -60,6 +60,12 @@ export function makeRunRecord(
     runId?: string;
     status?: RunStatus;
     finishedAt?: string | null;
+    /**
+     * When the current attempt opened. Defaults to `started_at`, which is
+     * what it is on every run that has not been resumed — a test about a
+     * resumed run's clock passes the later time explicitly.
+     */
+    attemptStartedAt?: string;
     error?: RunError | null;
     trendsFound?: number | null;
     topicsKept?: number | null;
@@ -71,6 +77,7 @@ export function makeRunRecord(
     run_id: options.runId ?? "20260829T090000Z",
     status: options.status ?? "ok",
     started_at: FIXED_START,
+    attempt_started_at: options.attemptStartedAt ?? FIXED_START,
     finished_at: options.finishedAt === undefined ? FIXED_END : options.finishedAt,
     config: makeRunConfig(options.config),
     error: options.error ?? null,
@@ -85,6 +92,7 @@ export function makeRunSummary(
   options: {
     runId?: string;
     status?: RunStatus;
+    attemptStartedAt?: string;
     error?: RunError | null;
     labels?: string[];
     renderIds?: string[];
@@ -139,6 +147,7 @@ export function makeRunDetail(
   options: {
     runId?: string;
     status?: RunStatus;
+    attemptStartedAt?: string;
     finishedAt?: string | null;
     error?: RunError | null;
     stages?: StageRecord[];

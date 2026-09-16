@@ -32,6 +32,14 @@ import styles from "./RunDetailPage.module.css";
  * answers `—` for one. An em dash at the end of the config line reads as a
  * missing value; `started 14:02` is what a run that has not finished
  * actually knows about its own clock.
+ *
+ * That clock is `attempt_started_at` while the run is live, because it sits
+ * a line under the elapsed counter, which counts from the same place. On a
+ * resumed run `started_at` is the original start, so the two would read
+ * `started 09:14 · 0:03` with yesterday's time beside this minute's
+ * counter. Once the run is over the duration spans `started_at` to
+ * `finished_at`, which is the whole run rather than its last attempt — the
+ * Runs list reports the same span, and one run cannot have two durations.
  */
 function configLine(detail: RunDetail, live: boolean): string {
   const { run } = detail;
@@ -43,7 +51,7 @@ function configLine(detail: RunDetail, live: boolean): string {
     `top_count ${config.top_count}`,
     config.llm_model,
     live
-      ? `started ${formatClock(run.started_at)}`
+      ? `started ${formatClock(run.attempt_started_at)}`
       : formatDuration(run.started_at, run.finished_at),
   ].join(" · ");
 }
@@ -89,11 +97,22 @@ export function RunDetailPage() {
 
   // The run's own row, not `active`: a run that has just ended is no longer
   // current, and the screen must stop following it the moment its status
-  // settles rather than one poll later. `active` is still read, because a
-  // queued run's row also says `running` and only `active.queued` tells the
-  // two apart for the sidebar — this screen treats both as live, which is
-  // right: a queued run has an open stream and a working abort.
+  // settles rather than one poll later. A queued run's row also says
+  // `running`, and `live` deliberately covers it: a queued run has an open
+  // stream, a working abort and an elapsed clock that should be ticking.
   const live = run.data?.run.status === "running";
+  const queuedHere = active.data?.queued.includes(runId ?? "") ?? false;
+  // What the *stage* cards and the ranking's "distilling" notice run on,
+  // which is not the same question as `live`. A queued run's row says
+  // `running` — `enqueue` opens it that way, so the client has something
+  // to GET before the worker dequeues it — and a resumed run carries its
+  // previous attempt's stage rows, including whichever one was `running`
+  // when that attempt was cut off. Read as live, those drew the earlier
+  // attempt's stage as happening now, on a run that had not started: an
+  // accent border, a partial bar and a counter, all of them describing
+  // something that ended some time ago. Nothing is executing while a run
+  // waits, so those rows get the interrupted treatment until it is.
+  const executing = live && !queuedHere;
   const streamed = useRunEvents(runId, live);
   // Gated on the run query's own resolution, not just `!live`: `run.data`
   // is undefined on the first render, so `live` reads `false` until the run
@@ -107,8 +126,7 @@ export function RunDetailPage() {
   return (
     <QueryBoundary query={run} missing="No such run.">
       {(detail) => {
-        const current = activeStage(detail.stages);
-        const queued = active.data?.queued.includes(detail.run.run_id) ?? false;
+        const current = executing ? activeStage(detail.stages) : undefined;
         return (
           <div className={styles.page}>
             <Breadcrumb
@@ -134,8 +152,17 @@ export function RunDetailPage() {
                   <StatusPill status={detail.run.status} />
                   <span className={styles.runId}>{detail.run.run_id}</span>
                   {live && (
+                    // `attempt_started_at`, not `started_at`: the two
+                    // agree until a run is resumed, and then they must
+                    // not. `started_at` is when the run *first* began,
+                    // which is what the Runs list orders by — counting an
+                    // elapsed clock from it meant a run resumed the next
+                    // day opened at "1d 0h" and climbed from there. The
+                    // queue wait is deliberately included: the clock
+                    // starts when the run was asked for, which is what
+                    // somebody watching it is actually timing.
                     <span className={styles.elapsed}>
-                      {formatElapsed(detail.run.started_at, now)}
+                      {formatElapsed(detail.run.attempt_started_at, now)}
                     </span>
                   )}
                 </div>
@@ -154,7 +181,7 @@ export function RunDetailPage() {
                 />
               </div>
               <MetaLine>{configLine(detail, live)}</MetaLine>
-              {queued && (
+              {queuedHere && (
                 <p className={styles.queued}>
                   Waiting behind the run in flight. Nothing has started yet.
                 </p>
@@ -167,7 +194,7 @@ export function RunDetailPage() {
               )}
             </header>
 
-            <StageCards stages={detail.stages} live={live} />
+            <StageCards stages={detail.stages} live={executing} />
 
             <QueryBoundary query={ranking} missing="No such run.">
               {(rows) =>

@@ -44,6 +44,18 @@ _RENDER_COLUMNS = (
     "status, error, created_at"
 )
 
+# The run_records columns, in the order `_run_record` unpacks them, for the
+# reason above: `get_run` and `list_runs` select exactly this list.
+_RUN_COLUMNS = (
+    "run_id, status, started_at, attempt_started_at, finished_at, config, "
+    "error, item_count, trends_found, topics_kept, phrases_found"
+)
+
+# Between the two halves of a `list_runs` cursor. A space cannot appear in
+# either half — `datetime.isoformat` writes `T`, and `new_run_id` is
+# filesystem-safe — so it needs no escaping.
+_CURSOR_SEPARATOR = " "
+
 
 class StoreSchemaError(RuntimeError):
     """The database on disk was written by a different schema version."""
@@ -159,6 +171,14 @@ class Store:
         # blocks behind every checkpoint write, which the UI feels as the
         # in-flight poll hitching.
         self._conn.execute("PRAGMA journal_mode = WAL")
+        # SQLite enforces no foreign key at all unless the connection asks,
+        # and asks per connection — so this has to sit beside the schema's
+        # REFERENCES clauses rather than in the DDL, and every connection
+        # that writes has to be a `Store`. Off, the declarations would be
+        # documentation: a checkpoint, a log line or a render could name a
+        # run with no row, and the first thing to notice would be a screen
+        # drawing a row with nothing behind it.
+        self._conn.execute("PRAGMA foreign_keys = ON")
 
     @property
     def path(self) -> Path:
@@ -204,15 +224,32 @@ class Store:
         begun a day late. Everything else *is* cleared: the outcome, its
         counts and any error describe the previous attempt, which is being
         redone.
+
+        `attempt_started_at` is the exception that proves it: a resume *does*
+        move it, because the in-flight elapsed clock reads it and "1d 4h"
+        is not how long a run resumed this minute has been going. The CASE
+        is what keeps it to one move per attempt. This method is called
+        three times for a single attempt — `RunService.enqueue` on the
+        request thread, `_run_one` on the worker, then `run_pipeline` — and
+        only the first finds a row that is not already `running`, so the
+        two that follow leave the timestamp the first one set. Without the
+        guard the clock would jump back to zero as the worker picked the
+        run up, which for a queued run is visibly wrong: it was waiting,
+        and the wait is part of the elapsed time.
         """
+        now = _now()
         self._conn.execute(
-            "INSERT INTO run_records (run_id, status, started_at, config) "
-            "VALUES (?, ?, ?, ?) "
+            "INSERT INTO run_records "
+            "(run_id, status, started_at, attempt_started_at, config) "
+            "VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT(run_id) DO UPDATE SET "
             "status = excluded.status, config = excluded.config, "
+            "attempt_started_at = CASE WHEN run_records.status = 'running' "
+            "THEN run_records.attempt_started_at "
+            "ELSE excluded.attempt_started_at END, "
             "finished_at = NULL, error = NULL, item_count = NULL, "
             "trends_found = NULL, topics_kept = NULL, phrases_found = NULL",
-            (run_id, "running", _now(), config.model_dump_json()),
+            (run_id, "running", now, now, config.model_dump_json()),
         )
         self._conn.commit()
 
@@ -299,9 +336,7 @@ class Store:
 
     def get_run(self, run_id: str) -> RunRecordRow | None:
         row = self._conn.execute(
-            "SELECT run_id, status, started_at, finished_at, config, error, "
-            "item_count, trends_found, topics_kept, phrases_found "
-            "FROM run_records WHERE run_id = ?",
+            f"SELECT {_RUN_COLUMNS} FROM run_records WHERE run_id = ?",
             (run_id,),
         ).fetchone()
         return None if row is None else _run_record(row)
@@ -309,22 +344,79 @@ class Store:
     def list_runs(self, limit: int, cursor: str | None = None) -> list[RunRecordRow]:
         """Runs newest first, one page at a time.
 
-        `cursor` is the `started_at` of the last row of the previous page.
         Keyset rather than OFFSET: a run started between two requests would
         shift an offset-paginated page and duplicate a row across the seam.
+
+        The key is `(started_at, run_id)`, not `started_at` alone, and the
+        cursor carries both — see `run_cursor`. Two runs sharing a
+        timestamp is vanishingly unlikely in production (`_now()` records
+        microseconds, and `new_run_id` forces a millisecond between ids
+        handed out by one process) but it is not impossible, and the two
+        failures it causes are quiet ones: an untotal `ORDER BY` lets SQLite
+        return tied rows in either order, so a page can disagree with itself
+        between requests, and a `started_at < ?` cursor drops *every* run
+        sharing the boundary timestamp rather than resuming after the one
+        the client actually saw. `run_id` is unique, so leading with the
+        timestamp and breaking the tie on it makes the order total and the
+        page seam exact.
         """
-        sql = (
-            "SELECT run_id, status, started_at, finished_at, config, error, "
-            "item_count, trends_found, topics_kept, phrases_found "
-            "FROM run_records "
-        )
+        sql = f"SELECT {_RUN_COLUMNS} FROM run_records "
         params: tuple[object, ...] = ()
         if cursor is not None:
-            sql += "WHERE started_at < ? "
-            params = (cursor,)
-        sql += "ORDER BY started_at DESC LIMIT ?"
+            # A cursor with no separator is read as a bare `started_at`,
+            # which lands on the empty run id — below every real one, so
+            # the page resumes exactly where `started_at < ?` used to.
+            started_at, _, cursor_run_id = cursor.partition(_CURSOR_SEPARATOR)
+            sql += "WHERE (started_at, run_id) < (?, ?) "
+            params = (started_at, cursor_run_id)
+        sql += "ORDER BY started_at DESC, run_id DESC LIMIT ?"
         rows = self._conn.execute(sql, (*params, limit)).fetchall()
         return [_run_record(row) for row in rows]
+
+    def topic_labels_for_runs(self, run_ids: Sequence[str]) -> dict[str, list[str]]:
+        """Each run's topic labels, in rank order, keyed by run id.
+
+        One query for a page of runs rather than one per run. The Runs list
+        needs this for every row it draws, and `run_topics` per row made
+        `GET /api/runs` cost `1 + 2 × limit` queries a page — 51 at the
+        default page size, for a screen showing 25 rows.
+
+        Runs with no topics are absent rather than mapped to `[]`: the
+        caller reads it with `.get(run_id, [])`, which is the same answer
+        without a second pass over the ids to fill the gaps in.
+        """
+        if not run_ids:
+            return {}
+        placeholders = ",".join("?" for _ in run_ids)
+        rows = self._conn.execute(
+            f"SELECT run_id, label FROM run_topics WHERE run_id IN ({placeholders}) "
+            "ORDER BY run_id, final_rank",
+            tuple(run_ids),
+        ).fetchall()
+        labels: dict[str, list[str]] = {}
+        for run_id, label in rows:
+            labels.setdefault(run_id, []).append(label)
+        return labels
+
+    def render_ids_for_runs(self, run_ids: Sequence[str]) -> dict[str, list[str]]:
+        """Each run's render ids, oldest first, keyed by run id.
+
+        `renders_for_run`'s ordering and grouping, for a page of runs at
+        once — see `topic_labels_for_runs` for why. Ids only: the Runs list
+        draws thumbnails from them and reads nothing else off the record.
+        """
+        if not run_ids:
+            return {}
+        placeholders = ",".join("?" for _ in run_ids)
+        rows = self._conn.execute(
+            f"SELECT run_id, id FROM renders WHERE run_id IN ({placeholders}) "
+            "ORDER BY run_id, created_at, id",
+            tuple(run_ids),
+        ).fetchall()
+        ids: dict[str, list[str]] = {}
+        for run_id, render_id in rows:
+            ids.setdefault(run_id, []).append(render_id)
+        return ids
 
     def render_counts(self, run_id: str) -> dict[str, int]:
         """Ready renders per topic for one run — memes that actually exist.
@@ -815,6 +907,16 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def run_cursor(run: RunRecordRow) -> str:
+    """The `cursor` that resumes `list_runs` after this row.
+
+    Public because the endpoint builds the next page's cursor and the store
+    consumes it, and a format split across the two would drift. Opaque to
+    the client, which only ever hands it back.
+    """
+    return f"{run.started_at.isoformat()}{_CURSOR_SEPARATOR}{run.run_id}"
+
+
 def _run_record(row: tuple) -> RunRecordRow:
     """Rebuild a `RunRecordRow` from a row. Shared by `get_run` and
     `list_runs`, whose column list and parsing are identical — two copies
@@ -824,13 +926,14 @@ def _run_record(row: tuple) -> RunRecordRow:
         run_id=row[0],
         status=row[1],
         started_at=datetime.fromisoformat(row[2]),
-        finished_at=datetime.fromisoformat(row[3]) if row[3] else None,
-        config=RunConfig.model_validate_json(row[4]),
-        error=RunError.model_validate_json(row[5]) if row[5] else None,
-        item_count=row[6],
-        trends_found=row[7],
-        topics_kept=row[8],
-        phrases_found=row[9],
+        attempt_started_at=datetime.fromisoformat(row[3]),
+        finished_at=datetime.fromisoformat(row[4]) if row[4] else None,
+        config=RunConfig.model_validate_json(row[5]),
+        error=RunError.model_validate_json(row[6]) if row[6] else None,
+        item_count=row[7],
+        trends_found=row[8],
+        topics_kept=row[9],
+        phrases_found=row[10],
     )
 
 

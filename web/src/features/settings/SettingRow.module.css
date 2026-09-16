@@ -44,6 +44,24 @@
   color: var(--text-55);
 }
 
+/* The read-only note under a field the shell supplies. `contrast-light`
+   rather than `text-55`: it is the one line on this screen that says a
+   control will not do what it looks like it does, and it has to read as
+   different from the explanation directly above it. */
+.pinned {
+  margin: 6px 0 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--contrast-light);
+}
+
+.input[readonly] {
+  border-style: dashed;
+  color: var(--text-55);
+  cursor: default;
+}
+
 .hint {
   margin-left: 6px;
   font-family: var(--font-mono);

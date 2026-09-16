@@ -16,7 +16,7 @@ from zeitgeist.api.schemas import (
 )
 from zeitgeist.models import Topic, TrendEvidence
 from zeitgeist.records import ORDER, LogLine, RunRecordRow, Stage
-from zeitgeist.store import MissingCheckpoint, Store
+from zeitgeist.store import MissingCheckpoint, Store, run_cursor
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -44,17 +44,26 @@ def list_runs(
     store: Store = Depends(get_store),
 ) -> RunPage:
     rows = store.list_runs(limit=limit, cursor=cursor)
+    # Three queries for the page, not `1 + 2 × limit`. Read per row — a
+    # `run_topics` and a `renders_for_run` inside the comprehension — the
+    # default page cost 51 queries to draw 25 rows, each one paying
+    # `Store`'s lock and the API thread pool's hop for a handful of
+    # columns. The two batch reads return the same rows in the same order,
+    # so the response is byte-identical to what the loop produced.
+    run_ids = [row.run_id for row in rows]
+    labels = store.topic_labels_for_runs(run_ids)
+    render_ids = store.render_ids_for_runs(run_ids)
     summaries = [
         RunSummary(
             run=row,
-            topic_labels=[t.label for t in store.run_topics(row.run_id)],
-            render_ids=[r.id for r in store.renders_for_run(row.run_id)],
+            topic_labels=labels.get(row.run_id, []),
+            render_ids=render_ids.get(row.run_id, []),
         )
         for row in rows
     ]
     # A short page is the last page. Reporting a cursor here would hand the
     # client one more request that always comes back empty.
-    next_cursor = rows[-1].started_at.isoformat() if len(rows) == limit else None
+    next_cursor = run_cursor(rows[-1]) if len(rows) == limit else None
     return RunPage(runs=summaries, next_cursor=next_cursor)
 
 
@@ -165,5 +174,23 @@ def read_topic(
 def read_log(
     run_id: str, verbose: bool = False, store: Store = Depends(get_store)
 ) -> list[LogLine]:
+    """One run's whole log, every time.
+
+    No `since_seq`. Phase 2 left the question open because incremental
+    polling was the only way a live log could have worked; phase 3's
+    `GET /api/runs/{id}/events` settled it by making this endpoint the
+    *other* half of a pair. The stream carries a live run's lines, keyed on
+    exactly the `seq` a `since_seq` here would have taken, and the client
+    enables the two exclusively — `RunDetailPage` opens the stream while
+    the run's status is `running` and only calls this once it is not.
+
+    So the one caller asks a finished run for its whole log, once, and a
+    `since_seq` would be a parameter nothing passes: a second cursor
+    protocol, a second set of tests, and a second way for the log to arrive
+    with a hole in it. A finished run's log is bounded by the run, and the
+    verbose toggle filters what is *returned* rather than what was
+    captured, which is what lets flipping it work retroactively — that only
+    holds while the endpoint serves the whole thing.
+    """
     _run_or_404(store, run_id)
     return store.log_lines(run_id, verbose=verbose)

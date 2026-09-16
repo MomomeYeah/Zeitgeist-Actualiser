@@ -244,6 +244,33 @@ describe("TopicsPage", () => {
     expect(within(recent).getByText("Cooling one")).toBeInTheDocument();
   });
 
+  it("names stale in the second list's heading, because the list holds it", async () => {
+    // The unfiltered index asks the endpoint for every trend status, so a
+    // stale topic appears in the default view — under a heading that named
+    // only saturating and cooling. The list was right and the heading was
+    // narrower than its own contents, which is the version of that
+    // disagreement that misleads: a reader who trusts the heading reads
+    // "cooling" off a row that says stale. Broadened rather than filtered,
+    // because the stale chip means stale topics are meant to be reachable
+    // and its count has to agree with what the default view shows.
+    serve(
+      makeTopicIndex({
+        topics: [
+          makeIndexedTopic({ topicId: "a", label: "Trending one", trendStatus: "trending" }),
+          makeIndexedTopic({ topicId: "b", label: "Old meme", trendStatus: "stale" }),
+        ],
+      }),
+    );
+
+    renderWithProviders(<TopicsPage />);
+
+    const recent = await screen.findByTestId("recently-trending");
+    expect(within(recent).getByText("Old meme")).toBeInTheDocument();
+    expect(
+      screen.getByText("Recently trending — saturating, cooling & stale"),
+    ).toBeInTheDocument();
+  });
+
   it("renders a stale topic in the second list when filtered for", async () => {
     // The second list's predicate used to name only "saturating" and
     // "cooling", so filtering for stale re-queried, got a stale topic back,

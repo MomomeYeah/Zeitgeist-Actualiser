@@ -45,7 +45,7 @@ class RunLogBuffer:
     from the loop with no lock. Deliberately holds no reference to any event
     loop — `loop.call_soon_threadsafe` into an `asyncio.Queue` would couple
     the handler to a running loop, and the same handler has to work under
-    `TestClient` and under the dev harness. A quarter-second of polling
+    `TestClient` and under a real server alike. A quarter-second of polling
     latency on a log line is invisible.
     """
 

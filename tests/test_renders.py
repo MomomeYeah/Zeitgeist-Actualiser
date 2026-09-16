@@ -1,14 +1,24 @@
 from PIL import Image
 
-from tests.run_factory import make_render_record
+from tests.run_factory import make_render_record, make_run_config
 from zeitgeist.records import ManualOrigin
 from zeitgeist.renders import clear_auto_renders, delete_render, render_paths
 from zeitgeist.store import Store
 
 
-def _store(tmp_path) -> Store:
+def _store(tmp_path, *runs: str) -> Store:
+    """A fresh store with `runs` already opened.
+
+    Opening them is not scaffolding. `renders.run_id` references
+    `run_records`, and foreign keys are enforced, so a render for a run
+    nobody opened is refused — which is the constraint working. Production
+    opens the row in `RunService.enqueue` long before anything renders, so a
+    test that skipped it would be exercising a state that cannot occur.
+    """
     store = Store(tmp_path / "z.db")
     store.init_schema()
+    for run_id in runs:
+        store.start_run(run_id, make_run_config())
     return store
 
 
@@ -27,7 +37,7 @@ def test_render_paths_puts_both_files_under_the_runs_render_directory(tmp_path):
 
 
 def test_delete_render_removes_the_row_and_both_files(tmp_path):
-    store = _store(tmp_path)
+    store = _store(tmp_path, "run-1")
     record = make_render_record("rnd1", run_id="run-1")
     store.add_render(record)
     _write_files(tmp_path / "output", "run-1", "rnd1")
@@ -43,7 +53,7 @@ def test_delete_render_removes_the_row_and_both_files(tmp_path):
 def test_delete_render_succeeds_when_the_png_is_already_gone(tmp_path):
     """The row is what makes a render exist. A PNG deleted out from under
     it must not turn a delete into a crash."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "run-1")
     record = make_render_record("rnd1", run_id="run-1")
     store.add_render(record)
 
@@ -54,14 +64,14 @@ def test_delete_render_succeeds_when_the_png_is_already_gone(tmp_path):
 def test_delete_render_reports_a_row_that_had_already_gone(tmp_path):
     """Two tabs racing the same delete: the second must be able to tell
     that it removed nothing."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "run-1")
     record = make_render_record("rnd1", run_id="run-1")
 
     assert delete_render(store, tmp_path / "output", record) is False
 
 
 def test_clear_auto_renders_removes_the_topics_model_written_renders(tmp_path):
-    store = _store(tmp_path)
+    store = _store(tmp_path, "run-1")
     for rid in ("a", "b"):
         store.add_render(make_render_record(rid, run_id="run-1", topic_id="cat"))
         _write_files(tmp_path / "output", "run-1", rid)
@@ -78,7 +88,7 @@ def test_clear_auto_renders_never_touches_a_hand_written_render(tmp_path):
     """The model's output is reproducible by running again; a caption
     somebody typed is not. That asymmetry is the whole reason the origin
     union has two members."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "run-1")
     store.add_render(make_render_record("auto", run_id="run-1", topic_id="cat"))
     store.add_render(
         make_render_record(
@@ -95,7 +105,7 @@ def test_clear_auto_renders_never_touches_a_hand_written_render(tmp_path):
 
 
 def test_clear_auto_renders_leaves_another_topic_alone(tmp_path):
-    store = _store(tmp_path)
+    store = _store(tmp_path, "run-1")
     store.add_render(make_render_record("cat1", run_id="run-1", topic_id="cat"))
     store.add_render(make_render_record("dog1", run_id="run-1", topic_id="dog"))
 
@@ -107,7 +117,7 @@ def test_clear_auto_renders_leaves_another_topic_alone(tmp_path):
 def test_clear_auto_renders_leaves_the_same_topic_in_another_run_alone(tmp_path):
     """Renders belong to the run that made them. Re-running one run must
     not reach into another run's output."""
-    store = _store(tmp_path)
+    store = _store(tmp_path, "run-0", "run-1")
     store.add_render(make_render_record("old", run_id="run-0", topic_id="cat"))
     store.add_render(make_render_record("new", run_id="run-1", topic_id="cat"))
 

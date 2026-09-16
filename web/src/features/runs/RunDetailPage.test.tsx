@@ -660,6 +660,92 @@ describe("RunDetailPage", () => {
     }
   });
 
+  it("counts a resumed run from its resume, not from its first start", async () => {
+    // `started_at` is when the run *first* began, which is what the Runs
+    // list orders by; a resume deliberately leaves it alone. Counting the
+    // elapsed clock from it meant a run resumed the next day opened at
+    // "1d 0h" and climbed from there. Nine hours apart, so a clock reading
+    // the wrong field cannot land on the right answer by rounding.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-08-30T18:06:41Z"));
+    try {
+      server.use(
+        ...liveRun({
+          attemptStartedAt: "2026-08-30T18:00:00Z",
+        }),
+      );
+
+      renderDetail();
+
+      expect(await screen.findByText("RUNNING")).toBeInTheDocument();
+      expect(screen.getByText("t+06:41")).toBeInTheDocument();
+      // The config line sits directly under the counter and has to agree
+      // with it: "started 09:00" beside "t+06:41" would be yesterday's
+      // time next to this minute's count.
+      expect(screen.getByText(/started 18:00/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("draws no stage as running while a run waits in the queue", async () => {
+    // A resumed run keeps its previous attempt's stage rows, including
+    // whichever one was `running` when that attempt was cut off — and a
+    // queued run's own row says `running` too, so the page reads as live.
+    // Together those drew the earlier attempt's stage with the live
+    // treatment, on a run that had not started: an accent border, a
+    // partial bar and a `17 / 25` counter, all describing something that
+    // ended some time ago. The counter is the assertion because it is the
+    // one thing only a genuinely running stage ever gets.
+    server.use(
+      http.get("/api/runs/active", () =>
+        HttpResponse.json(
+          makeActiveRuns({
+            current: "20260829T140200Z",
+            queued: ["20260829T150000Z"],
+          }),
+        ),
+      ),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(
+          makeRunDetail({
+            runId: "20260829T150000Z",
+            status: "running",
+            finishedAt: null,
+            stages: [
+              makeStageRecord({ stage: "ingest" }),
+              makeStageRecord({
+                stage: "analyse",
+                status: "running",
+                finishedAt: null,
+                done: 17,
+                total: 25,
+              }),
+            ],
+          }),
+        ),
+      ),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+    );
+
+    renderDetail("20260829T150000Z");
+    await screen.findByText(/Waiting behind the run in flight/);
+
+    expect(screen.queryByText("17 / 25")).not.toBeInTheDocument();
+    expect(screen.getByText("interrupted · 17 of 25")).toBeInTheDocument();
+  });
+
+  it("still draws the running stage once the run is actually executing", async () => {
+    // The negative of the test above: gating on `queued` must not turn the
+    // live treatment off for the run that really is going, which is the
+    // only run that ever had it.
+    server.use(...liveRun());
+
+    renderDetail();
+
+    expect(await screen.findByText("17 / 25")).toBeInTheDocument();
+  });
+
   it("says a queued run has not started", async () => {
     // A queued run's row says `running` too — `enqueue` opens it that way —
     // so `active.queued` is the only thing that separates the two, and this
@@ -807,6 +893,73 @@ describe("RunDetailPage", () => {
     expect(
       screen.getByRole("button", { name: "Stop after this stage" }),
     ).toBeDisabled();
+  });
+
+  it("keeps focus on the run's header once a stop is accepted", async () => {
+    // Stop disables itself the instant it succeeds — a disabled button
+    // cannot hold focus, so the keyboard user who pressed it was dropped
+    // on `<body>` with no indication that anything had happened. Unlike
+    // Abort and Resume, Stop has no confirm to return focus to first.
+    const user = userEvent.setup();
+    server.use(
+      ...liveRun(),
+      http.post("/api/runs/:runId/stop", () =>
+        HttpResponse.json(
+          { run_id: "20260829T140200Z", requested: "stop" },
+          { status: 202 },
+        ),
+      ),
+    );
+    renderDetail();
+
+    await user.click(
+      await screen.findByRole("button", { name: "Stop after this stage" }),
+    );
+    await screen.findByRole("button", { name: "Stopping…" });
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toContainElement(
+      screen.getByText("20260829T140200Z"),
+    );
+  });
+
+  it("keeps focus on the run's header when a resume is refused", async () => {
+    // The refusal path, which `onSuccess` never covered. Between the click
+    // and the 409, Resume's trigger is disabled by its own pending guard —
+    // long enough for the browser to drop focus — and then comes back
+    // enabled with the error beside it. Nothing moved focus back, so the
+    // user was reading a message they could not reach.
+    const user = userEvent.setup();
+    server.use(
+      http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+      http.get("/api/runs/:runId", () =>
+        HttpResponse.json(
+          makeRunDetail({ runId: RUN_ID, status: "aborted", resumeStage: "generate" }),
+        ),
+      ),
+      http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+      http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
+      http.post("/api/runs/:runId/resume", () =>
+        HttpResponse.json(
+          { detail: `Run ${RUN_ID} is already queued or executing` },
+          { status: 409 },
+        ),
+      ),
+    );
+
+    renderWithProviders(<RunDetailPage />, {
+      route: `/runs/${RUN_ID}`,
+      path: "/runs/:runId",
+    });
+
+    await user.click(
+      await screen.findByRole("button", { name: "Resume from generate" }),
+    );
+    await user.click(screen.getByRole("button", { name: "yes" }));
+    await screen.findByText(/already queued or executing/);
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toContainElement(screen.getByText(RUN_ID));
   });
 
   it("keeps focus on the run's header once an abort is accepted", async () => {

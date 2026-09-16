@@ -193,7 +193,7 @@ Header: "Topics", `across the last 6 runs · deduplicated by topic id`, and a fi
 
 **Trending now**: 3-up cards, 11px gap. Header line pairs a recurrence label (`▲ SEEN IN 3 RUNS`, or `NEW THIS RUN`) with the meme score in accent. Title Outfit 700/16, chip row, then `<n> posts · <n> memes` in mono. The first card is highlighted with `accent-border` + `accent-wash`.
 
-**Recently trending — saturating & cooling**: a table, 1px gaps over a `divider` background so the hairlines read as borders, radius 11, columns `1fr 122px 108px 92px 78px` — title, sentiment chip, trend status, post count, meme score right-aligned.
+**Recently trending — saturating, cooling & stale**: a table, 1px gaps over a `divider` background so the hairlines read as borders, radius 11, columns `1fr 122px 108px 92px 78px` — title, sentiment chip, trend status, post count, meme score right-aligned.
 
 ### 6. Topic detail (`2e`)
 

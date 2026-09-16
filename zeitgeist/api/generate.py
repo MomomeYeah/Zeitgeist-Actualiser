@@ -14,7 +14,12 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 
 from zeitgeist.api.app import get_generator, get_store
 from zeitgeist.api.runs import _run_or_404
-from zeitgeist.generation import GenerationRequest, GenerationService, UnknownTopic
+from zeitgeist.generation import (
+    GenerationRequest,
+    GenerationService,
+    GenerationUnavailable,
+    UnknownTopic,
+)
 from zeitgeist.records import RenderRecord
 from zeitgeist.store import MissingCheckpoint, Store
 
@@ -47,6 +52,22 @@ def create_renders(
     _run_or_404(store, run_id)
     try:
         return generator.submit(run_id, topic_id, body)
+    except GenerationUnavailable as exc:
+        # `submit` obtains the pool before it validates anything, so that a
+        # closed service refuses on the request thread before `_seed` has
+        # committed a row — the ordering is deliberate and stays. The cost
+        # was that a request which would have earned a 404, a 409 or a 400
+        # came out of an already-closed service as a bare 500, which reads
+        # as "the server is broken" for something that is only ever an
+        # app-shutdown race. 503 is what it actually is, and it is the
+        # right answer for every one of those requests: during shutdown
+        # there is nothing to generate against regardless of what the
+        # request said. Caught first because `_ensure_pool` raises before
+        # any of the handlers below can apply.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Generation is shutting down: {exc}",
+        ) from exc
     except MissingCheckpoint as exc:
         # Distinct from the 404 below: the run exists and the topic may
         # well have too, but the run died before analyse wrote anything,

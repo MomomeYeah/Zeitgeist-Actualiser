@@ -14,8 +14,9 @@ import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from tests.run_factory import make_run_config, make_topic
@@ -44,6 +45,21 @@ from zeitgeist.store import Store
 # each one after the test body finishes — the same shape `TestClient` itself
 # would use if two tests couldn't ever run inside the same process.
 _open_clients: list[TestClient] = []
+
+
+def app_of(client: TestClient) -> FastAPI:
+    """The `FastAPI` behind a client, for the tests that reach into
+    `app.state`.
+
+    `TestClient.app` is typed as the bare ASGI callable — three positional
+    parameters and an awaitable — which has no `.state`, so reaching
+    through it directly is an unresolved-attribute error under `ty`. Every
+    client in this suite is built over `create_app`, which returns a
+    `FastAPI`, so the cast states what is already true rather than papering
+    over a doubt. `app.state` itself hands back `Any`, which is why the
+    attribute this is chained onto needs no second annotation.
+    """
+    return cast(FastAPI, client.app)
 
 
 @dataclass

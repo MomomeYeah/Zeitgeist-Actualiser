@@ -271,7 +271,7 @@
           "control"
         ],
         "summary": "Stream Events",
-        "description": "Log lines and progress ticks, until the run ends.\n\nPolls the run's buffer rather than being pushed to. A quarter-second of\nlatency on a log line is invisible, and polling keeps the logging handler\nfree of any reference to the event loop \u2014 which is what lets the same\nhandler work under `TestClient` and under the dev harness.\n\nA tick carries no payload. The observer has already written\n`run_records`, `run_stages` and `run_topics` from the worker thread, so\nthe client refetches rather than being handed the same data twice.",
+        "description": "Log lines and progress ticks, until the run ends.\n\nPolls the run's buffer rather than being pushed to. A quarter-second of\nlatency on a log line is invisible, and polling keeps the logging handler\nfree of any reference to the event loop \u2014 which is what lets the same\nhandler work under `TestClient` and under a real server alike.\n\nA tick carries no payload. The observer has already written\n`run_records`, `run_stages` and `run_topics` from the worker thread, so\nthe client refetches rather than being handed the same data twice.",
         "operationId": "stream_events_api_runs__run_id__events_get",
         "parameters": [
           {
@@ -602,6 +602,7 @@
           "runs"
         ],
         "summary": "Read Log",
+        "description": "One run's whole log, every time.\n\nNo `since_seq`. Phase 2 left the question open because incremental\npolling was the only way a live log could have worked; phase 3's\n`GET /api/runs/{id}/events` settled it by making this endpoint the\n*other* half of a pair. The stream carries a live run's lines, keyed on\nexactly the `seq` a `since_seq` here would have taken, and the client\nenables the two exclusively \u2014 `RunDetailPage` opens the stream while\nthe run's status is `running` and only calls this once it is not.\n\nSo the one caller asks a finished run for its whole log, once, and a\n`since_seq` would be a parameter nothing passes: a second cursor\nprotocol, a second set of tests, and a second way for the log to arrive\nwith a hole in it. A finished run's log is bounded by the run, and the\nverbose toggle filters what is *returned* rather than what was\ncaptured, which is what lets flipping it work retroactively \u2014 that only\nholds while the endpoint serves the whole thing.",
         "operationId": "read_log_api_runs__run_id__log_get",
         "parameters": [
           {
@@ -1651,6 +1652,11 @@
             "format": "date-time",
             "title": "Started At"
           },
+          "attempt_started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Attempt Started At"
+          },
           "finished_at": {
             "anyOf": [
               {
@@ -1727,6 +1733,7 @@
           "run_id",
           "status",
           "started_at",
+          "attempt_started_at",
           "finished_at",
           "config",
           "error",

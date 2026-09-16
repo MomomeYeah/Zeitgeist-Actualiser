@@ -91,7 +91,7 @@ class SettingsTableSource(PydanticBaseSettingsSource):
         path = _db_path()
         if not path.is_file():
             # Settings has to load before anything has created the database —
-            # the harness builds Settings in order to find out where it goes.
+            # the server builds Settings in order to find out where it goes.
             return {}
         try:
             # closing as well as the context manager: `with sqlite3.connect`

@@ -93,7 +93,7 @@ function InFlight() {
     <Link to={`/runs/${encodeURIComponent(runId)}`} className={styles.card}>
       <span className={styles.cardLabel}>IN FLIGHT</span>
       <span className={styles.cardDetail}>
-        {stage} · {formatElapsed(run.data.run.started_at, now)}
+        {stage} · {formatElapsed(run.data.run.attempt_started_at, now)}
       </span>
     </Link>
   );

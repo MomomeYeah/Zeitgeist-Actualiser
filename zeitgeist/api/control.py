@@ -21,6 +21,7 @@ from zeitgeist.runner import (
     ActiveRuns,
     QueuedRun,
     RunAlreadyActive,
+    RunnerUnavailable,
     RunRequest,
     RunService,
 )
@@ -48,6 +49,14 @@ def start_run(
                 overrides=body.overrides,
             )
         )
+    except RunnerUnavailable as exc:
+        # The worker thread is gone; nothing can be executed until this
+        # process restarts. Caught ahead of everything below because it is
+        # not a fact about this request at all, and a 400 or a 409 would
+        # send the user editing a request that was never the problem.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
     except RunAlreadyActive as exc:
         # A fresh run always gets a fresh id from new_run_id(), so this can
         # only fire if id generation somehow collided with a run still in
@@ -133,6 +142,14 @@ def resume_run(
                 overrides=run.config.as_overrides(),
             )
         )
+    except RunnerUnavailable as exc:
+        # The worker thread is gone; nothing can be executed until this
+        # process restarts. Caught ahead of everything below because it is
+        # not a fact about this request at all, and a 400 or a 409 would
+        # send the user editing a request that was never the problem.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
     except RunAlreadyActive as exc:
         # Distinct from the 409s above: those mean the run has nothing to
         # resume from, this means it does not need resuming at all right
@@ -186,7 +203,7 @@ def stream_events(
     Polls the run's buffer rather than being pushed to. A quarter-second of
     latency on a log line is invisible, and polling keeps the logging handler
     free of any reference to the event loop — which is what lets the same
-    handler work under `TestClient` and under the dev harness.
+    handler work under `TestClient` and under a real server alike.
 
     A tick carries no payload. The observer has already written
     `run_records`, `run_stages` and `run_topics` from the worker thread, so

@@ -5,7 +5,7 @@ from typing import Any, cast
 
 import pytest
 
-from tests.run_factory import make_render_record, make_topic
+from tests.run_factory import make_render_record, make_run_config, make_topic
 from tests.template_factory import make_manifest, make_slot, write_library
 from zeitgeist.analysis.distil import DossierDraft
 from zeitgeist.config import Settings
@@ -976,6 +976,10 @@ def test_re_running_generate_replaces_the_previous_auto_render(tmp_path):
     )
     topic = ScoredTopic(**make_topic("airport-cat").model_dump(), final_rank=1)
     run_id = "20260901T120000Z"
+    # Opened before anything hangs off it: every other table references
+    # `run_records` by run_id and foreign keys are enforced. Production
+    # opens the row in `RunService.enqueue`, before the worker resumes.
+    store.start_run(run_id, make_run_config())
     # run_pipeline always reads back an INGEST checkpoint, even when
     # resuming past it, so resuming at GENERATE needs one on record.
     store.write_checkpoint(run_id, Stage.INGEST, [])
@@ -1003,6 +1007,10 @@ def test_re_running_generate_leaves_a_hand_written_render_alone(tmp_path):
     settings = _settings(tmp_path)
     store = _store(tmp_path)
     run_id = "20260901T120000Z"
+    # Opened before anything hangs off it: every other table references
+    # `run_records` by run_id and foreign keys are enforced. Production
+    # opens the row in `RunService.enqueue`, before the worker resumes.
+    store.start_run(run_id, make_run_config())
     store.add_render(
         make_render_record(
             "hand", run_id=run_id, topic_id="airport-cat", origin=ManualOrigin()
@@ -1048,6 +1056,10 @@ def test_a_failed_re_render_leaves_the_previous_good_one_in_place(tmp_path):
     settings = _settings(tmp_path)
     store = _store(tmp_path)
     run_id = "20260901T120000Z"
+    # Opened before anything hangs off it: every other table references
+    # `run_records` by run_id and foreign keys are enforced. Production
+    # opens the row in `RunService.enqueue`, before the worker resumes.
+    store.start_run(run_id, make_run_config())
     topic = ScoredTopic(**make_topic("airport-cat").model_dump(), final_rank=1)
     # run_pipeline always reads back an INGEST checkpoint, even when
     # resuming past it, so resuming at GENERATE needs one on record.
@@ -1100,6 +1112,10 @@ def test_the_replacement_render_keeps_its_image_on_disk(tmp_path):
     settings = _settings(tmp_path)
     store = _store(tmp_path)
     run_id = "20260901T120000Z"
+    # Opened before anything hangs off it: every other table references
+    # `run_records` by run_id and foreign keys are enforced. Production
+    # opens the row in `RunService.enqueue`, before the worker resumes.
+    store.start_run(run_id, make_run_config())
     topic = ScoredTopic(**make_topic("airport-cat").model_dump(), final_rank=1)
     # run_pipeline always reads back an INGEST checkpoint, even when
     # resuming past it, so resuming at GENERATE needs one on record.

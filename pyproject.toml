@@ -20,7 +20,17 @@ zeitgeist = "zeitgeist.serve:main"
 # ty is pre-1.0 and its rule defaults shift between releases; the upper bound
 # plus uv.lock makes a version change a deliberate, reviewable act rather
 # than something a routine `uv sync` can spring on a green tree.
-dev = ["pytest>=8.3", "ruff>=0.8", "ty>=0.0.73,<0.1"]
+#
+# httpx2 is here for `starlette.testclient` alone, which every API test goes
+# through. Starlette now prefers it and warns on every import when only
+# httpx 0.x is installed — a StarletteDeprecationWarning on an otherwise
+# clean run, which is exactly the kind of noise that trains you to stop
+# reading the warnings summary. Installing it silences the warning by
+# satisfying it rather than by filtering it: testclient imports httpx2 when
+# it is there and falls back to httpx when it is not. The runtime dependency
+# on httpx stays — `anthropic` and `zeitgeist.sources` use it directly, and
+# nothing in the shipped package touches httpx2.
+dev = ["pytest>=8.3", "ruff>=0.8", "ty>=0.0.73,<0.1", "httpx2>=0.1"]
 
 [build-system]
 requires = ["uv_build>=0.9"]
