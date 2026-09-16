@@ -230,7 +230,7 @@ export function makeRenderRecord(
     id?: string;
     runId?: string;
     topicId?: string;
-    templateId?: string;
+    templateId?: string | null;
     rationale?: string | null;
     status?: RenderRecord["status"];
     error?: string | null;
@@ -243,7 +243,7 @@ export function makeRenderRecord(
     id: options.id ?? "render-1",
     run_id: options.runId ?? "20260829T090000Z",
     topic_id: options.topicId ?? "topic-1",
-    template_id: options.templateId ?? "drake",
+    template_id: options.templateId === undefined ? "drake" : options.templateId,
     caption_slots: options.captionSlots ?? {
       rejected: "Filing an incident report",
       preferred: "Becoming the incident",

@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 
 import { imageUrl } from "@/api/client";
-import { useRender, useTopicDetail } from "@/api/queries";
+import { useDeleteRender, useRender, useTopicDetail } from "@/api/queries";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { Chip } from "@/components/Chip";
+import { InlineConfirm } from "@/components/InlineConfirm";
 import { MetaLine } from "@/components/MetaLine";
 import { QueryBoundary } from "@/components/QueryBoundary";
 import { SectionLabel } from "@/components/SectionLabel";
@@ -21,12 +22,20 @@ export function RenderDetailPage() {
   const [size, setSize] = useState<string>("");
   const [failed, setFailed] = useState(false);
 
+  const navigate = useNavigate();
+  const remove = useDeleteRender();
+
   return (
     <QueryBoundary query={render} missing="No such render.">
       {(record) => {
         // Used for both the page title and its own breadcrumb entry, so the
         // two can never drift apart.
         const topicLabel = topic.data?.topic.label ?? record.topic_id;
+        // None on a render whose model has not chosen a template yet: a
+        // `generating` row whose request left the choice to the model, or
+        // a `failed` row whose brief failed before the model chose. The
+        // breadcrumb, the chip and the file name still need a word.
+        const templateLabel = record.template_id ?? "no template chosen";
 
         return (
           <div className={styles.page}>
@@ -37,14 +46,14 @@ export function RenderDetailPage() {
                   label: topicLabel,
                   to: `/topics/${encodeURIComponent(record.run_id)}/${encodeURIComponent(record.topic_id)}`,
                 },
-                { label: record.template_id },
+                { label: templateLabel },
               ]}
             />
 
             <header className={styles.header}>
               <h1 className={styles.title}>{topicLabel}</h1>
               <div className={styles.chips} data-testid="chips">
-                <Chip tone="accent">{record.template_id}</Chip>
+                <Chip tone="accent">{templateLabel}</Chip>
                 <Chip>{record.origin.provenance}</Chip>
               </div>
               <MetaLine>
@@ -71,7 +80,7 @@ export function RenderDetailPage() {
                   <img
                     className={styles.image}
                     src={imageUrl(record.id, "full")}
-                    alt={`${record.template_id} meme`}
+                    alt={`${templateLabel} meme`}
                     // The contract carries no dimensions or byte size for a
                     // render, so this reports what the browser decoded rather
                     // than numbers nothing sent it.
@@ -105,16 +114,39 @@ export function RenderDetailPage() {
                   <p className={styles.byHand}>written by hand</p>
                 )}
 
-                {!failed && (
-                  <div className={styles.footer}>
+                <div className={styles.footer}>
+                  {!failed && (
                     <a
                       className={styles.download}
                       href={imageUrl(record.id, "full")}
-                      download={`${record.template_id}-${record.id}.png`}
+                      download={`${templateLabel}-${record.id}.png`}
                     >
                       Download PNG
                     </a>
-                  </div>
+                  )}
+                  {/* Offered whether or not the image loaded: a render whose
+                      PNG is gone is the likeliest to want deleting. On yes,
+                      back to the topic it came from, where its tile has
+                      already left the cache. */}
+                  <InlineConfirm
+                    label="Delete"
+                    question="Delete this render?"
+                    disabled={remove.isPending}
+                    onConfirm={() =>
+                      remove.mutate(record, {
+                        onSuccess: () =>
+                          void navigate(
+                            `/topics/${encodeURIComponent(record.run_id)}` +
+                              `/${encodeURIComponent(record.topic_id)}`,
+                          ),
+                      })
+                    }
+                  />
+                </div>
+                {remove.isError && (
+                  <p role="alert" className={styles.deleteError}>
+                    {remove.error.detail}
+                  </p>
                 )}
               </aside>
             </div>

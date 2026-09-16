@@ -1,6 +1,7 @@
 import userEvent from "@testing-library/user-event";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
+import { Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
 import type { RankedTopic, RunDetail } from "@/api/types";
@@ -13,6 +14,7 @@ import {
   makeLogLine,
   makeQueuedRun,
   makeRankedTopic,
+  makeRenderRecord,
   makeRunDetail,
   makeStageRecord,
 } from "@/test/factories";
@@ -20,6 +22,12 @@ import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/server";
 
 const RUN_ID = "20260829T090000Z";
+
+/** Where a navigation ended up, for the tests that leave this page. */
+function Landed() {
+  const { pathname } = useLocation();
+  return <p>{`landed on ${pathname}`}</p>;
+}
 
 function serve(detail: RunDetail, ranking: RankedTopic[]) {
   server.use(
@@ -194,7 +202,108 @@ describe("RunDetailPage", () => {
 
     renderPage();
 
-    expect(await screen.findByText("generate ↗")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "generate ↗" })).toBeInTheDocument();
+  });
+
+  it("generates one meme for a topic below the cut, the model choosing, then opens it", async () => {
+    // The handoff: "briefs and renders that single topic without re-running
+    // the pipeline — same backend path as the topic-detail LLM panel".
+    serve(makeRunDetail({ runId: RUN_ID }), [
+      makeRankedTopic({ topicId: "t1", finalRank: 1, aboveCut: true }),
+      makeRankedTopic({ topicId: "t2", finalRank: 6, aboveCut: false, renderCount: 0 }),
+    ]);
+    let posted: unknown = null;
+    let postedFor = "";
+    server.use(
+      http.post("/api/runs/:runId/topics/:topicId/renders", async ({ request, params }) => {
+        posted = await request.json();
+        postedFor = String(params.topicId);
+        return HttpResponse.json(
+          [
+            makeRenderRecord({
+              id: "new-1",
+              topicId: "t2",
+              status: "generating",
+              templateId: null,
+              captionSlots: {},
+            }),
+          ],
+          { status: 202 },
+        );
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(
+      <Routes>
+        <Route path="/runs/:runId" element={<RunDetailPage />} />
+        <Route path="*" element={<Landed />} />
+      </Routes>,
+      { route: `/runs/${RUN_ID}` },
+    );
+
+    await user.click(await screen.findByRole("button", { name: "generate ↗" }));
+
+    // The pathname, not just "some topic page": a destination built from
+    // the wrong row, or with run and topic swapped, lands somewhere else.
+    expect(await screen.findByText(`landed on /topics/${RUN_ID}/t2`)).toBeInTheDocument();
+    expect(postedFor).toBe("t2");
+    expect(posted).toEqual({ mode: "llm", template_id: null, count: 1 });
+  });
+
+  it("says why on the row when the server will not generate", async () => {
+    serve(makeRunDetail({ runId: RUN_ID }), [
+      makeRankedTopic({ topicId: "t2", finalRank: 6, aboveCut: false, renderCount: 0 }),
+    ]);
+    server.use(
+      http.post("/api/runs/:runId/topics/:topicId/renders", () =>
+        HttpResponse.json(
+          { detail: "ANTHROPIC_API_KEY is required for the anthropic provider" },
+          { status: 400 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "generate ↗" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "ANTHROPIC_API_KEY is required for the anthropic provider",
+    );
+  });
+
+  it("does not brief the topic twice while the first request is on its way", async () => {
+    // Each click is a model call. Refused at the end, so the row stays on
+    // this page to be counted from rather than navigating away.
+    serve(makeRunDetail({ runId: RUN_ID }), [
+      makeRankedTopic({ topicId: "t2", finalRank: 6, aboveCut: false, renderCount: 0 }),
+    ]);
+    let posts = 0;
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.post("/api/runs/:runId/topics/:topicId/renders", async () => {
+        posts += 1;
+        await held;
+        return HttpResponse.json(
+          { detail: "ANTHROPIC_API_KEY is required for the anthropic provider" },
+          { status: 400 },
+        );
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    const generate = await screen.findByRole("button", { name: "generate ↗" });
+    await user.click(generate);
+    await waitFor(() => expect(generate).toBeDisabled());
+    await user.click(generate);
+    release();
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(posts).toBe(1);
   });
 
   it("counts the rows below the cut", async () => {
@@ -262,6 +371,9 @@ describe("RunDetailPage", () => {
 
     expect(await screen.findByText("Airport cat")).toBeInTheDocument();
     expect(screen.queryByText(/every brief failed/)).not.toBeInTheDocument();
+    // Nor does a kept topic offer generate while the stage that is about
+    // to render it is still running.
+    expect(screen.queryByRole("button", { name: "generate ↗" })).not.toBeInTheDocument();
   });
 
   it("does not claim every brief failed on a run that never reached generate", async () => {
@@ -1131,5 +1243,67 @@ describe("RunDetailPage", () => {
     expect(
       await screen.findByText("Run 20260829T090000Z is already queued or executing"),
     ).toBeInTheDocument();
+  });
+
+  it("offers generate on a kept topic whose own brief failed", async () => {
+    // Partial failure: the stage ran, one topic rendered, the other did
+    // not. Generate used to be offered here only when *every* brief
+    // failed, so the one row that needs it read "0 memes" instead.
+    serve(
+      makeRunDetail({
+        runId: RUN_ID,
+        stages: [makeStageRecord({ stage: "generate", summary: "1 of 2 rendered" })],
+      }),
+      [
+        makeRankedTopic({ topicId: "t1", finalRank: 1, label: "Stadium rat", renderCount: 1 }),
+        makeRankedTopic({ topicId: "t2", finalRank: 2, label: "Airport cat", renderCount: 0 }),
+      ],
+    );
+
+    renderPage();
+
+    expect(await screen.findByRole("button", { name: "generate ↗" })).toBeInTheDocument();
+    expect(screen.getByText("1 meme")).toBeInTheDocument();
+  });
+
+  it("counts the memes a below-the-cut row has, beside its generate link", async () => {
+    // Generating for a topic below the cut leaves it with memes, and the
+    // row said nothing about them: it drew the link alone.
+    serve(makeRunDetail({ runId: RUN_ID }), [
+      makeRankedTopic({ topicId: "t1", finalRank: 1, aboveCut: true }),
+      makeRankedTopic({ topicId: "t2", finalRank: 6, aboveCut: false, renderCount: 2 }),
+    ]);
+
+    renderPage();
+
+    expect(await screen.findByText("2 memes")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "generate ↗" })).toBeInTheDocument();
+  });
+
+  it("lets you try again on the row after the server refuses", async () => {
+    // The refusal is usually a missing key, which is fixed elsewhere and
+    // then wants another go. Without this the row kept the sentence until
+    // the page was remounted.
+    serve(makeRunDetail({ runId: RUN_ID }), [
+      makeRankedTopic({ topicId: "t2", finalRank: 6, aboveCut: false, renderCount: 0 }),
+    ]);
+    server.use(
+      http.post("/api/runs/:runId/topics/:topicId/renders", () =>
+        HttpResponse.json(
+          { detail: "ANTHROPIC_API_KEY is required for the anthropic provider" },
+          { status: 400 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "generate ↗" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Try generating again" }),
+    );
+
+    expect(await screen.findByRole("button", { name: "generate ↗" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

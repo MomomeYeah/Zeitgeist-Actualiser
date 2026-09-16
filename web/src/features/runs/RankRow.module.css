@@ -1,4 +1,5 @@
 .row {
+  position: relative;
   display: grid;
   grid-template-columns: 30px 1fr 132px 150px 128px;
   gap: var(--gap-tight);
@@ -47,6 +48,30 @@
   font-size: 14.5px;
   font-weight: 700;
   line-height: 1.25;
+  color: inherit;
+}
+
+/* The whole row opens the topic, as it did when the row was one anchor:
+   the title's link stretches over it. `generate ↗` sits above this, at
+   `z-index: 1`. */
+.label::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+/* The row is no longer one anchor, so the title's own focus ring would
+   otherwise wrap only the title text. This puts the ring back around the
+   whole row, and the rule below suppresses the title's own so there are
+   not two. */
+.row:has(.label:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.label:focus-visible {
+  outline: none;
 }
 
 .subline,
@@ -80,11 +105,51 @@
 }
 
 .generate {
+  position: relative;
+  z-index: 1;
+  padding: 0;
+  border: none;
+  background: none;
   color: var(--contrast-light);
+  cursor: pointer;
+  flex: none;
 }
 
+.generate:hover:not(:disabled),
+.generate:focus-visible {
+  color: var(--text);
+}
+
+.generate:disabled {
+  cursor: default;
+}
+
+/* A refusal, on the row, in the server's words — one line, the rest in the
+   title. Above the stretched link, so it can be hovered for that title and
+   clicked to clear the refusal. */
+.generateError {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: right;
+  color: var(--contrast-light);
+  cursor: pointer;
+}
+
+/* The count and the generate link sit side by side when a row has both. */
 .memes {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: var(--gap-tight);
+  min-width: 0;
 }

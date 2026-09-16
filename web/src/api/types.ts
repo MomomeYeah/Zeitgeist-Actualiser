@@ -50,6 +50,11 @@ export type ConfigOptions = Schemas["ConfigOptions"];
 export type PlatformOption = Schemas["PlatformOption"];
 export type TemplateOption = Schemas["TemplateOption"];
 
+export type LLMGeneration = Schemas["LLMGeneration"];
+export type ManualGeneration = Schemas["ManualGeneration"];
+/** What topic detail's two panels and the below-the-cut link post. */
+export type GenerationRequest = LLMGeneration | ManualGeneration;
+
 /** The four stages in the order they run — the order the stage cards draw. */
 export const STAGES: readonly Stage[] = ["ingest", "analyse", "evaluate", "generate"];
 

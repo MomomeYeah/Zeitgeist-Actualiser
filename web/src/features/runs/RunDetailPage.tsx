@@ -49,6 +49,22 @@ function configLine(detail: RunDetail, live: boolean): string {
 }
 
 /**
+ * The generate stage has finished, one way or another.
+ *
+ * A run that died in analyse never reached it, and a live run has not
+ * finished it, so in both cases a topic with no memes is not a topic whose
+ * brief failed — it is one nothing has tried yet.
+ */
+function generateSettled(stages: StageRecord[]): boolean {
+  const generate = stages.find((stage) => stage.stage === "generate");
+  return (
+    generate !== undefined &&
+    generate.status !== "queued" &&
+    generate.status !== "running"
+  );
+}
+
+/**
  * The generate stage ran and produced nothing.
  *
  * Both halves are needed: a run that died in analyse also has zero renders,
@@ -56,15 +72,11 @@ function configLine(detail: RunDetail, live: boolean): string {
  * renderer problem that does not exist.
  */
 function everyBriefFailed(stages: StageRecord[], ranking: RankedTopic[]): boolean {
-  const generate = stages.find((stage) => stage.stage === "generate");
-  if (
-    generate === undefined ||
-    generate.status === "queued" ||
-    generate.status === "running"
-  ) {
-    return false;
-  }
-  return ranking.length > 0 && ranking.every((entry) => entry.render_count === 0);
+  return (
+    generateSettled(stages) &&
+    ranking.length > 0 &&
+    ranking.every((entry) => entry.render_count === 0)
+  );
 }
 
 export function RunDetailPage() {
@@ -177,6 +189,7 @@ export function RunDetailPage() {
                     ranking={rows}
                     topCount={detail.run.config.top_count}
                     everyBriefFailed={everyBriefFailed(detail.stages, rows)}
+                    generateSettled={generateSettled(detail.stages)}
                   />
                 )
               }

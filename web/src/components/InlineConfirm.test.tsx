@@ -137,3 +137,67 @@ describe("InlineConfirm", () => {
     expect(screen.getByText("Abort run?")).toBeInTheDocument();
   });
 });
+
+describe("InlineConfirm as a tile footer", () => {
+  // Every test below finds the trigger by its `ariaLabel`, not by the "✕"
+  // it shows. A button named "✕" tells a screen reader nothing about what
+  // it deletes, so if `ariaLabel` stopped reaching the button, all of them
+  // would fail — which is why there is no separate test for it.
+  function setupTile(onConfirm = vi.fn()) {
+    render(
+      <InlineConfirm
+        variant="tile"
+        label="✕"
+        ariaLabel="Delete render"
+        question="Delete this render?"
+        resting={<span>drake · auto</span>}
+        onConfirm={onConfirm}
+      />,
+    );
+    return { onConfirm, user: userEvent.setup() };
+  }
+
+  it("gives the whole footer to the question, resting line included", async () => {
+    // The handoff's confirming tile has no template line: the question
+    // takes the footer. Leaving the resting line beside it would put two
+    // sentences in a quarter-width tile.
+    const { user } = setupTile();
+
+    await user.click(screen.getByRole("button", { name: "Delete render" }));
+
+    expect(screen.getByText("Delete this render?")).toBeInTheDocument();
+    expect(screen.queryByText("drake · auto")).not.toBeInTheDocument();
+  });
+
+  it("confirms on yes", async () => {
+    const { onConfirm, user } = setupTile();
+
+    await user.click(screen.getByRole("button", { name: "Delete render" }));
+    await user.click(screen.getByRole("button", { name: "yes" }));
+
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("puts the resting line back on no, and deletes nothing", async () => {
+    const { onConfirm, user } = setupTile();
+
+    await user.click(screen.getByRole("button", { name: "Delete render" }));
+    await user.click(screen.getByRole("button", { name: "no" }));
+
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(screen.getByText("drake · auto")).toBeInTheDocument();
+  });
+
+  it("reverts on Escape and hands focus back to its ✕", async () => {
+    // What the variant exists to inherit. A tile branch whose `no` never
+    // took focus would leave Escape nowhere to land.
+    const { onConfirm, user } = setupTile();
+
+    await user.click(screen.getByRole("button", { name: "Delete render" }));
+    await user.keyboard("{Escape}");
+
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(screen.getByText("drake · auto")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete render" })).toHaveFocus();
+  });
+});

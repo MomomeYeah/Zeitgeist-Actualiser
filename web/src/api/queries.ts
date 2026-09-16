@@ -1,7 +1,6 @@
 /**
- * The query-key factory and all sixteen hooks — six read, four mutations,
- * `useActiveRun`'s poll and `useRunEvents`'s stream — in one module so a
- * key cannot drift from the fetch that uses it.
+ * The query-key factory and every hook the app fetches or mutates through,
+ * in one module so a key cannot drift from the fetch that uses it.
  *
  * `useActiveRun` and `useRunEvents` are the two hooks that carry live
  * behaviour: the first polls while a run is in flight, and the second opens
@@ -11,13 +10,14 @@
  * hooks did.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
-import { apiGet, apiSend, openRunEvents, parseLogEvent } from "@/api/client";
-import type { ApiError } from "@/api/client";
+import { ApiError, apiDelete, apiGet, apiSend, openRunEvents, parseLogEvent } from "@/api/client";
 import type {
   ActiveRuns,
   ConfigOptions,
+  GenerationRequest,
   LogLine,
   QueuedRun,
   RankedTopic,
@@ -93,8 +93,41 @@ export function useRanking(runId: string | undefined) {
   });
 }
 
+/** How often topic detail re-asks while one of its renders is generating. */
+export const GENERATION_POLL_MS = 1500;
+
+function generatingCount(detail: TopicDetail | undefined): number {
+  return detail?.renders.filter((render) => render.status === "generating").length ?? 0;
+}
+
+/**
+ * Everything that counts renders: the runs list's thumbnails, every run's
+ * ranking, and the topics index's meme counts. Each counts ready renders
+ * only, so each is stale the moment a render becomes ready or is deleted.
+ *
+ * `["runs"]` also covers the topic detail on screen, which refetches once
+ * more. That is one request, and it is the page confirming what it drew.
+ */
+function invalidateRenderViews(client: QueryClient) {
+  void client.invalidateQueries({ queryKey: ["runs"] });
+  void client.invalidateQueries({ queryKey: ["topics"] });
+}
+
+/**
+ * One topic's dossier and renders.
+ *
+ * Polls while any render is `generating`, and only then — a settled topic
+ * makes one request, like every other read hook. A render finishing is the
+ * only thing on this screen that changes on its own.
+ *
+ * When the number still generating drops, one of them became ready or
+ * failed, so the counts other screens hold are refreshed. Watching the
+ * count rather than each row keeps this to one comparison per render of
+ * the hook.
+ */
 export function useTopicDetail(runId: string | undefined, topicId: string | undefined) {
-  return useQuery<TopicDetail, ApiError>({
+  const client = useQueryClient();
+  const query = useQuery<TopicDetail, ApiError>({
     queryKey: queryKeys.topicDetail(runId ?? "", topicId ?? ""),
     queryFn: () =>
       apiGet<TopicDetail>(
@@ -102,7 +135,18 @@ export function useTopicDetail(runId: string | undefined, topicId: string | unde
           `/topics/${encodeURIComponent(topicId ?? "")}`,
       ),
     enabled: runId !== undefined && topicId !== undefined,
+    refetchInterval: (current) =>
+      generatingCount(current.state.data) > 0 ? GENERATION_POLL_MS : false,
   });
+
+  const generating = generatingCount(query.data);
+  const previous = useRef(generating);
+  useEffect(() => {
+    if (generating < previous.current) invalidateRenderViews(client);
+    previous.current = generating;
+  }, [generating, client]);
+
+  return query;
 }
 
 export function useTopicIndex(options: TopicIndexOptions = {}) {
@@ -260,6 +304,99 @@ export function useSaveSettings() {
     onSuccess: (fields) => {
       client.setQueryData(queryKeys.settings(), fields);
       void client.invalidateQueries({ queryKey: queryKeys.configOptions() });
+    },
+  });
+}
+
+/**
+ * Post one of topic detail's two panels, or the below-the-cut link.
+ *
+ * The reply's rows — already `generating`, with real ids — go straight into
+ * the topic's cached detail rather than waiting for a refetch. TanStack
+ * awaits `onSuccess` before the mutation stops being pending, and the
+ * page draws placeholders from the pending request's `variables`, so the
+ * placeholders give way to the real rows with nothing in between.
+ *
+ * An in-flight fetch of the detail is cancelled first. It was sent before
+ * these rows existed; landing after the write, it would put back a detail
+ * without them, and with nothing generating in it the poll that would
+ * have found them again would stop.
+ *
+ * Only cancels a fetch already in flight, not one that already landed: a
+ * poll, a window-focus refetch, or another render's "finished" invalidation
+ * can read the rows this POST just committed and have its reply land first,
+ * so appended ids already present in the cache are skipped rather than
+ * drawn a second time.
+ *
+ * Nothing else is invalidated. A generating row is counted nowhere —
+ * every count is ready renders only — so the counts change when a render
+ * finishes, which `useTopicDetail` watches for.
+ */
+export function useGenerateRenders(runId: string, topicId: string) {
+  const client = useQueryClient();
+  return useMutation<RenderRecord[], ApiError, GenerationRequest>({
+    mutationFn: (body) =>
+      apiSend<RenderRecord[]>(
+        "POST",
+        `/api/runs/${encodeURIComponent(runId)}/topics/${encodeURIComponent(topicId)}/renders`,
+        body,
+      ),
+    onSuccess: async (created) => {
+      const key = queryKeys.topicDetail(runId, topicId);
+      await client.cancelQueries({ queryKey: key, exact: true });
+      client.setQueryData<TopicDetail>(key, (held) => {
+        if (held === undefined) return held;
+        const ids = new Set(created.map((render) => render.id));
+        return {
+          ...held,
+          renders: [...held.renders.filter((row) => !ids.has(row.id)), ...created],
+        };
+      });
+    },
+  });
+}
+
+/** What a panel is handed: one generate mutation, pending state and all. */
+export type GenerateMutation = ReturnType<typeof useGenerateRenders>;
+
+/**
+ * Delete a render — the row, the PNG and the thumbnail, server-side.
+ *
+ * A 404 counts as done. The end state asked for is "no such render", which
+ * is what the server reports, and a render deleted in another tab must
+ * still leave this one rather than sit there with an error nobody can act
+ * on.
+ *
+ * The row leaves the cached detail at once: "the tile disappearing is the
+ * confirmation", per the handoff, and a round trip before it went would
+ * read as the click not having worked. Then everything that counts renders
+ * is refreshed, because each of them just lost one.
+ */
+export function useDeleteRender() {
+  const client = useQueryClient();
+  return useMutation<void, ApiError, RenderRecord>({
+    mutationFn: async (render) => {
+      try {
+        await apiDelete(`/api/renders/${encodeURIComponent(render.id)}`);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return;
+        throw error;
+      }
+    },
+    onSuccess: async (_, render) => {
+      const key = queryKeys.topicDetail(render.run_id, render.topic_id);
+      await client.cancelQueries({ queryKey: key, exact: true });
+      client.setQueryData<TopicDetail>(key, (held) =>
+        held === undefined
+          ? held
+          : { ...held, renders: held.renders.filter((row) => row.id !== render.id) },
+      );
+      invalidateRenderViews(client);
+      // Marked stale without a refetch: the full-size view is navigating
+      // away on success, and a fetch of a page nobody is looking at would
+      // be wasted. Without this, the app's 30s staleTime let pressing Back
+      // show the deleted render from cache.
+      void client.invalidateQueries({ queryKey: queryKeys.render(render.id), refetchType: "none" });
     },
   });
 }

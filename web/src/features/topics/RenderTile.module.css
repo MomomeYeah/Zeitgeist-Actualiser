@@ -1,0 +1,169 @@
+/* The handoff's 2e tile: radius 8, a 112px preview, and a footer of
+   `<template> · auto|manual` and a `✕`. */
+.tile,
+.generating,
+.failed,
+.deleting {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+/* Accent at 40% in the mockup; accent-border-strong (35%) is the nearest
+   token, and the spec adds none for the states it designs. */
+.generating {
+  border-color: var(--accent-border-strong);
+  background: var(--accent-wash);
+}
+
+.failed {
+  border: 1px dashed var(--contrast-border);
+  background: none;
+}
+
+.deleting {
+  opacity: 0.5;
+}
+
+.preview {
+  height: 112px;
+  background: var(--stripe);
+}
+
+.working,
+.failedPreview {
+  height: 112px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* White at 12% in the mockup; border-strong (14%) is the nearest token. */
+.track {
+  position: relative;
+  width: 64%;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  overflow: hidden;
+}
+
+.sweep {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 45%;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: sweep 1.4s ease-in-out infinite;
+}
+
+/* From fully off the left edge to fully off the right: the track is 100 /
+   45 = 2.22 segment-widths wide. */
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(222%);
+  }
+}
+
+/* Full width at reduced opacity rather than the animated 45%-wide segment
+   sitting still: a static partial bar would read as "45% done", exactly
+   the claim Decision 4 avoids by making progress indeterminate. */
+@media (prefers-reduced-motion: reduce) {
+  .sweep {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+}
+
+.doing {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--accent);
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.line {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1.4;
+  color: var(--text-35);
+}
+
+.cross {
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text-35);
+  cursor: pointer;
+  transition: color var(--transition);
+}
+
+.cross:hover,
+.cross:focus-visible {
+  color: var(--text);
+}
+
+.failedWord {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--contrast-light);
+}
+
+.failedLine {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1;
+  color: var(--text-35);
+}
+
+/* Two lines of the server's sentence at most; the rest is in the title. */
+.error {
+  flex: 1;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1.4;
+  color: var(--contrast-light);
+}
+
+.deleteError {
+  padding: 0 10px 8px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1.4;
+  color: var(--contrast-light);
+}

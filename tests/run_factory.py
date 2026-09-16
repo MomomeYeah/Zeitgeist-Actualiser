@@ -113,7 +113,7 @@ def make_render_record(
     *,
     run_id: str = "20260901T120000Z",
     topic_id: str = "airport-cat",
-    template_id: str = "drake",
+    template_id: str | None = "drake",
     caption_slots: dict[str, str] | None = None,
     origin: Origin | None = None,
     status: Literal["generating", "ready", "failed"] = "ready",

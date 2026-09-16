@@ -353,7 +353,7 @@ class RenderRecord(BaseModel):
     id: str                       # uuid4 hex, and the PNG's filename
     run_id: str
     topic_id: str
-    template_id: str
+    template_id: str | None  # None until the model has chosen
     caption_slots: dict[str, str]
     origin: Origin
     status: Literal["generating", "ready", "failed"]
@@ -363,7 +363,8 @@ class RenderRecord(BaseModel):
 
 Every `| None` above is a real state: a queued stage has not started, a
 running one has not finished, a failed one wrote no artifact, a ready render
-has no error.
+has no error, and a `generating` or a brief-failed `failed` render whose
+request left the choice to the model has no template yet.
 
 `rationale` lives on `AutoOrigin` rather than on `RenderRecord` because a
 hand-written render has no template choice to justify — the person made it.
@@ -677,8 +678,11 @@ cacheable and the in-flight poll does not drag topic data along with it.
 | 3 | `POST /api/runs/{id}/resume` | `{stage, template_ids?}` — reuses the run's existing checkpoints; `template_ids` narrows the library, which is the tuning loop |
 | 3 | `POST /api/runs/{id}/stop`, `POST /api/runs/{id}/abort` | Stop after this stage; abort now |
 | 3 | `GET /api/runs/{id}/events` | SSE: log lines and progress ticks |
-| 4 | `POST /api/runs/{id}/topics/{topic_id}/renders` | `{mode: "llm", template_id, count}` or `{mode: "manual", template_id, caption_slots}`; also what the below-the-cut `generate ↗` calls |
+| 4 | `POST /api/runs/{id}/topics/{topic_id}/renders` | `{mode: "llm", template_id?, count}` or `{mode: "manual", template_id, caption_slots}`; also what the below-the-cut `generate ↗` calls |
 | 4 | `DELETE /api/renders/{id}` | Deletes the `renders` row, the PNG and the thumbnail |
+
+An omitted or null `template_id` on an `llm` request lets the model choose
+from the whole library, rather than naming one.
 
 `GET /api/runs/{id}/topics` returns the **full** ordering, not just the kept
 topics, because the ranking list draws below-the-cut rows with ranks and scores
@@ -1069,6 +1073,51 @@ checkpoint name alone because it wrote no checkpoint — and the summary
 still reports what the stage counted (`interrupted · 8 of 12`) where it
 counted anything, because that much is still true.
 
+**The model can choose the template, so a render may not have one yet.**
+The handoff's Ask the LLM panel defaults to **Let the LLM choose**, with
+the template tiles as optional overrides, but phase 4 had made
+`LLMGeneration.template_id` required — the opposite of what that default
+asks for. `generate_brief` already picks from whichever library it is
+handed, so the request's `template_id` becomes `str | None = None`, with
+`None` meaning the whole library. `RenderRecord.template_id` follows it
+into `str | None`: `None` on a `generating` row whose request left the
+choice to the model, and on a `failed` row whose brief failed before the
+model chose one; a real id everywhere else. Both `None` cases are genuine
+states — a template genuinely has not been chosen — which is why this is
+an optional field rather than an empty string standing in for "not yet".
+
+**HOW MANY is `1` / `3`, default `3`.** The design draws `1 / 3 / 5`, but
+phase 4 capped a request at `MAX_RENDERS = 4` so one click cannot start an
+unbounded run of model calls against what may be a single local GPU. Asked,
+the user kept the cap: the `5` pill goes, `3` stays the default, and no
+backend change follows.
+
+**The generating bar sweeps rather than claiming a percentage.** The
+mockup draws the tile's bar 45% full, but nothing reports how far along a
+brief is, so a fixed number would be invented for the screen. The bar is
+an indeterminate sweep instead — a 45%-wide accent segment moving across
+the track — and it stops under `prefers-reduced-motion`.
+
+**Only a ready tile's `✕` asks before it acts.** The handoff draws the
+confirm on a ready tile and says a generating tile's `✕` "acts as cancel,"
+without saying what a failed tile's does. Cancel and dismiss are both
+`DELETE /api/renders/{id}`: on a generating row the server-side job keeps
+running and then updates a row that no longer exists, a no-op whose PNG is
+reclaimed with the run directory, so nothing is lost but the wait. A ready
+tile is a PNG someone may want, so only it asks; failed and generating
+tiles act at once, because neither loses more than a reason or a wait.
+
+**`writing brief…` is for model renders only.** The mockup shows that line
+on a tile labelled `drake · manual`, but a hand-written render has no
+brief to write — its captions arrive with the request. Model renders read
+`writing brief…`; hand-written ones read `rendering…`.
+
+**The `Track — not built yet` tile is not drawn.** The spec's "Deferred"
+section keeps music output out of scope, with no pipeline behind it, and a
+tile announcing an output type with no plan to build it is a promise the
+app cannot keep. Its absence is recorded here rather than against a task
+of its own.
+
 ## Testing
 
 Backend testing follows the discipline already in the repository: hermetic, no
@@ -1304,6 +1353,24 @@ Two are flagged back to the designer:
 rendered grid with its three tile states, the inline delete confirm, the
 below-the-cut `generate ↗` link, and the nothing-rendered-yet state. Ends with
 the design built.
+
+Walked once more against a real run — live Bluesky trends distilled by a
+local Ollama model, in an actual browser — after being built and reviewed
+against MSW fixtures. The walk found two defects fixtures structurally
+could not catch. Long template ids overflowed their tile on the LLM panel:
+the handoff's example ids were short, and three of the five shipped
+templates were not (`distracted_boyfri…`, `hide_the_pain_har…`), leaving
+the id — the only thing that tells two stripe tiles apart — unreadable.
+The id now wraps instead of ellipsising; this is CSS, which jsdom does not
+lay out, so it is fixed with no unit test, the same as the sweep
+animation. The LLM panel's hint also repeated a word when a topic's
+sentiment and register were the same (`suit outrage / outrage`, on a real
+topic whose dossier recorded both as "outrage"); `suits()` now
+de-duplicates the traits before joining them, fixed with a test that fails
+without the fix. Everything else the walk exercised — both panels, all
+three tile states, delete and cancel, the below-the-cut link, a refusal
+with no API key, and generating a meme while a run was in flight —
+worked as built.
 
 ### Landing the work
 

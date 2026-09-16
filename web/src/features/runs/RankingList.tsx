@@ -8,11 +8,19 @@ export function RankingList({
   ranking,
   topCount,
   everyBriefFailed,
+  generateSettled = false,
   distilling = false,
 }: {
   ranking: RankedTopic[];
   topCount: number;
   everyBriefFailed: boolean;
+  /**
+   * The generate stage has finished, one way or another, so a topic with
+   * no memes is a topic that is not getting any without being asked. While
+   * the stage is still running, a kept topic with none is simply waiting
+   * its turn, and offering to generate for it would race the pipeline.
+   */
+  generateSettled?: boolean;
   /**
    * Ingest or analyse is running and no rows exist yet.
    *
@@ -53,7 +61,9 @@ export function RankingList({
             <RankRow
               entry={entry}
               highlighted={index === 0 && entry.above_cut}
-              offerGenerate={everyBriefFailed || !entry.above_cut}
+              offerGenerate={
+                !entry.above_cut || (generateSettled && entry.render_count === 0)
+              }
             />
           </li>
         ))}

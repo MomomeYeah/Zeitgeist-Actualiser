@@ -1081,7 +1081,14 @@
             "default": "llm"
           },
           "template_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Template Id"
           },
           "count": {
@@ -1094,11 +1101,8 @@
         },
         "additionalProperties": false,
         "type": "object",
-        "required": [
-          "template_id"
-        ],
         "title": "LLMGeneration",
-        "description": "Ask the model to write `count` briefs against one named template.\n\nThe template is named rather than chosen, because the panel already\nmade that choice. The model writes captions for it and explains them."
+        "description": "Ask the model to write `count` briefs.\n\n`template_id` is a template the panel picked as an override. None \u2014 the\npanel's default, \"Let the LLM choose\" \u2014 offers the model the whole\nlibrary and lets it pick per brief, exactly as the generate stage does.\nThe below-the-cut `generate` link posts None too: a ranking row has no\nroom to ask which template."
       },
       "LogLine": {
         "properties": {
@@ -1301,7 +1305,14 @@
             "title": "Topic Id"
           },
           "template_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Template Id"
           },
           "caption_slots": {
@@ -1369,7 +1380,7 @@
           "created_at"
         ],
         "title": "RenderRecord",
-        "description": "One rendered meme. The database is authoritative for whether it exists;\nthe PNG and its thumbnail live at `output/<run_id>/renders/<id>.png`.\n\nWhile `status` is `\"generating\"`, `caption_slots` and `origin`'s\n`rationale` (on `AutoOrigin`) are not yet written \u2014 they hold\nplaceholder values until the job finishes drawing this render \u2014 and\nmust not be read as its real captions or the model's real reasoning."
+        "description": "One rendered meme. The database is authoritative for whether it exists;\nthe PNG and its thumbnail live at `output/<run_id>/renders/<id>.png`.\n\nWhile `status` is `\"generating\"`, `caption_slots` and `origin`'s\n`rationale` (on `AutoOrigin`) are not yet written \u2014 they hold\nplaceholder values until the job finishes drawing this render \u2014 and\nmust not be read as its real captions or the model's real reasoning.\n\n`template_id` is None where no template has been chosen: a `generating`\nrow whose request left the choice to the model, and a `failed` row\nwhose brief failed before the model chose. That is a real state rather\nthan a placeholder \u2014 there is no template to name \u2014 so it is `| None`\nrather than an empty string standing in for one."
       },
       "ReplyOut": {
         "properties": {

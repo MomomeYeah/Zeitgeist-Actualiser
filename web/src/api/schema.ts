@@ -435,10 +435,13 @@ export interface components {
         };
         /**
          * LLMGeneration
-         * @description Ask the model to write `count` briefs against one named template.
+         * @description Ask the model to write `count` briefs.
          *
-         *     The template is named rather than chosen, because the panel already
-         *     made that choice. The model writes captions for it and explains them.
+         *     `template_id` is a template the panel picked as an override. None — the
+         *     panel's default, "Let the LLM choose" — offers the model the whole
+         *     library and lets it pick per brief, exactly as the generate stage does.
+         *     The below-the-cut `generate` link posts None too: a ranking row has no
+         *     room to ask which template.
          */
         LLMGeneration: {
             /**
@@ -447,7 +450,7 @@ export interface components {
              */
             mode: "llm";
             /** Template Id */
-            template_id: string;
+            template_id?: string | null;
             /**
              * Count
              * @default 1
@@ -587,6 +590,12 @@ export interface components {
          *     `rationale` (on `AutoOrigin`) are not yet written — they hold
          *     placeholder values until the job finishes drawing this render — and
          *     must not be read as its real captions or the model's real reasoning.
+         *
+         *     `template_id` is None where no template has been chosen: a `generating`
+         *     row whose request left the choice to the model, and a `failed` row
+         *     whose brief failed before the model chose. That is a real state rather
+         *     than a placeholder — there is no template to name — so it is `| None`
+         *     rather than an empty string standing in for one.
          */
         RenderRecord: {
             /** Id */
@@ -596,7 +605,7 @@ export interface components {
             /** Topic Id */
             topic_id: string;
             /** Template Id */
-            template_id: string;
+            template_id: string | null;
             /** Caption Slots */
             caption_slots: {
                 [key: string]: string;

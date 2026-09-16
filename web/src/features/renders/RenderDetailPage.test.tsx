@@ -1,6 +1,8 @@
 import { fireEvent, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
+import { Route, Routes, useLocation } from "react-router-dom";
 
 import type { RenderRecord } from "@/api/types";
 import { RenderDetailPage } from "@/features/renders/RenderDetailPage";
@@ -26,6 +28,12 @@ function renderPage() {
     route: `/runs/${RUN_ID}/renders/${RENDER_ID}`,
     path: "/runs/:runId/renders/:renderId",
   });
+}
+
+/** Where a navigation ended up, for the tests that leave this page. */
+function Landed() {
+  const { pathname } = useLocation();
+  return <p>{`landed on ${pathname}`}</p>;
 }
 
 describe("RenderDetailPage", () => {
@@ -64,6 +72,27 @@ describe("RenderDetailPage", () => {
     const chips = await screen.findByTestId("chips");
     expect(within(chips).getByText("drake")).toBeInTheDocument();
     expect(within(chips).getByText("auto")).toBeInTheDocument();
+  });
+
+  it("says no template was chosen for a render whose brief failed before choosing", async () => {
+    // The model is asked to pick, fails before it does, and the row names
+    // no template. Every place the page names the template still needs a
+    // word, and "null" is not one: the chip, the breadcrumb's last entry,
+    // the image's alt text and the download's file name. Each is checked,
+    // because each is its own use site — the type checker is satisfied by
+    // a template literal that prints "null".
+    serve(makeRenderRecord({ templateId: null, status: "failed", error: "the model is down" }));
+
+    renderPage();
+
+    const chips = await screen.findByTestId("chips");
+    expect(within(chips).getByText("no template chosen")).toBeInTheDocument();
+    const crumb = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(within(crumb).getByText("no template chosen")).toBeInTheDocument();
+    expect(screen.getByAltText("no template chosen meme")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Download PNG" }).getAttribute("download"),
+    ).not.toMatch(/null/);
   });
 
   it("lays out one block per caption slot, with the slot's real name", async () => {
@@ -193,5 +222,71 @@ describe("RenderDetailPage", () => {
     renderPage();
 
     expect(await screen.findByText("No such render.")).toBeInTheDocument();
+  });
+
+  it("asks before deleting, then returns to the topic the render came from", async () => {
+    // A topic id no route here carries, so the page must navigate by the
+    // record's own run and topic, in that order — a landing route that
+    // matched any two segments would pass for either swapped.
+    serve(makeRenderRecord({ id: RENDER_ID, runId: RUN_ID, topicId: "airport-cat" }));
+    let deleted = "";
+    server.use(
+      http.delete("/api/renders/:renderId", ({ params }) => {
+        deleted = String(params.renderId);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(
+      <Routes>
+        <Route path="/runs/:runId/renders/:renderId" element={<RenderDetailPage />} />
+        <Route path="*" element={<Landed />} />
+      </Routes>,
+      { route: `/runs/${RUN_ID}/renders/${RENDER_ID}` },
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Delete" }));
+    expect(screen.getByText("Delete this render?")).toBeInTheDocument();
+    expect(deleted).toBe("");
+
+    await user.click(screen.getByRole("button", { name: "yes" }));
+
+    expect(
+      await screen.findByText(`landed on /topics/${RUN_ID}/airport-cat`),
+    ).toBeInTheDocument();
+    expect(deleted).toBe(RENDER_ID);
+  });
+
+  it("stays, and says why, when the server will not delete", async () => {
+    serve();
+    server.use(
+      http.delete("/api/renders/:renderId", () =>
+        HttpResponse.json({ detail: "Permission denied: renders/r1.png" }, { status: 500 }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "yes" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Permission denied: renders/r1.png",
+    );
+  });
+
+  it("still offers Delete when the image is missing", async () => {
+    // A render whose PNG is gone is the likeliest one to want deleting.
+    // Download goes with the image — phase 5's own test already says so —
+    // and Delete, which now shares its footer, must not go with it.
+    serve();
+    renderPage();
+
+    fireEvent.error(await screen.findByRole("img"));
+
+    expect(
+      await screen.findByText(`Render ${RENDER_ID} has no image on disk`),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
   });
 });

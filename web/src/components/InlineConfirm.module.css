@@ -91,3 +91,80 @@
   font-size: 10px;
   color: var(--contrast-light);
 }
+
+/* The render tile's footer, per the handoff's 2e. At rest: the template
+   line and a `✕` in text-35 that goes to text on hover. Asking: the whole
+   footer on contrast at 10%, the question in contrast-light, `yes` in
+   contrast-light at 700 and `no` in text-40 at 600, all mono 9.5. */
+.tileRest,
+.tileAsking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.tileAsking {
+  background: var(--contrast-confirm);
+  transition: background var(--transition);
+}
+
+.tileTrigger {
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text-35);
+  cursor: pointer;
+  transition: color var(--transition);
+}
+
+.tileTrigger:hover:not(:disabled),
+.tileTrigger:focus-visible {
+  color: var(--text);
+}
+
+.tileTrigger:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.tileQuestion {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--contrast-light);
+}
+
+.tileYes,
+.tileNo {
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tileYes {
+  font-weight: 700;
+  color: var(--contrast-light);
+}
+
+.tileNo {
+  font-weight: 600;
+  color: var(--text-40);
+}
+
+.tileYes:hover,
+.tileYes:focus-visible,
+.tileNo:hover,
+.tileNo:focus-visible {
+  color: var(--text);
+}

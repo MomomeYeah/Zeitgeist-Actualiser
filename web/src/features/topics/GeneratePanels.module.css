@@ -1,0 +1,9 @@
+/* 1fr 340px, 14px gap, the two panels the same height. The page's own
+   14px gap plus this 10px is the mockup's 24px above the pair. */
+.panels {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: var(--gap-section);
+  align-items: stretch;
+  margin-top: 10px;
+}

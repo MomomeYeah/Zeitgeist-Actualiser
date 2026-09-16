@@ -1,10 +1,12 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
 import type { TopicDetail } from "@/api/types";
 import { TopicDetailPage } from "@/features/topics/TopicDetailPage";
 import {
+  makeConfigOptions,
   makeDossier,
   makeRenderRecord,
   makeRunDetail,
@@ -20,6 +22,7 @@ function serve(detail: TopicDetail = makeTopicDetail()) {
   server.use(
     http.get("/api/runs/:runId/topics/:topicId", () => HttpResponse.json(detail)),
     http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+    http.get("/api/config/options", () => HttpResponse.json(makeConfigOptions())),
   );
 }
 
@@ -60,6 +63,25 @@ describe("TopicDetailPage", () => {
     // `first_seen_run_id` is null when the slug matched nothing earlier.
     // "first seen null" would be a bug on screen.
     serve(makeTopicDetail({ firstSeenRunId: null, runCount: 1 }));
+
+    renderPage();
+
+    const crumb = await screen.findByRole("navigation", { name: "Breadcrumb" });
+    expect(within(crumb).getByText("topic-1 · new this run")).toBeInTheDocument();
+  });
+
+  it("says a topic is new when the run it was first seen in is this one", async () => {
+    // A topic only this run has carried is first seen here, and the store
+    // answers with this run's own id rather than null. "First seen" then
+    // points at the run you are already looking at, which reads as a
+    // second, earlier sighting that does not exist.
+    serve(
+      makeTopicDetail({
+        runId: RUN_ID,
+        firstSeenRunId: RUN_ID,
+        runCount: 1,
+      }),
+    );
 
     renderPage();
 
@@ -198,37 +220,66 @@ describe("TopicDetailPage", () => {
     expect(await screen.findByText("2 from …829T090000Z")).toBeInTheDocument();
   });
 
-  it("shows only the renders that have an image behind them", async () => {
-    // A `generating` row has no PNG yet and a `failed` one never will.
-    // Phase 7 draws both states; this phase draws neither, so a tile with
-    // nothing behind it must not appear.
-    serve(
-      makeTopicDetail({
-        renders: [
-          makeRenderRecord({ id: "r1", status: "ready" }),
-          makeRenderRecord({ id: "r2", status: "generating" }),
-          makeRenderRecord({ id: "r3", status: "failed", error: "caption too long" }),
-        ],
+  it("takes a deleted render off the page, and leaves the others", async () => {
+    // "The tile disappearing is the confirmation", per the handoff. The
+    // server's list shrinks with the deletion, so the refetch that follows
+    // agrees with what the page already drew.
+    let renders = [
+      makeRenderRecord({ id: "r1", templateId: "drake" }),
+      makeRenderRecord({ id: "r2", templateId: "two_buttons" }),
+    ];
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(makeTopicDetail({ renders })),
+      ),
+      http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+      http.get("/api/config/options", () => HttpResponse.json(makeConfigOptions())),
+      http.delete("/api/renders/:renderId", ({ params }) => {
+        renders = renders.filter((render) => render.id !== params.renderId);
+        return new HttpResponse(null, { status: 204 });
       }),
     );
-
+    const user = userEvent.setup();
     renderPage();
 
-    expect(await screen.findByText("1 from …829T090000Z")).toBeInTheDocument();
-    expect(screen.getAllByRole("img")).toHaveLength(1);
+    const tile = (await screen.findByAltText("drake meme")).closest("li");
+    if (!(tile instanceof HTMLElement)) throw new Error("drake's tile is not a list item");
+    await user.click(within(tile).getByRole("button", { name: "Delete render" }));
+    await user.click(within(tile).getByRole("button", { name: "yes" }));
+
+    await waitFor(() => expect(screen.queryByAltText("drake meme")).not.toBeInTheDocument());
+    expect(screen.getByAltText("two_buttons meme")).toBeInTheDocument();
   });
 
-  it("draws no render section at all when nothing has rendered yet", async () => {
-    // Not the same as hiding the tiles: an empty section would show the
-    // label and a "0 from …" hint under it, which is a worse answer than
-    // saying nothing. Phase 7 replaces this with the designed dashed row.
-    serve(makeTopicDetail({ renders: [] }));
-
+  it("puts focus back on the grid when the tile holding it is deleted", async () => {
+    // The `✕` that was focused unmounts with its tile, and focus would
+    // otherwise fall to the top of the document — a keyboard user would
+    // have to tab back through the whole page to reach the next tile.
+    let renders = [makeRenderRecord({ id: "r1", templateId: "drake" })];
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(makeTopicDetail({ renders })),
+      ),
+      http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+      http.get("/api/config/options", () => HttpResponse.json(makeConfigOptions())),
+      http.delete("/api/renders/:renderId", ({ params }) => {
+        renders = renders.filter((render) => render.id !== params.renderId);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
     renderPage();
 
-    await screen.findByRole("heading", { name: "Airport cat" });
-    expect(screen.queryByText("Rendered from this topic")).not.toBeInTheDocument();
-    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Delete render" }));
+    await user.click(screen.getByRole("button", { name: "yes" }));
+
+    await waitFor(() =>
+      expect(screen.queryByAltText("drake meme")).not.toBeInTheDocument(),
+    );
+    const anchor = screen
+      .getByText("Rendered from this topic")
+      .closest('div[tabindex="-1"]');
+    expect(anchor).toHaveFocus();
   });
 
   it("says which topic is missing rather than showing an empty page", async () => {
@@ -237,6 +288,7 @@ describe("TopicDetailPage", () => {
         HttpResponse.json({ detail: "No such topic" }, { status: 404 }),
       ),
       http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+      http.get("/api/config/options", () => HttpResponse.json(makeConfigOptions())),
     );
 
     renderPage();

@@ -109,6 +109,9 @@
 }
 
 .footer {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-tight);
   margin-top: 16px;
 }
 
@@ -122,4 +125,12 @@
   font-size: 12px;
   font-weight: 700;
   line-height: 1;
+}
+
+.deleteError {
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--contrast-light);
 }

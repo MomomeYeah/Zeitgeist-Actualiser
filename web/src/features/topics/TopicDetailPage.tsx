@@ -1,10 +1,11 @@
 import { useParams } from "react-router-dom";
 
-import { useRun, useTopicDetail } from "@/api/queries";
+import { useConfigOptions, useGenerateRenders, useRun, useTopicDetail } from "@/api/queries";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { Chip } from "@/components/Chip";
 import { QueryBoundary } from "@/components/QueryBoundary";
 import { DossierCards } from "@/features/topics/DossierCards";
+import { GeneratePanels } from "@/features/topics/GeneratePanels";
 import { PhraseCard } from "@/features/topics/PhraseCard";
 import { RenderGrid } from "@/features/topics/RenderGrid";
 import { ReplyList } from "@/features/topics/ReplyList";
@@ -18,13 +19,33 @@ export function TopicDetailPage() {
   // Only for `phrase_min_authors`: TopicDetail carries no config, and the
   // phrases footer names the run's own frozen threshold.
   const run = useRun(runId);
+  // The template library the panel offers: the loaded manifests, never the
+  // four templates the handoff happened to draw.
+  const options = useConfigOptions();
+  // Owned here rather than by the panel: the grid draws a placeholder for
+  // every meme a request in flight asked for, and the page is what the
+  // panel and the grid share. See the plan's "Decisions", 8.
+  // One mutation per panel, so one panel's error or pending state is never
+  // the other's.
+  const llm = useGenerateRenders(runId ?? "", topicId ?? "");
+  const manual = useGenerateRenders(runId ?? "", topicId ?? "");
+  const pending = [llm, manual].flatMap((generation) =>
+    generation.isPending && generation.variables !== undefined
+      ? [generation.variables]
+      : [],
+  );
 
   return (
     <QueryBoundary query={detail} missing="No such topic in this run.">
       {(data) => {
         const { topic, dossier, recurrence } = data;
+        // `first_seen_run_id` is null when the slug matched nothing earlier,
+        // and this run's own id when only this run has carried the topic.
+        // Both mean the same thing to a reader, and naming the run they are
+        // already on reads as an earlier sighting that never happened.
         const seen =
-          recurrence.first_seen_run_id === null
+          recurrence.first_seen_run_id === null ||
+          recurrence.first_seen_run_id === topic.run_id
             ? "new this run"
             : `first seen ${recurrence.first_seen_run_id}`;
 
@@ -77,7 +98,18 @@ export function TopicDetailPage() {
               />
             </div>
 
-            <RenderGrid renders={data.renders} runId={topic.run_id} />
+            <QueryBoundary query={options} missing="No template library was found.">
+              {(choices) => (
+                <GeneratePanels
+                  topic={topic}
+                  templates={choices.templates}
+                  llm={llm}
+                  manual={manual}
+                />
+              )}
+            </QueryBoundary>
+
+            <RenderGrid renders={data.renders} runId={topic.run_id} pending={pending} />
           </div>
         );
       }}

@@ -218,6 +218,12 @@ class RenderRecord(BaseModel):
     `rationale` (on `AutoOrigin`) are not yet written — they hold
     placeholder values until the job finishes drawing this render — and
     must not be read as its real captions or the model's real reasoning.
+
+    `template_id` is None where no template has been chosen: a `generating`
+    row whose request left the choice to the model, and a `failed` row
+    whose brief failed before the model chose. That is a real state rather
+    than a placeholder — there is no template to name — so it is `| None`
+    rather than an empty string standing in for one.
     """
 
     model_config = STRICT
@@ -225,7 +231,7 @@ class RenderRecord(BaseModel):
     id: str
     run_id: str
     topic_id: str
-    template_id: str
+    template_id: str | None
     caption_slots: dict[str, str]
     origin: Origin
     status: Literal["generating", "ready", "failed"]
