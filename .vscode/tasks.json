@@ -10,7 +10,6 @@
       "isBackground": true,
       "problemMatcher": [],
       "presentation": {
-        "group": "zeitgeist",
         "panel": "dedicated",
         "reveal": "always",
         "showReuseMessage": false,
@@ -26,7 +25,6 @@
       "isBackground": true,
       "problemMatcher": [],
       "presentation": {
-        "group": "zeitgeist",
         "panel": "dedicated",
         "reveal": "always",
         "showReuseMessage": false,
