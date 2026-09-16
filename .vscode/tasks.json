@@ -1,0 +1,45 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Zeitgeist: backend (API)",
+      "detail": "uv run zeitgeist — serves the API on 127.0.0.1:8000",
+      "type": "shell",
+      "command": "uv run zeitgeist",
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "group": "zeitgeist",
+        "panel": "dedicated",
+        "reveal": "always",
+        "showReuseMessage": false,
+        "clear": true
+      }
+    },
+    {
+      "label": "Zeitgeist: frontend (Vite)",
+      "detail": "npm --prefix web run dev — serves the SPA and proxies /api to 8000",
+      "type": "shell",
+      "command": "npm --prefix web run dev",
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "group": "zeitgeist",
+        "panel": "dedicated",
+        "reveal": "always",
+        "showReuseMessage": false,
+        "clear": true
+      }
+    },
+    {
+      "label": "Zeitgeist: dev",
+      "detail": "Starts the backend and the frontend together, one terminal each",
+      "dependsOn": ["Zeitgeist: backend (API)", "Zeitgeist: frontend (Vite)"],
+      "dependsOrder": "parallel",
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true }
+    }
+  ]
+}
