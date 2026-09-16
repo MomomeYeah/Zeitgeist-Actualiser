@@ -16,8 +16,12 @@
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "baseUrl": ".",
-    "paths": { "@/*": ["src/*"] }
+    // Relative ("./src/*"), because `paths` entries resolve against
+    // `baseUrl` and there is none: TypeScript deprecated `baseUrl` in
+    // favour of resolving `paths` against the tsconfig's own directory,
+    // which a leading "./" is what asks for. `vite.config.ts` aliases "@"
+    // to the same directory for the bundler, which does not read this file.
+    "paths": { "@/*": ["./src/*"] }
   },
   "include": ["src", "vite.config.ts", "eslint.config.js"],
   "references": [{ "path": "./tsconfig.node.json" }]

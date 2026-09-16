@@ -7,7 +7,13 @@ import { formatScore } from "@/format";
 import styles from "./RecentTable.module.css";
 
 /**
- * Saturating and cooling, as rows.
+ * Everything not trending now, as rows: saturating, cooling and stale.
+ *
+ * Stale belongs here because the unfiltered index asks for every trend
+ * status, so excluding it would make this list disagree with the stale
+ * filter chip's own count. The `trend_status` column is what tells them
+ * apart — which is why the heading above can name all three without the
+ * reader having to guess which row is which.
  *
  * 1px gaps over a `divider` background, so the hairlines read as borders
  * without every row carrying one — which is what the handoff specifies and

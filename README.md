@@ -85,9 +85,10 @@ label and a summary.
 
 ## Running
 
-```bash
-uv run python scripts/run_pipeline.py
-```
+Runs are started from the web UI, or from the endpoint behind it — see
+[The web UI](#the-web-ui), below. There is no command that runs the
+pipeline: a run has a queue, a live log and a stop button, and none of
+those exist outside the server.
 
 The pipeline runs four stages, each checkpointed before the next begins:
 
@@ -104,8 +105,9 @@ The pipeline runs four stages, each checkpointed before the next begins:
 Stage checkpoints are written to SQLite at `data/zeitgeist.db`; rendered
 memes land in `output/<run-id>/renders/`, one PNG and one 96px thumbnail
 per meme. A `data/zeitgeist.db` written before phase 7 is refused at startup
-(schema version 4, where this build expects 5); there are no migrations, so
-the fix is to delete it, which loses cross-run trend history and nothing else.
+(schema version 5 or below, where this build expects 6); there are no
+migrations, so the fix is to delete it, which loses cross-run trend history
+and nothing else.
 Read a checkpoint back with:
 
 ```bash
@@ -114,7 +116,6 @@ sqlite3 data/zeitgeist.db "select payload from checkpoints where run_id='...' an
 
 Resuming a run from a later stage — the loop for tuning meme templates and
 the caption prompt without re-scraping or re-paying for distillation — is
-not available from this harness. It is done through the API instead:
 `POST /api/runs/{id}/resume` (below), or **Resume from &lt;stage&gt;** on a
 finished run's page in the browser.
 
@@ -206,9 +207,8 @@ schema, `http://127.0.0.1:8000/openapi.json` for the raw one.
 Phase 2 served reads only. Phase 3 adds starting, watching and stopping a
 run over HTTP:
 
-- **Runs are now startable over HTTP.** `POST /api/runs` queues one.
-  `scripts/run_pipeline.py`, above, still works and is still the harness for
-  a scripted run — the endpoint is an alternative way in, not a replacement.
+- **Runs are startable over HTTP.** `POST /api/runs` queues one, and is the
+  only way in: there is no command-line harness beside it.
 - **One run at a time.** A second `POST` queues behind the first; the
   response's `position` says how far back (`0` means executing now).
   `GET /api/runs/active` reports the executing run and the queue behind it.
@@ -300,8 +300,8 @@ anywhere in the project. Open the URL Vite prints. Both must be running.
 Seven screens: Topics (`/`), Runs (`/runs`), run detail (`/runs/<id>`),
 topic detail (`/topics/<run>/<topic>`), the full-size meme view
 (`/runs/<run>/renders/<id>`), New run (`/runs/new`) and Settings
-(`/settings`). `scripts/run_pipeline.py` and `POST /api/runs` still work,
-and a run started either way shows up in the browser like any other.
+(`/settings`). `POST /api/runs` still works, and a run started that way
+shows up in the browser like any other.
 
 ### Starting and watching a run
 
@@ -354,10 +354,12 @@ still picks the provider and model per run.)
 Each field says where its value came from: `SET HERE` (saved on this
 screen), `FROM ENV` (a variable in the shell that started `zeitgeist`),
 `FROM .env` or `DEFAULT`. The shell outranks this screen, and this screen
-outranks `.env`: saving a field the shell sets writes the row but changes
-nothing until that variable is gone, which is what `FROM ENV` is warning
-you about. A value `Settings` would reject — `meme_potential_weight` above 1,
-say — is refused with the server's own sentence and nothing is written.
+outranks `.env`. A `FROM ENV` field is therefore read-only and says which
+variable holds it: saving one would write a row that changed nothing anybody
+could see, because the value would snap straight back from the shell. Unset
+the variable and restart to edit it here. A value `Settings` would reject —
+`meme_potential_weight` above 1, say — is refused with the server's own
+sentence and nothing is written.
 **Reset to .env** deletes every saved row, so each field falls back to
 `.env` or its default rather than pinning today's value.
 

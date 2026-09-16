@@ -36,6 +36,14 @@ export function TopicsPage() {
         const trending = ordered.filter(
           (entry) => entry.topic.trend_status === "trending",
         );
+        // Everything the window holds that is not trending now, which is
+        // three statuses rather than the two the handoff's heading named.
+        // `status=undefined` asks the endpoint for every trend status, so
+        // `stale` topics land here too — the heading is broadened to match
+        // rather than the list narrowed, because the stale filter chip
+        // means stale topics are meant to be reachable, the chip's count
+        // has to agree with what the default view shows, and every row
+        // already prints its own status.
         const recent = ordered.filter(
           (entry) => entry.topic.trend_status !== "trending",
         );
@@ -132,7 +140,9 @@ export function TopicsPage() {
 
                     {recent.length > 0 && (
                       <section className={styles.block}>
-                        <SectionLabel>Recently trending — saturating &amp; cooling</SectionLabel>
+                        <SectionLabel>
+                          Recently trending &mdash; saturating, cooling &amp; stale
+                        </SectionLabel>
                         <RecentTable topics={recent} />
                       </section>
                     )}

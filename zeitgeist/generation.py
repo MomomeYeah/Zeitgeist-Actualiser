@@ -214,6 +214,18 @@ class UnknownTopic(LookupError):
     """
 
 
+class GenerationUnavailable(RuntimeError):
+    """The service is shut down, or was shut down mid-`submit`.
+
+    Its own type rather than the bare `RuntimeError` both paths used to
+    raise, so the endpoint can answer 503 without also catching a
+    `RuntimeError` that means something else entirely. A `RuntimeError`
+    subclass because that is what `ThreadPoolExecutor.submit` raises when
+    it refuses, and the one path that re-raises it is re-raising exactly
+    that.
+    """
+
+
 class GenerationRefused(ValueError):
     """The request named a template that is not in the library, or captions
     that do not fit the template's slots.
@@ -270,7 +282,7 @@ class GenerationService:
         """
         with self._lock:
             if self._closed:
-                raise RuntimeError("GenerationService is shut down")
+                raise GenerationUnavailable("GenerationService is shut down")
             if self._pool is None:
                 self._pool = ThreadPoolExecutor(
                     max_workers=1, thread_name_prefix="zeitgeist-generate"
@@ -389,10 +401,12 @@ class GenerationService:
             # fresh `Store`: `submit` runs on the request thread, and
             # `self._store` is that thread's connection — the same one
             # `_seed` just wrote the rows through. Re-raising is still
-            # correct: a 202 for work that will never run would be a lie,
-            # and a 500 during a shutdown race is the honest answer.
+            # correct — a 202 for work that will never run would be a lie —
+            # but as `GenerationUnavailable`, so this comes out of the
+            # endpoint as the 503 it is rather than a 500 that reads as a
+            # broken server.
             self._fail_unfinished(self._store, job, exc)
-            raise
+            raise GenerationUnavailable(str(exc)) from exc
         return records
 
     def _seed(

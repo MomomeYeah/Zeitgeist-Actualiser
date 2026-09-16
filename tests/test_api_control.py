@@ -2,7 +2,13 @@ import json
 import logging
 import threading
 
-from tests.api_factory import GatedExecute, LoggingGate, SeededRun, seeded_client
+from tests.api_factory import (
+    GatedExecute,
+    LoggingGate,
+    SeededRun,
+    app_of,
+    seeded_client,
+)
 from tests.run_factory import make_evidence, make_run_config
 from zeitgeist.config import Settings
 from zeitgeist.records import LogLine, Stage
@@ -123,7 +129,7 @@ def test_overrides_reach_the_run(tmp_path):
     client = seeded_client(tmp_path, execute=execute)
 
     client.post("/api/runs", json={"overrides": {"topic_count": "9"}})
-    client.app.state.runner.shutdown(timeout=10)
+    app_of(client).state.runner.shutdown(timeout=10)
 
     assert seen == [9]
 
@@ -142,7 +148,7 @@ def test_a_posted_template_selection_reaches_the_run(tmp_path):
     client = seeded_client(tmp_path, execute=execute)
 
     client.post("/api/runs", json={"template_ids": ["drake"]})
-    client.app.state.runner.shutdown(timeout=10)
+    app_of(client).state.runner.shutdown(timeout=10)
 
     assert seen == [["drake"]]
 
@@ -205,7 +211,7 @@ def test_resuming_reuses_the_runs_existing_id(tmp_path):
     response = client.post(
         "/api/runs/20260901T120000Z/resume", json={"stage": "evaluate"}
     )
-    client.app.state.runner.shutdown(timeout=10)
+    app_of(client).state.runner.shutdown(timeout=10)
 
     assert response.status_code == 202
     assert seen == ["20260901T120000Z"]
@@ -240,7 +246,7 @@ def test_resuming_without_a_stage_uses_the_computed_one(tmp_path):
     )
 
     client.post("/api/runs/20260901T120000Z/resume", json={})
-    client.app.state.runner.shutdown(timeout=10)
+    app_of(client).state.runner.shutdown(timeout=10)
 
     assert seen == [Stage.EVALUATE]
 
@@ -276,7 +282,7 @@ def test_resuming_carries_the_narrowed_template_library(tmp_path):
         "/api/runs/20260901T120000Z/resume",
         json={"stage": "evaluate", "template_ids": ["drake"]},
     )
-    client.app.state.runner.shutdown(timeout=10)
+    app_of(client).state.runner.shutdown(timeout=10)
 
     assert seen == [["drake"]]
 
@@ -320,7 +326,7 @@ def test_resuming_replays_the_runs_frozen_config(tmp_path):
     response = client.post(
         "/api/runs/20260901T120000Z/resume", json={"stage": "evaluate"}
     )
-    client.app.state.runner.shutdown(timeout=10)
+    app_of(client).state.runner.shutdown(timeout=10)
 
     assert response.status_code == 202
     assert len(seen) == 1
@@ -356,7 +362,7 @@ def test_resuming_with_no_template_ids_keeps_the_frozen_list(tmp_path):
     )
 
     client.post("/api/runs/20260901T120000Z/resume", json={"stage": "evaluate"})
-    client.app.state.runner.shutdown(timeout=10)
+    app_of(client).state.runner.shutdown(timeout=10)
 
     assert seen == [["drake"]]
 
@@ -489,7 +495,7 @@ def test_resuming_at_a_stage_the_run_can_honour_is_accepted(tmp_path):
     response = client.post(
         "/api/runs/20260901T120000Z/resume", json={"stage": "evaluate"}
     )
-    client.app.state.runner.shutdown(timeout=10)
+    app_of(client).state.runner.shutdown(timeout=10)
 
     assert response.status_code == 202
     assert seen == ["20260901T120000Z"]
@@ -537,7 +543,7 @@ def test_resuming_a_run_twice_is_a_409_the_second_time(tmp_path):
         assert client.get("/api/runs/active").json()["current"] == ("20260901T120000Z")
     finally:
         gate.release.set()
-        client.app.state.runner.shutdown(timeout=10)
+        app_of(client).state.runner.shutdown(timeout=10)
 
     assert client.get("/api/runs/active").json()["current"] is None
 
@@ -567,16 +573,16 @@ def test_stop_trips_stopping_and_abort_trips_aborted(tmp_path):
     assert entered.wait(timeout=5)
     assert client.post(f"/api/runs/{stopped['run_id']}/stop").status_code == 202
     released.set()
-    client.app.state.runner.shutdown(timeout=10)
+    app_of(client).state.runner.shutdown(timeout=10)
 
     entered.clear()
     released.clear()
-    client.app.state.runner.start()
+    app_of(client).state.runner.start()
     aborted = client.post("/api/runs", json={}).json()
     assert entered.wait(timeout=5)
     assert client.post(f"/api/runs/{aborted['run_id']}/abort").status_code == 202
     released.set()
-    client.app.state.runner.shutdown(timeout=10)
+    app_of(client).state.runner.shutdown(timeout=10)
 
     assert flags[stopped["run_id"]] == (True, False)
     assert flags[aborted["run_id"]] == (True, True)
@@ -606,7 +612,7 @@ def test_stop_and_abort_report_a_declared_response_shape(tmp_path):
 
     response = client.post(f"/api/runs/{body['run_id']}/stop")
     released.set()
-    client.app.state.runner.shutdown(timeout=10)
+    app_of(client).state.runner.shutdown(timeout=10)
 
     assert response.json() == {"run_id": body["run_id"], "requested": "stop"}
 
@@ -872,3 +878,57 @@ def test_a_queued_runs_stream_waits_for_it_to_start_then_closes(tmp_path):
 
     assert saw_queued_tick
     assert saw_second_runs_line
+
+
+def test_starting_a_run_on_a_dead_worker_is_a_503(tmp_path):
+    """A worker that died in its own setup cannot be restarted, so every
+    later `POST /api/runs` is a request the server can never honour. 202 is
+    the wrong answer twice over: it promises a run that will not happen,
+    and it leaves the id registered, which keeps the run's event stream
+    open on "queued, not started" for as long as the tab is.
+
+    503 rather than 400 or 409, because nothing about the request is wrong
+    — the same request would have worked a minute earlier, and will work
+    again once the server is restarted.
+
+    `_collapse` is called directly, which is the real transition and not a
+    stand-in for one: `test_runner.py` owns the cause (a worker store that
+    will not open) and this owns the status the endpoint answers with. The
+    same split `test_the_generation_pool_does_not_outlive_the_app` uses
+    for `generator.shutdown()`.
+    """
+    gate = GatedExecute()
+    gate.release.set()
+    client = seeded_client(tmp_path, execute=gate)
+    app_of(client).state.runner._collapse(RuntimeError("the worker's store died"))
+
+    response = client.post("/api/runs", json={})
+
+    assert response.status_code == 503
+    assert "worker" in response.json()["detail"]
+
+
+def test_resuming_a_run_on_a_dead_worker_is_a_503(tmp_path):
+    """Resume goes through the same `enqueue`, and its own 409s all mean
+    something about *this run* — nothing to resume from, or already
+    running. A dead worker is neither, and answering 409 would send the
+    user hunting for a state their run is not in.
+    """
+    gate = GatedExecute()
+    gate.release.set()
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id="20260901T120000Z",
+                status="aborted",
+                evidence=[make_evidence(["p1"])],
+            )
+        ],
+        execute=gate,
+    )
+    app_of(client).state.runner._collapse(RuntimeError("the worker's store died"))
+
+    response = client.post("/api/runs/20260901T120000Z/resume", json={})
+
+    assert response.status_code == 503

@@ -1,0 +1,65 @@
+/* The two pill buttons the header row is built from, in one place.
+
+   Both had three copies apiece — the accent pill in `NewRunButton` and in
+   `InlineConfirm`'s accent trigger, the ghost pill in `NewRunButton` and in
+   `RunActions` — written out again each time because sharing them was a
+   follow-up to whichever change needed the second copy. Three copies of a
+   look the design defines once is three places for it to drift.
+
+   `composes` rather than a plain class on the element, because the order
+   two single-class selectors from different stylesheets land in is decided
+   by import order, which no component controls: a `className` that appended
+   a shared class could win or lose against the module's own rules depending
+   on which file the bundler reached first. `composes` makes the composing
+   class carry both names with the source rule guaranteed to come first, so
+   a module overriding one property still overrides it.
+
+   Layout is deliberately not here. `.button` is `inline-block` because it
+   is an anchor and `RunActions`'s `.ghost` is a `<button>`; the composing
+   modules say which, along with anything else about where the pill sits. */
+
+.accent {
+  padding: 9px 16px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--on-accent);
+  transition: filter var(--transition);
+}
+
+.accent:hover:not(:disabled) {
+  filter: brightness(0.94);
+}
+
+.ghost {
+  padding: 8px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: none;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-70);
+  transition:
+    border-color var(--transition),
+    color var(--transition);
+}
+
+.ghost:hover:not(:disabled) {
+  border-color: var(--border-hover);
+  color: var(--text);
+}
+
+/* Shared by both, because both are worn by controls that disable
+   themselves while a request they started is on its way — Stop, and
+   Resume between its 202 and the refetch. */
+.accent:disabled,
+.ghost:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

@@ -1,7 +1,7 @@
 """The seams a run is watched and cancelled through.
 
-Both default to no-ops, so a caller wanting neither — a test, or
-`scripts/run_pipeline.py` — constructs neither and the pipeline behaves
+Both default to no-ops, so a caller wanting neither — a test calling
+`run_pipeline` directly — constructs neither and the pipeline behaves
 exactly as it did before either existed.
 """
 

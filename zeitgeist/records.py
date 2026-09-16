@@ -29,19 +29,13 @@ class Stage(StrEnum):
 
 ORDER = [Stage.INGEST, Stage.ANALYSE, Stage.EVALUATE, Stage.GENERATE]
 
-# Several of these values have no writer in this phase, deliberately.
 # `run_pipeline` records only what a *successful* run does: it has no
-# try/except, and the dev harness lets a traceback escape, so today a crash
-# leaves the row `running` forever.
-#
-# Phase 3's run execution service is what writes the rest — it catches the
-# exception and calls `Store.fail_run` (`failed`), reconciles rows left
-# `running` by a dead process on startup (`interrupted`), honours the stop
-# button (`aborted`), and moves a stage through `queued` and `running` as the
-# worker reaches it. Building half of that here would mean a failure path with
-# no queue, no worker and no reconciler to make it coherent, so this phase
-# builds the accessors and the vocabulary that service will call and stops
-# there. An unwritten value below is future work, not a dead branch.
+# try/except, so on its own a crash would leave the row `running` forever.
+# `RunService` is what writes the rest — it catches the exception and calls
+# `Store.fail_run` (`failed`), reconciles rows left `running` by a dead
+# process on startup (`interrupted`), honours the stop button (`aborted`),
+# and moves a stage through `queued` and `running` as the worker reaches it.
+# Every value below has a writer.
 RunStatus = Literal["running", "ok", "failed", "aborted", "interrupted"]
 StageStatus = Literal["queued", "running", "ok", "failed", "skipped"]
 
@@ -148,6 +142,13 @@ class RunRecordRow(BaseModel):
     run_id: str
     status: RunStatus
     started_at: datetime
+    # When the current attempt opened. Equal to `started_at` until the run
+    # is resumed, and moved to the resume's own clock after that: the
+    # in-flight elapsed display reads this, because a run resumed a minute
+    # ago has not been going for a day. `started_at` stays where it was, so
+    # the Runs list still orders by when the run first began. See
+    # `Store.start_run`.
+    attempt_started_at: datetime
     finished_at: datetime | None
     config: RunConfig
     error: RunError | None

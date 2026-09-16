@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from tests.run_factory import make_render_record, make_topic
+from tests.run_factory import make_render_record, make_run_config, make_topic
 from tests.template_factory import make_manifest, make_slot, write_library
 from zeitgeist.config import Settings
 from zeitgeist.generation import (
@@ -61,8 +61,17 @@ def _settings(tmp_path) -> Settings:
 
 
 def _store(tmp_path) -> Store:
+    """A fresh store with `run-1` — the run every test in this file
+    generates against — already opened.
+
+    `renders.run_id` references `run_records` and foreign keys are
+    enforced, so a `generating` row for a run nobody opened is refused.
+    Production only ever generates against a run that exists: the endpoint
+    404s an unknown one before `submit` is reached.
+    """
     store = Store(tmp_path / "z.db")
     store.init_schema()
+    store.start_run("run-1", make_run_config())
     return store
 
 

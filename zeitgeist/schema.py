@@ -7,27 +7,30 @@ There is no migration path and none is written: the project is in active
 development and data loss is acceptable, so `StoreSchemaError` refusing to
 open a mismatched database *is* the strategy. Bumping SCHEMA_VERSION means
 deleting the file.
+
+Every table but `settings` hangs off `run_records` by `run_id`, and says so
+with a real `REFERENCES` clause. Declaring them is only half of it —
+SQLite's foreign key enforcement is off unless a connection asks for it, so
+`Store.__init__` issues `PRAGMA foreign_keys = ON` and every write goes
+through a `Store`. Without both halves a checkpoint, a log line or a render
+could name a run that does not exist, and nothing would say so until a
+screen rendered a row with no run behind it.
 """
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
--- The four stage artifacts, held whole rather than normalised. Nothing
--- queries inside a payload except topic detail's replies, and a blob
--- round-trips through model_validate_json exactly, which is what resuming a
--- run depends on.
-CREATE TABLE IF NOT EXISTS checkpoints (
-    run_id      TEXT NOT NULL,
-    stage       TEXT NOT NULL,
-    payload     TEXT NOT NULL,
-    written_at  TEXT NOT NULL,
-    PRIMARY KEY (run_id, stage)
-);
-
 CREATE TABLE IF NOT EXISTS run_records (
     run_id        TEXT PRIMARY KEY,
     status        TEXT NOT NULL,
     started_at    TEXT NOT NULL,
+    -- When the *current* attempt opened, which `started_at` deliberately is
+    -- not: a resume keeps the original `started_at` so the Runs list still
+    -- orders by when the run first began. The in-flight elapsed clock reads
+    -- this instead, so a run resumed a day later counts from the resume
+    -- rather than claiming to have been going for a day. Equal to
+    -- `started_at` on a run that has never been resumed.
+    attempt_started_at TEXT NOT NULL,
     finished_at   TEXT,
     config        TEXT NOT NULL,
     error         TEXT,
@@ -37,8 +40,20 @@ CREATE TABLE IF NOT EXISTS run_records (
     phrases_found INTEGER
 );
 
+-- The four stage artifacts, held whole rather than normalised. Nothing
+-- queries inside a payload except topic detail's replies, and a blob
+-- round-trips through model_validate_json exactly, which is what resuming a
+-- run depends on.
+CREATE TABLE IF NOT EXISTS checkpoints (
+    run_id      TEXT NOT NULL REFERENCES run_records (run_id) ON DELETE CASCADE,
+    stage       TEXT NOT NULL,
+    payload     TEXT NOT NULL,
+    written_at  TEXT NOT NULL,
+    PRIMARY KEY (run_id, stage)
+);
+
 CREATE TABLE IF NOT EXISTS run_stages (
-    run_id        TEXT NOT NULL,
+    run_id        TEXT NOT NULL REFERENCES run_records (run_id) ON DELETE CASCADE,
     stage         TEXT NOT NULL,
     status        TEXT NOT NULL,
     started_at    TEXT,
@@ -62,7 +77,8 @@ CREATE TABLE IF NOT EXISTS run_stages (
 -- insert, failure and delete, including from the on-demand executor, to save
 -- a join over a table holding single digits per run.
 CREATE TABLE IF NOT EXISTS run_topics (
-    run_id                TEXT NOT NULL,
+    run_id                TEXT NOT NULL
+        REFERENCES run_records (run_id) ON DELETE CASCADE,
     topic_id              TEXT NOT NULL,
     label                 TEXT NOT NULL,
     label_slug            TEXT NOT NULL,
@@ -79,9 +95,15 @@ CREATE TABLE IF NOT EXISTS run_topics (
     PRIMARY KEY (run_id, topic_id)
 );
 
+-- `topic_id` names a row in `run_topics` but does not reference it: the
+-- on-demand generator briefs from the *analyse* checkpoint, which holds
+-- every topic, while `run_topics` holds only what evaluate ranked. A
+-- composite foreign key here would refuse a render for a topic that was
+-- distilled and never ranked — which is exactly the below-the-cut case the
+-- generate link exists for.
 CREATE TABLE IF NOT EXISTS renders (
     id            TEXT PRIMARY KEY,
-    run_id        TEXT NOT NULL,
+    run_id        TEXT NOT NULL REFERENCES run_records (run_id) ON DELETE CASCADE,
     topic_id      TEXT NOT NULL,
     -- NULL while the model has yet to choose a template for a render it
     -- was asked to choose one for, and on a render whose brief failed
@@ -94,10 +116,8 @@ CREATE TABLE IF NOT EXISTS renders (
     created_at    TEXT NOT NULL
 );
 
--- Created here so phase 3 needs no second version bump. Nothing writes to it
--- in phase 1 and no accessor for it exists yet.
 CREATE TABLE IF NOT EXISTS log_lines (
-    run_id    TEXT NOT NULL,
+    run_id    TEXT NOT NULL REFERENCES run_records (run_id) ON DELETE CASCADE,
     seq       INTEGER NOT NULL,
     logged_at TEXT NOT NULL,
     level     TEXT NOT NULL,
@@ -107,7 +127,8 @@ CREATE TABLE IF NOT EXISTS log_lines (
 );
 
 -- One row per tuning field the settings screen has overridden. Absent means
--- fall through to .env.
+-- fall through to .env. The one table with no run behind it, and so the one
+-- with no foreign key: a setting outlives every run.
 CREATE TABLE IF NOT EXISTS settings (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL,
@@ -117,7 +138,7 @@ CREATE TABLE IF NOT EXISTS settings (
 -- Survives from schema 2 unchanged. Per-platform sub-scores have no home in
 -- run_topics, and previous_sub_scores is the one query that needs them.
 CREATE TABLE IF NOT EXISTS topic_scores (
-    run_id    TEXT NOT NULL,
+    run_id    TEXT NOT NULL REFERENCES run_records (run_id) ON DELETE CASCADE,
     label     TEXT NOT NULL,
     platform  TEXT NOT NULL,
     sub_score REAL NOT NULL,
@@ -131,5 +152,10 @@ CREATE INDEX IF NOT EXISTS idx_run_topics_topic ON run_topics (topic_id);
 CREATE INDEX IF NOT EXISTS idx_run_topics_status ON run_topics (trend_status);
 CREATE INDEX IF NOT EXISTS idx_renders_run_topic ON renders (run_id, topic_id);
 CREATE INDEX IF NOT EXISTS idx_topic_scores_label ON topic_scores (label);
-CREATE INDEX IF NOT EXISTS idx_run_records_started ON run_records (started_at);
+-- (started_at, run_id) rather than started_at alone, because that pair is
+-- what `list_runs` both orders and pages by: its keyset cursor carries the
+-- run id as a tiebreaker, and a one-column index would leave the tiebreak
+-- to a sort.
+CREATE INDEX IF NOT EXISTS idx_run_records_started
+    ON run_records (started_at, run_id);
 """

@@ -88,6 +88,17 @@ class RunAlreadyActive(ValueError):
     """
 
 
+class RunnerUnavailable(RuntimeError):
+    """`enqueue` refuses because the worker thread is gone.
+
+    Not a `ValueError`, deliberately: `start_run` and `resume_run` turn a
+    `ValueError` into a 400, and nothing about the request is wrong here —
+    the server cannot run anything for anyone. It earns a 503, which is
+    also the only honest answer to "when should I retry": not until this
+    process is restarted.
+    """
+
+
 class RunRequest(BaseModel):
     """What to run. `run_id` is set only for a resume, which reuses the
     existing run's checkpoints; a new run gets its id from `new_run_id()`.
@@ -256,6 +267,11 @@ class RunService:
         self._waiting: list[str] = []
         self._tokens: dict[str, CancelToken] = {}
         self._buffers: dict[str, RunLogBuffer] = {}
+        # What killed the worker thread, or None while it is alive. Set once
+        # by `_collapse` and never cleared: the thread cannot be restarted,
+        # so a service that has reached this state refuses every later
+        # enqueue rather than accepting runs nothing will execute.
+        self._dead: BaseException | None = None
 
     def start(self) -> None:
         if self._thread is not None:
@@ -317,44 +333,66 @@ class RunService:
         run_id = request.run_id or new_run_id()
         request = request.model_copy(update={"run_id": run_id})
 
-        # Fail fast, before writing anything, for the overwhelmingly common
-        # case: a duplicate resume or a double-clicked Resume button calling
-        # in sequentially. A concurrent duplicate can still slip past this
-        # check (see the second one below) — this one exists only so the
-        # ordinary case never pays for a write it is about to be refused
-        # for anyway.
+        # The row is opened and the run_id registered under one acquisition
+        # of `_lock`, so no observer can ever see one without the other.
+        #
+        # The two orderings without the lock are each wrong in their own
+        # way, and both were tried. Registering first and writing second
+        # leaves `active().queued` naming a run with no `run_records` row
+        # for as long as the write takes, so a client that polls `active()`
+        # and then GETs the run in that window 404s. Writing first and
+        # registering second — what this was until now — leaves the
+        # opposite window: the row says `running`, but the run is neither
+        # `_current` nor in `_waiting`, which is exactly how
+        # `stream_events` recognises a run that has *ended*. A resume is
+        # where that bites, because a resumed run's row already existed, so
+        # a stream opened in the window passes `_run_or_404`, finds no
+        # buffer and no registration, and closes on the spot — the client
+        # watches a run that is about to start and is told it is over.
+        #
+        # Holding the lock across the write closes both. It is one INSERT
+        # on an indexed primary key, and `Store` serialises its own
+        # connection anyway, so what waits behind it is `active()`, `stop()`
+        # and `abort()` for the length of a single row write. Under WAL
+        # there is one writer at a time, so that write can itself queue
+        # behind a checkpoint the worker is committing — tens of
+        # milliseconds on the largest of them, which is a button feeling
+        # instant rather than feeling instant twice over. The alternative
+        # was leaving the window open and having `stream_events` consult
+        # the run's stored status before closing, which fails on the one
+        # path where a run's registration is cleared while its row still
+        # says `running`: an exception escaping `_run_one`'s own `fail_run`
+        # or `abort_run`. That stream would then never close at all, which
+        # is a worse failure than a button waiting a moment.
+        #
+        # A failed write still leaves nothing registered to clean up,
+        # exactly as before: the registration below never runs, so a run_id
+        # that fails here is not left permanently unenqueuable by the
+        # duplicate check.
         with self._lock:
+            if self._dead is not None:
+                raise RunnerUnavailable(
+                    "The run worker is not running; no run can be started. "
+                    f"It stopped with: {self._dead}"
+                )
             if self._is_live(run_id):
                 raise RunAlreadyActive(f"Run {run_id} is already queued or executing")
-
-        # Written *before* this run_id is registered in _waiting/_tokens,
-        # and deliberately not wrapped in a try that would roll a prior
-        # registration back: registering first and writing second was
-        # tried and rejected, because it reopens exactly the bug Important
-        # 2 fixed — for however long the write takes, active().queued would
-        # name a run with no row behind it yet, so a client polling
-        # active() and then GET-ing the run in that window would 404 again.
-        # Writing first means a run_id is never visible anywhere (active(),
-        # the returned QueuedRun) until its row already exists, and a
-        # failed write here leaves nothing registered to clean up: no
-        # _waiting/_tokens entry was ever created, so a run_id that fails
-        # here is not left permanently unenqueuable via the duplicate
-        # check above, unlike every other outcome of this method.
-        self._store.start_run(run_id, RunConfig.freeze(settings, request.template_ids))
-
-        with self._lock:
-            # Re-checked rather than assumed: a concurrent enqueue for the
-            # same run_id could have registered while the write above was
-            # in flight, on this thread's uncontended run_id — the first
-            # check above only ever sees this thread's own view of the
-            # world as of before its own write started. Store.start_run is
-            # an idempotent upsert whose ON CONFLICT clause never touches
-            # `started_at` (see the comment below), so a genuine race here
-            # costs one redundant write, never a corrupted row, and the
-            # loser is refused exactly as it would have been without the
-            # race.
-            if self._is_live(run_id):
-                raise RunAlreadyActive(f"Run {run_id} is already queued or executing")
+            # Opened here, on the request thread, rather than left for
+            # _run_one to open on the worker thread: a client holding this
+            # id must be able to GET /api/runs/{run_id} and open its event
+            # stream immediately, not only once the worker actually
+            # dequeues it. RunStatus has no "queued" state, so this uses
+            # "running" like every other open row — startup reconciliation
+            # already turns a "running" row left over from a dead process
+            # into "interrupted", which is the right story for one that
+            # never got past the queue either. Store.start_run is an upsert
+            # that leaves `started_at` untouched on a second call (see
+            # _run_one), so the three calls that follow — this one, then
+            # _run_one's, then run_pipeline's own — all agree on when the
+            # run "started" as this first one.
+            self._store.start_run(
+                run_id, RunConfig.freeze(settings, request.template_ids)
+            )
             # Appended unconditionally, and *before* the worker can possibly
             # have caught up to this request: between this put() and the
             # worker's own lock acquisition in _run_one, the request is in
@@ -365,18 +403,6 @@ class RunService:
             position = (0 if self._current is None else 1) + len(self._waiting)
             self._waiting.append(run_id)
             self._tokens[run_id] = CancelToken()
-        # Opened above, on the request thread, rather than left for
-        # _run_one to open on the worker thread: a client holding this id
-        # must be able to GET /api/runs/{run_id} and open its event stream
-        # immediately, not only once the worker actually dequeues it.
-        # RunStatus has no "queued" state, so this uses "running" like
-        # every other open row — startup reconciliation already turns a
-        # "running" row left over from a dead process into "interrupted",
-        # which is the right story for one that never got past the queue
-        # either. Store.start_run is an upsert that leaves `started_at`
-        # untouched on a second call (see _run_one), so the three calls
-        # that follow — this one, then _run_one's, then run_pipeline's
-        # own — all agree on when the run "started" as this first one.
         self._queue.put(request)
         return QueuedRun(run_id=run_id, position=position)
 
@@ -408,9 +434,19 @@ class RunService:
         return True
 
     def _work(self) -> None:
-        store = self._worker_store()
-        store.init_schema()
+        store: Store | None = None
         try:
+            # Inside the try, not before it. `_worker_store()` opens a
+            # `sqlite3` connection and `init_schema` can raise
+            # `StoreSchemaError` outright — a database written by another
+            # build is the ordinary way to meet it — and outside a guard
+            # either one killed this thread silently. Nothing then executed
+            # a run ever again, and the symptom was not an error: a queued
+            # run stayed in `_waiting` forever, so `GET /api/runs/{id}/
+            # events` kept it alive as "queued, not started" and polled a
+            # run that could not start until the browser tab was closed.
+            store = self._worker_store()
+            store.init_schema()
             while True:
                 item = self._queue.get()
                 if item is SHUTDOWN:
@@ -428,8 +464,52 @@ class RunService:
                     # enqueue would never be picked up, and shutdown would
                     # find nothing to join cleanly.
                     log.exception("Worker loop swallowed an unhandled error")
+        except BaseException as exc:  # noqa: BLE001 - reported, not swallowed
+            # Reached only by an error the loop above could not contain —
+            # setup, or `self._queue.get()` itself. The thread is over
+            # either way; `_collapse` is what stops the rest of the process
+            # pretending otherwise.
+            log.exception("Run worker stopped and cannot execute any more runs")
+            self._collapse(exc)
         finally:
-            store.close()
+            if store is not None:
+                store.close()
+
+    def _collapse(self, exc: BaseException) -> None:
+        """The worker is gone. Refuse new runs, and end the queued ones.
+
+        Every queued run is marked `failed` rather than left where it is.
+        `running` is what its row says — `enqueue` opened it that way — and
+        a `running` row with no worker behind it is the one state the whole
+        UI reads as "in flight": the run's page draws a live header and an
+        elapsed clock that never stops, and its event stream sees the run
+        still in `_waiting` and polls it forever. Clearing the registration
+        is what closes those streams; writing the row is what stops the
+        next poll reopening one.
+
+        Written through `self._store`, the API's connection, not the
+        worker's: the worker's may be exactly what failed to open. That
+        connection is `check_same_thread=False` and `Store` serialises its
+        own methods, which is what makes writing it from this thread safe.
+        """
+        with self._lock:
+            self._dead = exc
+            queued, self._waiting = self._waiting, []
+            self._tokens.clear()
+            self._buffers.clear()
+        for run_id in queued:
+            try:
+                self._store.fail_run(
+                    run_id,
+                    RunError(
+                        kind=type(exc).__name__,
+                        message="The run worker stopped before this run "
+                        f"started: {exc}",
+                        stage=Stage.INGEST,
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - one bad row must not strand the rest
+                log.exception("Could not fail queued run %s", run_id)
 
     def _run_one(self, request: RunRequest, store: Store) -> None:
         run_id = request.run_id or new_run_id()

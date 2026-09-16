@@ -6,28 +6,10 @@
   justify-content: flex-end;
 }
 
+/* Stop after this stage. The same ghost pill `NewRunButton` draws for
+   Re-run config, from the one place that defines it. */
 .ghost {
-  padding: 8px 14px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-pill);
-  background: none;
-  font-family: var(--font-ui);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  color: var(--text-70);
-  cursor: pointer;
-  transition: border-color var(--transition), color var(--transition);
-}
-
-.ghost:hover:not(:disabled) {
-  border-color: var(--border-hover);
-  color: var(--text);
-}
-
-.ghost:disabled {
-  opacity: 0.5;
-  cursor: default;
+  composes: ghost from "../../styles/pills.module.css";
 }
 
 .failure {

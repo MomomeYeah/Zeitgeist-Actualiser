@@ -14,6 +14,7 @@ from zeitgeist.records import RunConfig, Stage, StageRecord
 from zeitgeist.runner import (
     ActiveRuns,
     RunAlreadyActive,
+    RunnerUnavailable,
     RunRequest,
     RunService,
     resolve_settings,
@@ -934,3 +935,155 @@ def test_a_store_failure_in_the_observer_never_fails_the_run(tmp_path):
     _run_to_completion(service, RunRequest())
 
     assert reached_the_end == [True]
+
+
+def _refuses_to_open() -> Store:
+    """A worker store that will not open.
+
+    `_work` calls this before it can reach its own loop, which is the
+    window the two tests below are about. A `StoreSchemaError` from
+    `init_schema` against a database written by another build is the
+    ordinary way to meet it; the exception type does not matter here, only
+    that it escapes before the queue is ever read.
+    """
+    raise RuntimeError("the worker's database would not open")
+
+
+def _dead_worker(service: RunService) -> None:
+    """Wait for the worker thread to have finished unwinding.
+
+    Joined rather than polled, so what follows reads a settled service
+    rather than one still inside `_collapse`.
+    """
+    assert service._thread is not None
+    service._thread.join(timeout=5)
+    assert not service._thread.is_alive()
+
+
+def test_a_worker_that_dies_in_setup_refuses_later_runs(tmp_path):
+    """Before this, a worker that died opening its own store took the
+    thread with it and nothing noticed: `enqueue` kept returning 202s and
+    kept appending to `_waiting`, so every run queued afterwards sat there
+    for the life of the process. A refusal is the only honest answer — the
+    thread cannot be restarted, so there is no version of "try again" short
+    of restarting the server.
+    """
+    service = RunService(
+        _settings(tmp_path),
+        _open_store(tmp_path),
+        execute=_Gate(),
+        worker_store=_refuses_to_open,
+    )
+    service.start()
+    _dead_worker(service)
+
+    try:
+        with pytest.raises(RunnerUnavailable):
+            service.enqueue(RunRequest())
+    finally:
+        service.shutdown(timeout=1.0)
+
+
+def test_a_run_queued_before_the_worker_died_does_not_stay_queued(tmp_path):
+    """The symptom is the event stream, not the queue. A queued run passes
+    `_run_or_404` — `enqueue` opened its row — and `stream_events` holds a
+    stream open for exactly as long as the run is in `active().queued`, so
+    a run left there is one the browser watches until its tab is closed.
+    Clearing the registration is what lets that stream close, and failing
+    the row is what stops the next poll reopening one.
+    """
+    queued_up = threading.Event()
+
+    def wait_then_fail() -> Store:
+        # Failing only once something is queued is the whole point: a
+        # worker that died before `enqueue` ran would leave `_waiting`
+        # empty and prove nothing about draining it.
+        assert queued_up.wait(timeout=5)
+        raise RuntimeError("the worker's database would not open")
+
+    store = _open_store(tmp_path)
+    service = RunService(
+        _settings(tmp_path), store, execute=_Gate(), worker_store=wait_then_fail
+    )
+    service.start()
+    queued = service.enqueue(RunRequest())
+    queued_up.set()
+    _dead_worker(service)
+
+    try:
+        assert service.active() == ActiveRuns(current=None, queued=[])
+        record = store.get_run(queued.run_id)
+        assert record is not None
+        assert record.status == "failed"
+        assert record.error is not None
+        assert "worker stopped" in record.error.message
+    finally:
+        service.shutdown(timeout=1.0)
+
+
+class _PeekingStore(Store):
+    """A store that looks at the `RunService` from inside `start_run`.
+
+    On another thread, because the point is what a *concurrent* observer
+    can see: `enqueue` holds `RunService._lock` across the write, so a
+    thread calling `active()` at this moment must block rather than answer.
+    """
+
+    def __init__(self, path, peek) -> None:
+        super().__init__(path, check_same_thread=False)
+        self._peek = peek
+
+    def start_run(self, run_id: str, config: RunConfig) -> None:
+        super().start_run(run_id, config)
+        self._peek()
+
+
+def test_enqueue_opens_the_row_and_registers_the_run_together(tmp_path):
+    """No observer may see one half without the other.
+
+    Writing the row *outside* the lock left a window in which
+    `run_records` said `running` while the run was neither `_current` nor
+    in `_waiting` — which is precisely how `stream_events` recognises a run
+    that has *ended*. A resume is where it bites: the row already exists,
+    so a stream opened in that window passes `_run_or_404`, finds no buffer
+    and no registration, and closes on a run that is about to start.
+
+    Asserted by calling `active()` from another thread from inside
+    `start_run`. That thread must still be blocked when the write returns;
+    one that has answered by then is one that saw the half-state.
+    """
+    gate = _Gate()
+    answered = threading.Event()
+    observed: list[ActiveRuns] = []
+    watchers: list[threading.Thread] = []
+    settings = _settings(tmp_path)
+
+    def peek() -> None:
+        watcher = threading.Thread(
+            target=lambda: (observed.append(service.active()), answered.set())
+        )
+        watchers.append(watcher)
+        watcher.start()
+        # Long enough that a lock-free `active()` — three attribute reads
+        # under no contention — would certainly have finished. The
+        # assertion is on `answered`, not on the sleep: the thread is
+        # blocked on `RunService._lock`, which `enqueue` still holds.
+        assert not answered.wait(timeout=0.5)
+
+    store = _PeekingStore(settings.db_path, peek)
+    store.init_schema()
+    service = RunService(settings, store, execute=gate)
+    service.start()
+    try:
+        queued = service.enqueue(RunRequest())
+        for watcher in watchers:
+            watcher.join(timeout=5)
+
+        # Released by `enqueue` leaving the lock, so what it saw is the
+        # state after both halves, never between them.
+        assert observed[0].current == queued.run_id or queued.run_id in (
+            observed[0].queued
+        )
+    finally:
+        gate.release.set()
+        service.shutdown()
