@@ -6,9 +6,11 @@ import { imageUrl } from "@/api/client";
 import styles from "./MemeTile.module.css";
 
 /**
- * One rendered meme, at one of the sizes the design draws: 34px in a
- * runs-list row, 42px in a ranking row, 96px square, and `"grid"` — the
- * full width of a topic-detail tile, 112px tall.
+ * One rendered meme, at one of the two sizes the app draws: 34px in a
+ * runs-list row, and `"grid"` — the full width of a topic-detail tile,
+ * 112px tall. The design's 42px ranking tile is not among them: a ranking
+ * row states its meme count instead, because `RankedTopic` carries no
+ * render ids to address an image with.
  *
  * The database is authoritative for whether a render exists, so a row whose
  * PNG is missing is a failed tile rather than a broken image or a crash.
@@ -27,18 +29,16 @@ export function MemeTile({
   templateId,
 }: {
   renderId: string;
-  size: 34 | 42 | 96 | "grid";
+  size: 34 | "grid";
   to?: string;
   templateId?: string;
 }) {
   const [failed, setFailed] = useState(false);
 
   const grid = size === "grid";
-  // Anything drawn wider than the 96px thumbnail gets the full PNG.
-  // `size === "grid"` is spelled out rather than reusing `grid`, so the
-  // comparison on its right narrows `size` to a number without leaning on
-  // aliased-condition narrowing.
-  const source = size === "grid" || size >= 96 ? "full" : "thumb";
+  // The grid tile is drawn far wider than the 96px thumbnail, so it gets
+  // the full PNG; a 34px row tile would only be throwing bytes away.
+  const source = grid ? "full" : "thumb";
   const box = grid ? undefined : { "--tile": `${size}px` };
 
   if (failed) {

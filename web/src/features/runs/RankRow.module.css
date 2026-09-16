@@ -112,6 +112,7 @@
   background: none;
   color: var(--contrast-light);
   cursor: pointer;
+  flex: none;
 }
 
 .generate:hover:not(:disabled),
@@ -124,22 +125,31 @@
 }
 
 /* A refusal, on the row, in the server's words — one line, the rest in the
-   title. Above the stretched link, so it can be hovered for that title. */
+   title. Above the stretched link, so it can be hovered for that title and
+   clicked to clear the refusal. */
 .generateError {
   position: relative;
   z-index: 1;
   min-width: 0;
   max-width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 10px;
+  text-align: right;
   color: var(--contrast-light);
+  cursor: pointer;
 }
 
+/* The count and the generate link sit side by side when a row has both. */
 .memes {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: var(--gap-tight);
+  min-width: 0;
 }

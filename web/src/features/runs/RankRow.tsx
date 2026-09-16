@@ -30,7 +30,11 @@ function subline(topic: RankedTopic["topic"]): string {
  *
  * On a 202 it opens the topic, where the new tile is already generating.
  * Staying here would show nothing, because the ranking counts ready
- * renders only. A refusal stays on the row, in the server's own words.
+ * renders only.
+ *
+ * A refusal stays on the row in the server's own words, and clicking it
+ * clears the refusal so the link comes back: the usual cause is a key the
+ * server is missing, which is fixed elsewhere and then wants another go.
  */
 function GenerateButton({
   runId,
@@ -46,8 +50,18 @@ function GenerateButton({
 
   if (generation.isError) {
     return (
-      <span role="alert" className={styles.generateError} title={generation.error.detail}>
-        {generation.error.detail}
+      // The alert is the wrapper, so the sentence is announced when it
+      // appears; the button inside it is what takes the retry.
+      <span role="alert">
+        <button
+          type="button"
+          className={styles.generateError}
+          title={generation.error.detail}
+          aria-label="Try generating again"
+          onClick={() => generation.reset()}
+        >
+          {generation.error.detail}
+        </button>
       </span>
     );
   }
@@ -76,9 +90,10 @@ export function RankRow({
   entry: RankedTopic;
   highlighted: boolean;
   /**
-   * Draw `generate ↗` where the meme count would be. True below the cut —
-   * those topics were never briefed — and true for every row when the
-   * generate stage rendered nothing at all.
+   * Draw `generate ↗` beside the meme count. True below the cut — those
+   * topics were never briefed — and true for a kept topic the generate
+   * stage left with nothing, whether that was every brief or only this
+   * one.
    */
   offerGenerate: boolean;
 }) {
@@ -127,19 +142,26 @@ export function RankRow({
       </span>
 
       <span className={styles.memes}>
-        {offerGenerate ? (
-          <GenerateButton runId={topic.run_id} topicId={topic.topic_id} to={to} />
-        ) : (
-          // A count, not thumbnails. `RankedTopic` carries `render_count`
-          // from `Store.render_counts` and no render ids, and addressing an
-          // image needs an id — only topic detail's `renders` list has
-          // those. The design draws 42px tiles here; showing them would mean
-          // one extra request per row to render something topic detail
-          // shows one click away. So the row states the count and topic
-          // detail draws the memes.
+        {/* A count, not thumbnails. `RankedTopic` carries `render_count`
+            from `Store.render_counts` and no render ids, and addressing an
+            image needs an id — only topic detail's `renders` list has
+            those. The design draws 42px tiles here; showing them would mean
+            one extra request per row to render something topic detail shows
+            one click away. So the row states the count and topic detail
+            draws the memes.
+
+            A row that offers generate shows its count too, once it has one:
+            generating for a topic below the cut leaves it with memes, and
+            the row drawing the link alone said nothing about them. A row
+            with none says so only when there is no link to say it
+            instead. */}
+        {(render_count > 0 || !offerGenerate) && (
           <span className={styles.count}>
             {render_count} {render_count === 1 ? "meme" : "memes"}
           </span>
+        )}
+        {offerGenerate && (
+          <GenerateButton runId={topic.run_id} topicId={topic.topic_id} to={to} />
         )}
       </span>
     </div>

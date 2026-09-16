@@ -100,4 +100,27 @@ describe("QueryBoundary", () => {
     expect(screen.getByText("20260829T090000Z")).toBeInTheDocument();
     expect(screen.queryByText(/database is locked/)).not.toBeInTheDocument();
   });
+
+  it("stops showing what a refetch says is gone, rather than a stale copy", async () => {
+    // A 404 on a background refetch is not transient: the thing is gone.
+    // Keeping the last good copy on screen would leave actions pointing at
+    // something that no longer exists — a render deleted in another tab is
+    // the case this app can really produce.
+    let calls = 0;
+    server.use(
+      http.get("/api/runs/:runId", () => {
+        calls += 1;
+        if (calls === 1) return HttpResponse.json(makeRunDetail());
+        return HttpResponse.json({ detail: "No such run: gone" }, { status: 404 });
+      }),
+    );
+
+    renderWithProviders(<RefetchableSubject runId="20260829T090000Z" />);
+    expect(await screen.findByText("20260829T090000Z")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "refetch" }));
+
+    expect(await screen.findByText("No such run.")).toBeInTheDocument();
+    expect(screen.queryByText("20260829T090000Z")).not.toBeInTheDocument();
+  });
 });

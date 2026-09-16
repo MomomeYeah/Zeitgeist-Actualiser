@@ -39,8 +39,13 @@ export function TopicDetailPage() {
     <QueryBoundary query={detail} missing="No such topic in this run.">
       {(data) => {
         const { topic, dossier, recurrence } = data;
+        // `first_seen_run_id` is null when the slug matched nothing earlier,
+        // and this run's own id when only this run has carried the topic.
+        // Both mean the same thing to a reader, and naming the run they are
+        // already on reads as an earlier sighting that never happened.
         const seen =
-          recurrence.first_seen_run_id === null
+          recurrence.first_seen_run_id === null ||
+          recurrence.first_seen_run_id === topic.run_id
             ? "new this run"
             : `first seen ${recurrence.first_seen_run_id}`;
 

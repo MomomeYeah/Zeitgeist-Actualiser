@@ -70,6 +70,25 @@ describe("TopicDetailPage", () => {
     expect(within(crumb).getByText("topic-1 · new this run")).toBeInTheDocument();
   });
 
+  it("says a topic is new when the run it was first seen in is this one", async () => {
+    // A topic only this run has carried is first seen here, and the store
+    // answers with this run's own id rather than null. "First seen" then
+    // points at the run you are already looking at, which reads as a
+    // second, earlier sighting that does not exist.
+    serve(
+      makeTopicDetail({
+        runId: RUN_ID,
+        firstSeenRunId: RUN_ID,
+        runCount: 1,
+      }),
+    );
+
+    renderPage();
+
+    const crumb = await screen.findByRole("navigation", { name: "Breadcrumb" });
+    expect(within(crumb).getByText("topic-1 · new this run")).toBeInTheDocument();
+  });
+
   it("shows the three header stats", async () => {
     serve(
       makeTopicDetail({ trendScore: 0.91, memePotential: 0.86, finalRank: 2 }),
@@ -230,6 +249,37 @@ describe("TopicDetailPage", () => {
 
     await waitFor(() => expect(screen.queryByAltText("drake meme")).not.toBeInTheDocument());
     expect(screen.getByAltText("two_buttons meme")).toBeInTheDocument();
+  });
+
+  it("puts focus back on the grid when the tile holding it is deleted", async () => {
+    // The `✕` that was focused unmounts with its tile, and focus would
+    // otherwise fall to the top of the document — a keyboard user would
+    // have to tab back through the whole page to reach the next tile.
+    let renders = [makeRenderRecord({ id: "r1", templateId: "drake" })];
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(makeTopicDetail({ renders })),
+      ),
+      http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+      http.get("/api/config/options", () => HttpResponse.json(makeConfigOptions())),
+      http.delete("/api/renders/:renderId", ({ params }) => {
+        renders = renders.filter((render) => render.id !== params.renderId);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Delete render" }));
+    await user.click(screen.getByRole("button", { name: "yes" }));
+
+    await waitFor(() =>
+      expect(screen.queryByAltText("drake meme")).not.toBeInTheDocument(),
+    );
+    const anchor = screen
+      .getByText("Rendered from this topic")
+      .closest('div[tabindex="-1"]');
+    expect(anchor).toHaveFocus();
   });
 
   it("says which topic is missing rather than showing an empty page", async () => {

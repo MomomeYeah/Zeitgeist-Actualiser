@@ -1,3 +1,5 @@
+import { useRef } from "react";
+
 import type { GenerationRequest, RenderRecord } from "@/api/types";
 import { SectionLabel } from "@/components/SectionLabel";
 import { GeneratingTile, RenderTile } from "@/features/topics/RenderTile";
@@ -46,6 +48,11 @@ function placeholdersFor(request: GenerationRequest): { label: string; doing: st
  *
  * With nothing at all, the grid's place is taken by the spec's dashed
  * row, which points at the panels right above it.
+ *
+ * The section's label doubles as a focus anchor. A tile deleted by
+ * keyboard unmounts the `✕` that was focused, and focus would fall to the
+ * top of the document; it lands here instead, a tab away from whatever
+ * tiles remain.
  */
 export function RenderGrid({
   renders,
@@ -58,19 +65,22 @@ export function RenderGrid({
 }) {
   const placeholders = pending.flatMap(placeholdersFor);
   const empty = renders.length === 0 && placeholders.length === 0;
+  const anchor = useRef<HTMLDivElement | null>(null);
 
   return (
     <section className={styles.section}>
-      <SectionLabel hint={empty ? undefined : hint(renders, placeholders.length, runId)}>
-        Rendered from this topic
-      </SectionLabel>
+      <div ref={anchor} tabIndex={-1}>
+        <SectionLabel hint={empty ? undefined : hint(renders, placeholders.length, runId)}>
+          Rendered from this topic
+        </SectionLabel>
+      </div>
       {empty ? (
         <p className={styles.nothing}>Nothing rendered yet — use the panel above</p>
       ) : (
         <ul className={styles.grid}>
           {renders.map((render) => (
             <li key={render.id}>
-              <RenderTile render={render} />
+              <RenderTile render={render} onRemoved={() => anchor.current?.focus()} />
             </li>
           ))}
           {placeholders.map((tile, index) => (

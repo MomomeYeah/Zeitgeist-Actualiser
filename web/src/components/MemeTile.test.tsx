@@ -6,26 +6,16 @@ import { renderWithProviders } from "@/test/render";
 
 describe("MemeTile", () => {
   it("points at the render's own image endpoint", () => {
-    renderWithProviders(<MemeTile renderId="render-1" size={42} />);
+    renderWithProviders(<MemeTile renderId="render-1" size={34} />);
     expect(screen.getByRole("img")).toHaveAttribute(
       "src",
       "/api/renders/render-1/image?size=thumb",
     );
   });
 
-  it("asks for the full-size PNG at the largest size", () => {
-    // 96px is the thumbnail's own width, so anything larger would be a
-    // scaled-up 96px image.
-    renderWithProviders(<MemeTile renderId="render-1" size={96} />);
-    expect(screen.getByRole("img")).toHaveAttribute(
-      "src",
-      "/api/renders/render-1/image?size=full",
-    );
-  });
-
   it("links to the full-size view when given a destination", () => {
     renderWithProviders(
-      <MemeTile renderId="render-1" size={42} to="/runs/r1/renders/render-1" />,
+      <MemeTile renderId="render-1" size={34} to="/runs/r1/renders/render-1" />,
     );
     expect(screen.getByRole("link")).toHaveAttribute(
       "href",
@@ -38,7 +28,7 @@ describe("MemeTile", () => {
     // and nesting one anchor in another is invalid HTML the browser
     // silently reshapes. So the tile must not invent a destination it was
     // not given.
-    renderWithProviders(<MemeTile renderId="render-1" size={42} />);
+    renderWithProviders(<MemeTile renderId="render-1" size={34} />);
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 
@@ -46,7 +36,7 @@ describe("MemeTile", () => {
     // The database is authoritative for whether a render exists, so a row
     // whose image 404s is a failed render, not a crash. This is also how a
     // partially failed run shows itself on the runs list.
-    renderWithProviders(<MemeTile renderId="render-1" size={42} />);
+    renderWithProviders(<MemeTile renderId="render-1" size={34} />);
 
     fireEvent.error(screen.getByRole("img"));
 
@@ -57,7 +47,7 @@ describe("MemeTile", () => {
   it("stops being a link once its image has failed", () => {
     // Nothing to open at full size, so the affordance goes with it.
     renderWithProviders(
-      <MemeTile renderId="render-1" size={42} to="/runs/r1/renders/render-1" />,
+      <MemeTile renderId="render-1" size={34} to="/runs/r1/renders/render-1" />,
     );
 
     fireEvent.error(screen.getByRole("img"));
@@ -69,7 +59,7 @@ describe("MemeTile", () => {
     // The only description of a meme this app has. "meme" alone would tell
     // a screen reader nothing the surrounding row does not already say.
     renderWithProviders(
-      <MemeTile renderId="render-1" size={42} templateId="drake" />,
+      <MemeTile renderId="render-1" size={34} templateId="drake" />,
     );
     expect(screen.getByAltText("drake meme")).toBeInTheDocument();
   });

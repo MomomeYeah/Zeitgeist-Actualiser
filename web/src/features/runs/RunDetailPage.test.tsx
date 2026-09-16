@@ -371,6 +371,9 @@ describe("RunDetailPage", () => {
 
     expect(await screen.findByText("Airport cat")).toBeInTheDocument();
     expect(screen.queryByText(/every brief failed/)).not.toBeInTheDocument();
+    // Nor does a kept topic offer generate while the stage that is about
+    // to render it is still running.
+    expect(screen.queryByRole("button", { name: "generate ↗" })).not.toBeInTheDocument();
   });
 
   it("does not claim every brief failed on a run that never reached generate", async () => {
@@ -1240,5 +1243,67 @@ describe("RunDetailPage", () => {
     expect(
       await screen.findByText("Run 20260829T090000Z is already queued or executing"),
     ).toBeInTheDocument();
+  });
+
+  it("offers generate on a kept topic whose own brief failed", async () => {
+    // Partial failure: the stage ran, one topic rendered, the other did
+    // not. Generate used to be offered here only when *every* brief
+    // failed, so the one row that needs it read "0 memes" instead.
+    serve(
+      makeRunDetail({
+        runId: RUN_ID,
+        stages: [makeStageRecord({ stage: "generate", summary: "1 of 2 rendered" })],
+      }),
+      [
+        makeRankedTopic({ topicId: "t1", finalRank: 1, label: "Stadium rat", renderCount: 1 }),
+        makeRankedTopic({ topicId: "t2", finalRank: 2, label: "Airport cat", renderCount: 0 }),
+      ],
+    );
+
+    renderPage();
+
+    expect(await screen.findByRole("button", { name: "generate ↗" })).toBeInTheDocument();
+    expect(screen.getByText("1 meme")).toBeInTheDocument();
+  });
+
+  it("counts the memes a below-the-cut row has, beside its generate link", async () => {
+    // Generating for a topic below the cut leaves it with memes, and the
+    // row said nothing about them: it drew the link alone.
+    serve(makeRunDetail({ runId: RUN_ID }), [
+      makeRankedTopic({ topicId: "t1", finalRank: 1, aboveCut: true }),
+      makeRankedTopic({ topicId: "t2", finalRank: 6, aboveCut: false, renderCount: 2 }),
+    ]);
+
+    renderPage();
+
+    expect(await screen.findByText("2 memes")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "generate ↗" })).toBeInTheDocument();
+  });
+
+  it("lets you try again on the row after the server refuses", async () => {
+    // The refusal is usually a missing key, which is fixed elsewhere and
+    // then wants another go. Without this the row kept the sentence until
+    // the page was remounted.
+    serve(makeRunDetail({ runId: RUN_ID }), [
+      makeRankedTopic({ topicId: "t2", finalRank: 6, aboveCut: false, renderCount: 0 }),
+    ]);
+    server.use(
+      http.post("/api/runs/:runId/topics/:topicId/renders", () =>
+        HttpResponse.json(
+          { detail: "ANTHROPIC_API_KEY is required for the anthropic provider" },
+          { status: 400 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "generate ↗" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Try generating again" }),
+    );
+
+    expect(await screen.findByRole("button", { name: "generate ↗" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

@@ -64,8 +64,19 @@ export function GeneratingTile({
  *
  * See the plan's "Decisions", 5 and 6.
  */
-export function RenderTile({ render }: { render: RenderRecord }) {
+export function RenderTile({
+  render,
+  onRemoved,
+}: {
+  render: RenderRecord;
+  /**
+   * Called once the row has left the cache, so the grid can take the focus
+   * this tile is about to unmount with.
+   */
+  onRemoved?: () => void;
+}) {
   const remove = useDeleteRender();
+  const drop = () => remove.mutate(render, { onSuccess: onRemoved });
   const provenance = render.origin.provenance;
   const failure = remove.isError ? (
     <p role="alert" className={styles.deleteError}>
@@ -90,7 +101,7 @@ export function RenderTile({ render }: { render: RenderRecord }) {
         <GeneratingTile
           label={`${render.template_id ?? "choosing…"} · ${provenance}`}
           doing={provenance === "manual" ? "rendering…" : "writing brief…"}
-          onCancel={() => remove.mutate(render)}
+          onCancel={drop}
         />
         {failure}
       </>
@@ -114,7 +125,7 @@ export function RenderTile({ render }: { render: RenderRecord }) {
             type="button"
             className={styles.cross}
             aria-label="Dismiss render"
-            onClick={() => remove.mutate(render)}
+            onClick={drop}
           >
             ✕
           </button>
@@ -145,7 +156,7 @@ export function RenderTile({ render }: { render: RenderRecord }) {
             {`${render.template_id ?? "no template"} · ${provenance}`}
           </span>
         }
-        onConfirm={() => remove.mutate(render)}
+        onConfirm={drop}
       />
       {failure}
     </div>
