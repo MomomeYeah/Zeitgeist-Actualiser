@@ -58,9 +58,7 @@ class Settings(BaseSettings):
     llm_provider: Literal["anthropic", "ollama"] = Field(
         "anthropic", json_schema_extra={"scope": "run"}
     )
-    llm_model: str = Field(
-        "claude-sonnet-5", json_schema_extra={"scope": "run"}
-    )
+    llm_model: str = Field("claude-sonnet-5", json_schema_extra={"scope": "run"})
     # 127.0.0.1, not localhost: on the machine this was measured on, httpx
     # resolves localhost to ::1 first and IPv6-first resolution cost more
     # (2.16-2.28s) than the model registry's whole 2.0s timeout, so New run's
