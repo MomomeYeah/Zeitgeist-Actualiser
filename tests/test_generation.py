@@ -36,10 +36,10 @@ def _settings(tmp_path) -> Settings:
     `anthropic_api_key` is set because `GenerationService.submit` calls
     `build_provider` on the request thread, and `llm_provider` defaults to
     `"anthropic"`, whose factory raises `ValueError` on an empty key —
-    which `conftest`'s autouse fixture guarantees, since it strips
-    `ANTHROPIC_API_KEY` from the environment for every test. Without this
-    every `LLMGeneration` test would die in `submit` before reaching the
-    behaviour it names. It stays hermetic: `AnthropicProvider.__init__`
+    which a freshly constructed `Settings` has, since nothing populates it
+    and there is no environment for a real key to leak in from. Without
+    this every `LLMGeneration` test would die in `submit` before reaching
+    the behaviour it names. It stays hermetic: `AnthropicProvider.__init__`
     only constructs the SDK client and makes no network call, and every
     test here supplies its own `FakeLLMProvider` for the actual work.
     """

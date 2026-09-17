@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from zeitgeist.api.app import get_settings, get_store
 from zeitgeist.api.schemas import SettingField, SettingSource, SettingsUpdate
-from zeitgeist.config import Settings, load_settings
+from zeitgeist.config import Settings, format_validation_errors, load_settings
 from zeitgeist.store import Store
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -42,12 +42,11 @@ def _validation_detail(exc: ValidationError) -> str:
     string for `detail` — `"Not writable through settings: ..."` two lines
     below `write_settings`'s own use of this, for one. A generated
     TypeScript client sees `detail` as `string` everywhere else and
-    `ValidationError[]` only here, without this.
+    `ValidationError[]` only here, without this. Delegates to
+    `zeitgeist.config.format_validation_errors`, which `load_settings` also
+    raises through, rather than re-deriving the same expression here.
     """
-    return "; ".join(
-        f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
-        for error in exc.errors()
-    )
+    return format_validation_errors(exc)
 
 
 def _source(key: str, stored: dict[str, str]) -> SettingSource:

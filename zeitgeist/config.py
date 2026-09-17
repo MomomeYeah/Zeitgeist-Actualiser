@@ -199,6 +199,24 @@ class StoredSettingError(ValueError):
     """
 
 
+def format_validation_errors(exc: ValidationError) -> str:
+    """`exc.errors()` as one readable string naming every offending field,
+    rather than the list of objects pydantic hands back.
+
+    Shared with `zeitgeist.api.settings._validation_detail`, which needs
+    the identical rendering for an HTTP `detail` string: every other 400
+    among the project's endpoints uses a plain string there, and a
+    generated TypeScript client would otherwise see `detail` as `string`
+    everywhere except that one endpoint. Defined here, the lower module,
+    rather than in `api/settings.py`, which already imports from this one
+    — the reverse import would be a cycle.
+    """
+    return "; ".join(
+        f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+        for error in exc.errors()
+    )
+
+
 def load_settings(store: Store) -> Settings:
     """Every stored value; every unstored field at its declared default."""
     try:
@@ -212,11 +230,7 @@ def load_settings(store: Store) -> Settings:
         return Settings(**stored)
     except ValidationError as exc:
         raise StoredSettingError(
-            "Stored settings are invalid: "
-            + "; ".join(
-                f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
-                for error in exc.errors()
-            )
+            "Stored settings are invalid: " + format_validation_errors(exc)
         ) from exc
 
 

@@ -25,8 +25,8 @@ def _settings_selecting(*names: str) -> Settings:
     build a valid Settings and set `.sources` directly afterwards, which
     reaches that real code path unchanged. This relies on Settings not
     declaring `validate_assignment` -- an implementation detail, not a
-    contract pydantic-settings promises -- so if that ever gets added,
-    these tests will fail in a way that looks unrelated to this cause.
+    contract pydantic promises -- so if that ever gets added, these tests
+    will fail in a way that looks unrelated to this cause.
     """
     settings = Settings(anthropic_api_key="key", sources="bluesky")
     settings.sources = list(names)
