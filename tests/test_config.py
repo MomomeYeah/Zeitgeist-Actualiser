@@ -193,6 +193,19 @@ def test_a_stored_key_that_is_no_longer_a_field_is_ignored(store):
     assert load_settings(store).topic_count == 5
 
 
+def test_load_settings_ignores_a_stored_row_for_an_unscoped_field(store):
+    """ "An unscoped field is not stored at all" (the design spec) has to be
+    structural, not merely a property of what `PUT /api/settings` happens
+    to write. `templates_dir` is a real `Settings` field, unlike
+    `retired_knob` above, so `extra="ignore"` alone would not catch a
+    hand-edited row for it -- it would splat straight through and silently
+    repoint every test and every run at the wrong template library.
+    """
+    store.set_setting("templates_dir", "/tmp/hand-edited")
+
+    assert load_settings(store).templates_dir != Path("/tmp/hand-edited")
+
+
 def test_the_store_beats_the_base_snapshot(store):
     """The staleness class this replaces: `app.state.settings` is frozen at
     startup, so a value saved in the browser has to outrank it or it never
@@ -223,6 +236,24 @@ def test_an_unscoped_field_survives_from_the_base_untouched(store):
 
     assert resolved.output_dir == Path("/tmp/somewhere")
     assert resolved.topic_count == 9
+
+
+def test_a_stored_row_for_an_unscoped_field_does_not_override_base(store):
+    """The write side (`PUT /api/settings`) already refuses an unscoped key,
+    so this row can only exist from a hand edit -- but `resolve_settings`
+    used to splat the raw table regardless, and the store outranks `base`
+    for every key it holds. `base` is the one seam tests use to inject
+    `output_dir`/`templates_dir`, so an unscoped row silently beating it
+    would be a real, if obscure, way for a test's own `tmp_path` isolation
+    to be overridden by whatever a stale row in that test's own database
+    happened to say.
+    """
+    base = Settings(output_dir=Path("/tmp/somewhere"))
+    store.set_setting("output_dir", "/tmp/hand-edited")
+
+    resolved = resolve_settings(store, base, {})
+
+    assert resolved.output_dir == Path("/tmp/somewhere")
 
 
 def test_an_invalid_override_raises_rather_than_being_coerced_silently(store):

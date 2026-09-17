@@ -186,6 +186,28 @@ SECRET_KEYS = frozenset(
     and field.json_schema_extra.get("secret") is True
 )
 
+# Every key the store is allowed to hold. "An unscoped field is not stored
+# at all" is the design spec's guarantee; `PUT /api/settings` already
+# enforces it on the write side (`SETTABLE_KEYS` in `api/settings.py`), but
+# nothing enforced it on the read side until now. A hand-edited row for
+# `output_dir` or `templates_dir` — fields with no scope, and so no row an
+# API request could ever have written — would otherwise apply silently: a
+# real risk for `resolve_settings`, where the store outranks `base`, which
+# is the one seam tests use to inject exactly those fields.
+_SCOPED_KEYS = GLOBAL_KEYS | RUN_KEYS
+
+
+def _scoped(stored: dict[str, str]) -> dict[str, str]:
+    """`stored` filtered to keys a scope actually declares.
+
+    Also what makes "a key in the table that is not a `Settings` field is
+    ignored" explicit rather than a side effect of `model_config`'s
+    `extra="ignore"` — a retired field's leftover row and an unscoped
+    field's hand-edited one are both filtered out here, for the same
+    reason, before `Settings` ever sees them.
+    """
+    return {key: value for key, value in stored.items() if key in _SCOPED_KEYS}
+
 
 class StoredSettingError(ValueError):
     """A row in the `settings` table does not validate.
@@ -218,7 +240,8 @@ def format_validation_errors(exc: ValidationError) -> str:
 
 
 def load_settings(store: Store) -> Settings:
-    """Every stored value; every unstored field at its declared default."""
+    """Every stored scoped value; every unstored field at its declared
+    default."""
     try:
         # `dict[str, Any]`: every row is TEXT, and it is pydantic that turns
         # each one back into its field's real type — or raises, below —
@@ -226,7 +249,7 @@ def load_settings(store: Store) -> Settings:
         # actually returns would type-check each field against `str`,
         # producing one diagnostic per non-string field for a mismatch the
         # runtime validation below exists precisely to catch.
-        stored: dict[str, Any] = store.get_settings()
+        stored: dict[str, Any] = _scoped(store.get_settings())
         return Settings(**stored)
     except ValidationError as exc:
         raise StoredSettingError(
@@ -253,4 +276,4 @@ def resolve_settings(
     validation entirely: `"9"` would stay the string `"9"` for `topic_count`
     with no error raised anywhere.
     """
-    return Settings(**(base.model_dump() | store.get_settings() | overrides))
+    return Settings(**(base.model_dump() | _scoped(store.get_settings()) | overrides))
