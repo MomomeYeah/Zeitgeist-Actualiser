@@ -439,16 +439,22 @@ export function makeSettingField(
 }
 
 /**
- * The seven fields this screen draws, in the order `GET /api/settings`
- * returns them: sorted by key. Not the full fourteen `GET /api/settings`
- * now reports — the settings screen (`fields.ts`'s `CARDS`) still only
- * draws these seven, so a fixture carrying the rest would assert nothing
- * any test here reads.
+ * All fourteen, in the order `GET /api/settings` returns them: sorted by
+ * key. Complete rather than trimmed to what a test reads — a screen that
+ * mishandled a `null` secret, a string host or a CSV `sources` would
+ * otherwise pass against a fixture that never contained one.
  */
 export function makeSettingFields(
   overrides: Partial<Record<string, Partial<SettingField>>> = {},
 ): SettingField[] {
   const base: SettingField[] = [
+    {
+      key: "anthropic_api_key",
+      value: null,
+      scope: "global",
+      source: "default",
+      secret: true,
+    },
     {
       key: "bluesky_fetch_concurrency",
       value: 8,
@@ -485,9 +491,37 @@ export function makeSettingFields(
       secret: false,
     },
     {
+      key: "font_path",
+      value: null,
+      scope: "global",
+      source: "default",
+      secret: false,
+    },
+    {
+      key: "llm_model",
+      value: "claude-sonnet-5",
+      scope: "run",
+      source: "default",
+      secret: false,
+    },
+    {
+      key: "llm_provider",
+      value: "anthropic",
+      scope: "run",
+      source: "default",
+      secret: false,
+    },
+    {
       key: "meme_potential_weight",
       value: 0.3,
       scope: "run",
+      source: "default",
+      secret: false,
+    },
+    {
+      key: "ollama_host",
+      value: "http://127.0.0.1:11434",
+      scope: "global",
       source: "default",
       secret: false,
     },
@@ -498,6 +532,30 @@ export function makeSettingFields(
       source: "default",
       secret: false,
     },
+    {
+      key: "sources",
+      value: "bluesky",
+      scope: "run",
+      source: "default",
+      secret: false,
+    },
+    {
+      key: "topic_count",
+      value: 5,
+      scope: "run",
+      source: "default",
+      secret: false,
+    },
   ];
   return base.map((field) => ({ ...field, ...(overrides[field.key] ?? {}) }));
+}
+
+export function apiKeyField(options: Partial<SettingField> = {}): SettingField {
+  return makeSettingField({
+    key: "anthropic_api_key",
+    value: null,
+    scope: "global",
+    secret: true,
+    ...options,
+  });
 }

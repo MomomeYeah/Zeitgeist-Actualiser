@@ -25,6 +25,7 @@ export function SettingRow({
   draft: string | undefined;
   onDraft: (value: string) => void;
 }) {
+  const numeric = typeof field.value === "number";
   return (
     <div className={styles.row}>
       <div className={styles.head}>
@@ -36,10 +37,10 @@ export function SettingRow({
         </span>
         <input
           id={`setting-${field.key}`}
-          type="number"
-          step="any"
+          type={numeric ? "number" : "text"}
+          step={numeric ? "any" : undefined}
           className={styles.input}
-          value={draft ?? String(field.value)}
+          value={draft ?? (field.value === null ? "" : String(field.value))}
           onChange={(event) => onDraft(event.target.value)}
         />
       </div>

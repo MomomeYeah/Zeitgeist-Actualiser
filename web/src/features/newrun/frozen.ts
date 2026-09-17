@@ -15,10 +15,6 @@ import type { RunConfig } from "@/api/types";
  * The four cards (provider, model, platform, meme count) are deliberately
  * absent: those come from form state in `NewRunPage`, seeded from the
  * preset but editable, so a change made while re-running still wins.
- * `bluesky_fetch_concurrency` is absent too, for the same reason it is
- * absent from `as_overrides` — it has no field on `RunConfig` at all, so
- * there is nothing frozen to replay and it keeps resolving from whatever
- * current settings say.
  */
 export function frozenTunables(preset: RunConfig): Record<string, string> {
   return {
