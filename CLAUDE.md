@@ -55,9 +55,10 @@ instead.
 - **ty** does type checking, configured in `pyproject.toml`. It is pre-1.0
   and pinned `<0.1` deliberately — upgrade it as a deliberate change, not as
   a side effect.
-- **pytest** runs the suite. Tests are hermetic: `tests/conftest.py` strips
-  every environment variable `Settings` reads, so results never depend on a
-  local `.env` or an ambient shell.
+- **pytest** runs the suite. Tests are hermetic by construction: `Settings`
+  reads no environment variable and no `.env`, and every test that needs a
+  database builds its own `Store` on `tmp_path`, so results never depend on
+  a local install.
 
 Python 3.14, so use PEP 695 generics (`def f[T: Bound](...)`) rather than
 `typing.TypeVar`.

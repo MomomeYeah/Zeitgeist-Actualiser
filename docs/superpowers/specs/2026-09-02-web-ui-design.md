@@ -915,6 +915,12 @@ handoff asked for — the mocks draw the indicator but no way back.
 
 ### Settings storage
 
+> **Superseded** by `docs/superpowers/specs/2026-09-17-settings-in-the-database-design.md`.
+> The five-layer precedence chain, the `.env` fallback and the
+> `pydantic-settings` source described below were removed; the database is
+> now the only source. The section is kept as the record of what phase 6
+> built.
+
 A `settings` table — `key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at
 TEXT NOT NULL` — and a custom `pydantic-settings` source that reads it.
 
