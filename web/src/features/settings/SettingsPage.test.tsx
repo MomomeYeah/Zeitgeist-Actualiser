@@ -5,7 +5,12 @@ import { describe, expect, it } from "vitest";
 
 import type { SettingField } from "@/api/types";
 import { SettingsPage } from "@/features/settings/SettingsPage";
-import { apiKeyField, makeConfigOptions, makeSettingFields } from "@/test/factories";
+import {
+  apiKeyField,
+  makeConfigOptions,
+  makeSettingField,
+  makeSettingFields,
+} from "@/test/factories";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/server";
 
@@ -40,6 +45,35 @@ describe("SettingsPage", () => {
     expect(
       screen.getByRole("heading", { name: /defaults for new runs/i }),
     ).toBeInTheDocument();
+  });
+
+  it("names each field by the key a layer would actually match", async () => {
+    // Not `trend_limit`. `RunConfig` and `Settings` use different
+    // vocabularies for this field, and the settings table's own row is
+    // keyed `bluesky_trend_limit` — a screen whose whole job is showing
+    // which layer a value came from must not print a name no layer uses.
+    server.use(...settingsHandler(makeSettingFields()));
+
+    renderWithProviders(<SettingsPage />, { route: "/settings" });
+
+    expect(await screen.findByText("bluesky_trend_limit")).toBeInTheDocument();
+    expect(screen.queryByText("trend_limit")).not.toBeInTheDocument();
+  });
+
+  it("says where each value came from", async () => {
+    // The contrast is the point: an implementation that always rendered
+    // DEFAULT would still pass a test that only checked for DEFAULT.
+    server.use(
+      ...settingsHandler([
+        makeSettingField({ key: "phrase_min_authors", source: "settings" }),
+        makeSettingField({ key: "meme_potential_weight", source: "default" }),
+      ]),
+    );
+
+    renderWithProviders(<SettingsPage />, { route: "/settings" });
+
+    expect(await screen.findByText("SET HERE")).toBeInTheDocument();
+    expect(screen.getByText("DEFAULT")).toBeInTheDocument();
   });
 
   it("shows an unset API key as not set, with no value in the document", async () => {
@@ -144,6 +178,39 @@ describe("SettingsPage", () => {
 
     await waitFor(() =>
       expect(saved).toEqual([{ values: { ollama_host: "http://10.0.0.2:11434" } }]),
+    );
+  });
+
+  it("shows the server's own rejection when a value is out of range", async () => {
+    const user = userEvent.setup();
+    server.use(
+      ...settingsHandler(makeSettingFields()),
+      http.put("/api/settings", () =>
+        HttpResponse.json(
+          {
+            detail:
+              "meme_potential_weight: Input should be less than or equal to 1",
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+
+    renderWithProviders(<SettingsPage />, { route: "/settings" });
+
+    const field = await screen.findByLabelText("meme_potential_weight");
+    await user.clear(field);
+    await user.type(field, "2");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    // The PUT is still in flight when the click returns; the failure
+    // message only exists once the mutation actually settles.
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "meme_potential_weight: Input should be less than or equal to 1",
+        ),
+      ).toBeInTheDocument(),
     );
   });
 
