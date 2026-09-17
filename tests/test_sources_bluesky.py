@@ -965,7 +965,7 @@ def test_bluesky_is_a_known_source():
     """Settings rejects unknown names, so without this SOURCES=bluesky fails
     at startup.
     """
-    assert Settings(_env_file=None, sources="bluesky").sources == ["bluesky"]
+    assert Settings(sources="bluesky").sources == ["bluesky"]
 
 
 def test_each_trend_logs_its_post_and_reply_counts_at_debug(caplog):

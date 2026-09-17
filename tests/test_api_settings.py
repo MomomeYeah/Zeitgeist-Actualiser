@@ -1,9 +1,6 @@
-import os
-from pathlib import Path
-
-from tests.api_factory import seeded_client
-from zeitgeist.config import Settings
-from zeitgeist.settings_source import WRITABLE_KEYS
+from tests.api_factory import api_db_path, seed_settings, seeded_client
+from zeitgeist.api.settings import WRITABLE_KEYS
+from zeitgeist.config import Settings, load_settings
 from zeitgeist.store import Store
 
 
@@ -18,10 +15,7 @@ def test_every_tunable_field_is_reported(tmp_path):
 
 
 def test_a_stored_override_reports_itself_as_set_here(tmp_path):
-    store = Store(Path(os.environ["DB_PATH"]))
-    store.init_schema()
-    store.set_setting("bluesky_trend_limit", "11")
-    store.close()
+    seed_settings(tmp_path, bluesky_trend_limit="11")
     client = seeded_client(tmp_path)
 
     body = {field["key"]: field for field in client.get("/api/settings").json()}
@@ -30,14 +24,9 @@ def test_a_stored_override_reports_itself_as_set_here(tmp_path):
     assert body["bluesky_trend_limit"]["source"] == "settings"
 
 
-def test_an_untouched_field_reports_the_default(tmp_path, monkeypatch):
-    """`chdir` because `_dotenv_value` reads `Path(".env")` relative to the
-    process, not the `_env_file` `api_settings` passes. Without it this
-    test's answer depends on whether the checked-out repo's own `.env`
-    happens to set this key — the ambient-file hazard `conftest` already
-    guards against for `DB_PATH`.
-    """
-    monkeypatch.chdir(tmp_path)
+def test_an_untouched_field_reports_the_default(tmp_path):
+    """The other half of the chip: a field with no row behind it must say so,
+    or "set here" would be the only thing the screen could ever show."""
     client = seeded_client(tmp_path)
 
     body = {field["key"]: field for field in client.get("/api/settings").json()}
@@ -46,40 +35,13 @@ def test_an_untouched_field_reports_the_default(tmp_path, monkeypatch):
     assert body["phrase_min_authors"]["source"] == "default"
 
 
-def test_a_shell_variable_is_reported_as_environment(tmp_path, monkeypatch):
-    """A shell variable outranks the settings table, so a screen showing
-    'SET HERE' for a value the environment is actually supplying would be
-    lying about which layer won."""
-    monkeypatch.setenv("PHRASE_MIN_AUTHORS", "7")
-    client = seeded_client(tmp_path)
-
-    body = {field["key"]: field for field in client.get("/api/settings").json()}
-
-    assert body["phrase_min_authors"]["value"] == 7
-    assert body["phrase_min_authors"]["source"] == "environment"
-
-
-def test_a_shell_variable_beats_a_stored_override(tmp_path, monkeypatch):
-    """Both layers set the same key here, which no other test does. Every
-    other case leaves the layer it is not testing empty, so swapping the
-    first two branches of `_source` would pass all of them."""
-    store = Store(Path(os.environ["DB_PATH"]))
-    store.init_schema()
-    store.set_setting("bluesky_trend_limit", "11")
-    store.close()
-    monkeypatch.setenv("BLUESKY_TREND_LIMIT", "9")
-    client = seeded_client(tmp_path)
-
-    body = {field["key"]: field for field in client.get("/api/settings").json()}
-
-    assert body["bluesky_trend_limit"]["value"] == 9
-    assert body["bluesky_trend_limit"]["source"] == "environment"
-
-
-def test_the_api_key_is_never_in_the_response(tmp_path, monkeypatch):
+def test_the_api_key_is_never_in_the_response(tmp_path):
     """It is not a tunable field, and a settings endpoint that leaked one
-    would be a different and worse thing than a tuning screen."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    would be a different and worse thing than a tuning screen. Seeded into
+    the table, which is where a key lives now, so the response is built from
+    a `Settings` that really is carrying it.
+    """
+    seed_settings(tmp_path, anthropic_api_key="sk-ant-secret")
     client = seeded_client(tmp_path)
 
     raw = client.get("/api/settings").text
@@ -126,23 +88,27 @@ def test_a_written_value_survives_into_a_new_settings_object(tmp_path):
     """The point of the table: the next run picks the value up. A write that
     only touched the response would change the screen and nothing else.
 
-    Asserted on a freshly built `Settings` rather than on `GET /api/settings`
-    — which now also reports it, per the test above — because that is what
-    "the next run" actually is: the worker constructs one per run and
-    `SettingsTableSource` reads the table at construction, independently of
-    whatever `GET /api/settings` happens to do.
+    Asserted through `load_settings` against a separate connection rather
+    than on `GET /api/settings` — which now also reports it, per the test
+    above — because that is what "the next run" actually is: the run builds
+    its own `Settings` off the table, independently of whatever
+    `GET /api/settings` happens to do.
     """
     client = seeded_client(tmp_path)
 
     client.put("/api/settings", json={"values": {"phrase_min_authors": "7"}})
 
-    assert Settings(_env_file=None).phrase_min_authors == 7
+    store = Store(api_db_path(tmp_path))
+    try:
+        assert load_settings(store).phrase_min_authors == 7
+    finally:
+        store.close()
 
 
-def test_an_empty_value_clears_the_row_so_the_fallback_applies(tmp_path):
-    """ "Reset to .env" deletes the row rather than writing a default —
-    writing the default back would pin the value and make a later `.env`
-    edit invisible, which is the opposite of what the button says."""
+def test_an_empty_value_clears_the_row_so_the_default_applies(tmp_path):
+    """Reset deletes the row rather than writing the default into it. A
+    stored default would read back as a deliberate choice, and the screen
+    could no longer tell it from a field nobody has touched."""
     client = seeded_client(tmp_path)
     client.put("/api/settings", json={"values": {"phrase_min_authors": "7"}})
 
@@ -154,19 +120,18 @@ def test_an_empty_value_clears_the_row_so_the_fallback_applies(tmp_path):
     # that literal is the field's default, which the code is free to change,
     # so a test pinning it would fail for a decision rather than a bug.
     fields = {field["key"]: field for field in body}
-    assert fields["phrase_min_authors"]["value"] == (
-        Settings(_env_file=None).phrase_min_authors
-    )
+    assert fields["phrase_min_authors"]["value"] == (Settings().phrase_min_authors)
     assert fields["phrase_min_authors"]["source"] != "settings"
 
 
 def test_a_field_outside_the_seven_is_refused(tmp_path):
-    """A UI that can rewrite where the database lives is a different and
-    worse thing than a tuning screen."""
+    """A real `Settings` field, but not one this screen offers: a UI that
+    can point every run at another directory is a different and worse thing
+    than a tuning screen."""
     client = seeded_client(tmp_path)
 
     response = client.put(
-        "/api/settings", json={"values": {"db_path": "/tmp/elsewhere.db"}}
+        "/api/settings", json={"values": {"output_dir": "/tmp/elsewhere"}}
     )
 
     assert response.status_code == 400
@@ -201,11 +166,11 @@ def test_a_refused_field_writes_nothing_at_all(tmp_path):
 
     response = client.put(
         "/api/settings",
-        json={"values": {"phrase_min_authors": "7", "db_path": "/tmp/x.db"}},
+        json={"values": {"phrase_min_authors": "7", "output_dir": "/tmp/x"}},
     )
 
     assert response.status_code == 400
-    store = Store(Path(os.environ["DB_PATH"]))
+    store = Store(api_db_path(tmp_path))
     try:
         assert store.get_settings() == {}
     finally:

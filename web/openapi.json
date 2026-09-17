@@ -393,7 +393,7 @@
           "settings"
         ],
         "summary": "Read Settings",
-        "description": "Built from a fresh `Settings()`, not `app.state.settings`.\n\n`app.state.settings` is frozen at startup (`create_app`'s parameter),\nand `init_settings` outranks the table in `Settings.settings_customise_\nsources` \u2014 so `getattr` on that frozen object would never see a value a\n`PUT` had since written, no matter how recently. The chip beside it\nwould say \"settings\" while the value shown was the old one: the worst\npossible presentation, because it names the very layer that just won as\nthe source of a value that layer did not produce. A fresh `Settings()`\nre-resolves every field through the normal precedence chain \u2014 including\n`SettingsTableSource`, which reads the table at construction \u2014 so a\n`PUT` is visible to the very next `GET`. `write_settings` already built\none of these to answer its own response before this existed as its own\nread path; this makes that the only place that ever needs to.",
+        "description": "Read from the store, not from `app.state.settings`.\n\n`app.state.settings` is frozen at startup (`create_app`'s parameter), so\n`getattr` on it would never see a value a `PUT` had since written, no\nmatter how recently. The chip beside it would say \"settings\" while the\nvalue shown was the old one: the worst possible presentation, because it\nnames the very layer that just won as the source of a value that layer\ndid not produce. `load_settings` reads the table on each request, so a\n`PUT` is visible to the very next `GET`.",
         "operationId": "read_settings_api_settings_get",
         "responses": {
           "200": {

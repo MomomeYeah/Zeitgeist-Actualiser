@@ -1,11 +1,17 @@
-import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from tests.api_factory import SeededRun, api_settings, app_of, seed_run, seeded_client
+from tests.api_factory import (
+    SeededRun,
+    api_db_path,
+    api_settings,
+    app_of,
+    seed_run,
+    seeded_client,
+)
 from tests.run_factory import make_render_record, make_topic
 from tests.template_factory import make_manifest, make_slot, write_library
 from zeitgeist.api import create_app
@@ -248,7 +254,7 @@ def test_the_generation_pool_does_not_outlive_the_app(tmp_path):
     settings = api_settings(
         tmp_path, templates_dir=_library(tmp_path), anthropic_api_key="key"
     )
-    db_path = Path(os.environ["DB_PATH"])
+    db_path = api_db_path(tmp_path)
     store = Store(db_path)
     store.init_schema()
     seed_run(store, SeededRun(run_id=RUN, topics=[make_topic("airport-cat")]))

@@ -1,8 +1,6 @@
 import logging
-import os
 import sqlite3
 import threading
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -17,14 +15,12 @@ from zeitgeist.runner import (
     RunnerUnavailable,
     RunRequest,
     RunService,
-    resolve_settings,
 )
 from zeitgeist.store import Store
 
 
 def _settings(tmp_path) -> Settings:
     return Settings(
-        _env_file=None,
         output_dir=tmp_path / "output",
     )
 
@@ -52,7 +48,7 @@ def test_the_worker_opens_its_own_connection_to_the_services_database(tmp_path):
     """
     store = Store(tmp_path / "z.db")
     store.init_schema()
-    service = RunService(Settings(_env_file=None), store)
+    service = RunService(Settings(), store)
     worker = service._worker_store()
     try:
         assert worker is not store
@@ -807,74 +803,29 @@ def test_aborting_a_completed_run_reports_that_it_did_nothing(tmp_path):
 
 
 def test_a_run_picks_up_the_settings_table_for_fields_it_does_not_override(
-    tmp_path, monkeypatch
+    tmp_path,
 ):
     """`PUT /api/settings` writes to this table, and the spec's promise is
-    that changes apply to new runs. Splatting *every* field of this
-    service's own startup settings as constructor arguments would pin every
-    run-settable field at its value from `RunService.__init__` forever —
-    `init_settings` outranks the table in `Settings.settings_customise_
-    sources` — making that promise false until a restart. A request that
-    does not override `phrase_min_authors` must still see a value written
-    to the table after the service started.
-
-    `Settings` has no `db_path` field for `SettingsTableSource` to resolve
-    the table from even if it wanted to; it re-derives its own path from
-    `DB_PATH`/`.env` instead (see `zeitgeist/settings_source.py`). `DB_PATH`
-    has to point at this test's database for the table to be consulted at
-    all, the same as every test in `test_settings_source.py`.
+    that changes apply to new runs. This service's own `Settings` was frozen
+    when it was constructed, so a request that does not override
+    `phrase_min_authors` can only see the 7 because `_build_settings`
+    resolves against the store rather than splatting that frozen object —
+    the difference between the promise holding and holding until restart.
     """
-    settings = _settings(tmp_path)
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "z.db"))
-    store = Store(tmp_path / "z.db")
-    store.init_schema()
-    store.set_setting("phrase_min_authors", "7")
-    store.close()
-
     seen: list[int] = []
 
     def execute(settings, request, store, observer, token) -> None:
         seen.append(settings.phrase_min_authors)
 
-    service = RunService(settings, _open_store(tmp_path), execute=execute)
+    store = _open_store(tmp_path)
+    service = RunService(_settings(tmp_path), store, execute=execute)
     service.start()
+
+    store.set_setting("phrase_min_authors", "7")
     service.enqueue(RunRequest())
     service.shutdown(timeout=10)
 
     assert seen == [7]
-
-
-def test_resolve_settings_picks_up_a_value_written_to_the_settings_table(tmp_path):
-    """The base snapshot is fixed when the service is constructed. A field
-    the settings screen writes afterwards must still reach the next run —
-    and the next generation job, which layers the same way."""
-    store = Store(Path(os.environ["DB_PATH"]))
-    store.init_schema()
-    store.set_setting("distil_concurrency", "7")
-
-    resolved = resolve_settings(Settings(_env_file=None), {})
-
-    assert resolved.distil_concurrency == 7
-
-
-def test_resolve_settings_lets_an_override_outrank_the_table(tmp_path):
-    store = Store(Path(os.environ["DB_PATH"]))
-    store.init_schema()
-    store.set_setting("distil_concurrency", "7")
-
-    resolved = resolve_settings(Settings(_env_file=None), {"distil_concurrency": "2"})
-
-    assert resolved.distil_concurrency == 2
-
-
-def test_resolve_settings_keeps_fields_a_run_cannot_set(tmp_path):
-    """`output_dir` may hold a programmatic value the API was constructed
-    with. Only the run-settable fields resolve afresh."""
-    base = Settings(_env_file=None, output_dir=tmp_path / "somewhere")
-
-    resolved = resolve_settings(base, {})
-
-    assert resolved.output_dir == tmp_path / "somewhere"
 
 
 def test_a_running_stage_gets_a_row_while_it_is_still_running(tmp_path):

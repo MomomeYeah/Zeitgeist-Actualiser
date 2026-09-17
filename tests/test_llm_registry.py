@@ -97,7 +97,7 @@ def test_available_models_reports_both_providers():
     would make that swap require a second request the screen does not make.
     """
     client = _FakeClient({"models": [{"name": "qwen3.5"}]})
-    settings = Settings(_env_file=None)
+    settings = Settings()
 
     models = available_models(settings, client=client)
 

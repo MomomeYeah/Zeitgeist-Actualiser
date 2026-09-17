@@ -171,20 +171,15 @@ export interface paths {
         };
         /**
          * Read Settings
-         * @description Built from a fresh `Settings()`, not `app.state.settings`.
+         * @description Read from the store, not from `app.state.settings`.
          *
-         *     `app.state.settings` is frozen at startup (`create_app`'s parameter),
-         *     and `init_settings` outranks the table in `Settings.settings_customise_
-         *     sources` — so `getattr` on that frozen object would never see a value a
-         *     `PUT` had since written, no matter how recently. The chip beside it
-         *     would say "settings" while the value shown was the old one: the worst
-         *     possible presentation, because it names the very layer that just won as
-         *     the source of a value that layer did not produce. A fresh `Settings()`
-         *     re-resolves every field through the normal precedence chain — including
-         *     `SettingsTableSource`, which reads the table at construction — so a
-         *     `PUT` is visible to the very next `GET`. `write_settings` already built
-         *     one of these to answer its own response before this existed as its own
-         *     read path; this makes that the only place that ever needs to.
+         *     `app.state.settings` is frozen at startup (`create_app`'s parameter), so
+         *     `getattr` on it would never see a value a `PUT` had since written, no
+         *     matter how recently. The chip beside it would say "settings" while the
+         *     value shown was the old one: the worst possible presentation, because it
+         *     names the very layer that just won as the source of a value that layer
+         *     did not produce. `load_settings` reads the table on each request, so a
+         *     `PUT` is visible to the very next `GET`.
          */
         get: operations["read_settings_api_settings_get"];
         /**

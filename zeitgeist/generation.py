@@ -23,7 +23,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from zeitgeist.config import Settings
+from zeitgeist.config import Settings, resolve_settings
 from zeitgeist.llm.base import LLMProvider
 from zeitgeist.llm.factory import build_provider
 from zeitgeist.media.brief import BriefError, check_slots, generate_brief
@@ -32,7 +32,6 @@ from zeitgeist.media.templates import TemplateManifest, load_templates
 from zeitgeist.models import STRICT, MediaBrief, Topic
 from zeitgeist.records import AutoOrigin, ManualOrigin, Origin, RenderRecord, Stage
 from zeitgeist.renders import render_paths
-from zeitgeist.runner import resolve_settings
 from zeitgeist.store import Store
 
 log = logging.getLogger(__name__)
@@ -329,7 +328,7 @@ class GenerationService:
         # early.
         pool = self._ensure_pool()
 
-        settings = resolve_settings(self._settings, {})
+        settings = resolve_settings(self._store, self._settings, {})
 
         # The analyse checkpoint holds *every* topic, not just the kept
         # ones, which is exactly what the below-the-cut `generate` link

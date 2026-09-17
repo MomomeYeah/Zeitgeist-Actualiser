@@ -374,7 +374,7 @@ def test_distil_carries_the_trend_status_onto_the_topic():
     evidence = _evidence(status="cooling")
     provider = FakeLLMProvider(responses=[_draft()])
 
-    [topic] = distil_topics([evidence], provider, Settings(_env_file=None))
+    [topic] = distil_topics([evidence], provider, Settings())
 
     assert topic.trend_status == "cooling"
 

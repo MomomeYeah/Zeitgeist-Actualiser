@@ -44,7 +44,6 @@ def _settings(tmp_path) -> Settings:
     test here supplies its own `FakeLLMProvider` for the actual work.
     """
     return Settings(
-        _env_file=None,
         output_dir=tmp_path / "output",
         anthropic_api_key="key",
         templates_dir=write_library(
@@ -185,7 +184,6 @@ def test_the_model_is_only_offered_the_template_the_panel_named(tmp_path):
     """
     store = _store(tmp_path)
     settings = Settings(
-        _env_file=None,
         output_dir=tmp_path / "output",
         anthropic_api_key="key",
         templates_dir=write_library(
@@ -237,7 +235,6 @@ def _settings_with(tmp_path, *template_ids: str) -> Settings:
     named" are the same prompt, and a test could not tell them apart.
     """
     return Settings(
-        _env_file=None,
         output_dir=tmp_path / "output",
         anthropic_api_key="key",
         templates_dir=write_library(

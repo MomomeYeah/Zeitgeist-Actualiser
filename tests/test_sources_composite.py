@@ -28,7 +28,7 @@ def _settings_selecting(*names: str) -> Settings:
     contract pydantic-settings promises -- so if that ever gets added,
     these tests will fail in a way that looks unrelated to this cause.
     """
-    settings = Settings(_env_file=None, anthropic_api_key="key", sources="bluesky")
+    settings = Settings(anthropic_api_key="key", sources="bluesky")
     settings.sources = list(names)
     return settings
 

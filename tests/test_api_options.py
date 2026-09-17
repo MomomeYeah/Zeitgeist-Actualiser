@@ -2,24 +2,24 @@ import json
 
 import pytest
 
-from tests.api_factory import api_settings, seeded_client
+from tests.api_factory import api_settings, seed_settings, seeded_client
 
 
 @pytest.fixture(autouse=True)
-def _no_real_ollama(monkeypatch):
+def _no_real_ollama(tmp_path):
     """`read_options` calls `available_models`, which builds its own
     `httpx.Client` and gets `/api/tags`. Left alone, every test in this
-    module reaches whatever Ollama the developer happens to be running:
-    `conftest` strips `OLLAMA_HOST`, so the host falls back to the real
-    default and the result depends on who runs the suite — exactly the
-    hermeticity the autouse fixture exists to guarantee.
+    module reaches whatever Ollama the developer happens to be running: the
+    field's default host is the real one, so the result would depend on who
+    runs the suite.
 
     `test_llm_registry.py` injects a fake client for this reason; this module
-    has no seam to inject through, so the host is pointed at a port nothing
-    listens on instead. `ollama_models` swallows the refusal and reports an
-    empty list, which is the CI shape.
+    has no seam to inject through, so the host is stored — the one layer
+    that can reach the app — pointing at a port nothing listens on.
+    `ollama_models` swallows the refusal and reports an empty list, which is
+    the CI shape.
     """
-    monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:9")
+    seed_settings(tmp_path, ollama_host="http://127.0.0.1:9")
 
 
 def test_a_stopped_ollama_leaves_the_dropdown_empty_rather_than_500ing(tmp_path):
@@ -34,12 +34,12 @@ def test_a_stopped_ollama_leaves_the_dropdown_empty_rather_than_500ing(tmp_path)
     assert response.json()["models"]["ollama"] == []
 
 
-def test_the_api_key_is_reported_as_a_boolean_and_never_returned(tmp_path, monkeypatch):
+def test_the_api_key_is_reported_as_a_boolean_and_never_returned(tmp_path):
     """The spec is explicit: the key itself is never returned. The New run
     screen needs to know whether the Anthropic provider is usable, and a
     boolean is the whole of what that needs.
     """
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret-value")
+    seed_settings(tmp_path, anthropic_api_key="sk-ant-secret-value")
     client = seeded_client(tmp_path)
 
     response = client.get("/api/config/options")
@@ -104,16 +104,16 @@ def test_templates_report_the_slots_their_manifests_declare(tmp_path):
     assert templates == manifests
 
 
-def test_the_env_defaults_report_the_configured_value(tmp_path, monkeypatch):
+def test_the_defaults_report_the_stored_value(tmp_path):
     """The New run screen pre-fills its cards from these. A field reported
     with the wrong value is worse than a blank one: the user sees a number
     that is not what the next run would actually use.
 
-    The value is set here and read back, rather than asserting a key is
-    present — presence is guaranteed by the comprehension over
-    `RUN_OVERRIDE_KEYS` and would pass for a dict of hardcoded zeros.
+    The value is stored here and read back, rather than asserting a key is
+    present — presence is guaranteed by the comprehension over `RUN_KEYS`
+    and would pass for a dict of hardcoded zeros.
     """
-    monkeypatch.setenv("TOPIC_COUNT", "9")
+    seed_settings(tmp_path, topic_count="9")
     client = seeded_client(tmp_path)
 
     defaults = client.get("/api/config/options").json()["defaults"]

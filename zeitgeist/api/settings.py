@@ -1,24 +1,37 @@
 """The settings read.
 
-Reports which layer supplied each value, because a settings screen that
-hides which layer won is worse than no settings screen. Only the seven
-tunable fields appear: a UI that could rewrite where the database lives, or
-read an API key back out, is a different and worse thing than a tuning
-screen.
+Reports whether each value was set here or is still the field's default,
+because a settings screen that cannot tell the two apart is worse than no
+settings screen. Only the seven tunable fields appear: a UI that could read
+an API key back out is a different and worse thing than a tuning screen.
 """
-
-import os
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 
 from zeitgeist.api.app import get_settings, get_store
 from zeitgeist.api.schemas import SettingField, SettingSource, SettingsUpdate
-from zeitgeist.config import Settings
-from zeitgeist.settings_source import WRITABLE_KEYS, _dotenv_value
+from zeitgeist.config import Settings, load_settings
 from zeitgeist.store import Store
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+# The fields this screen offers. A subset of `GLOBAL_KEYS | RUN_KEYS`, which
+# is everything the table can hold: `anthropic_api_key` is stored but must
+# never be read back out here, and the run-scoped choices (`sources`,
+# `llm_model` and the rest) belong to the New run screen, which sets them
+# per run rather than globally.
+WRITABLE_KEYS = frozenset(
+    {
+        "bluesky_trend_limit",
+        "bluesky_posts_per_trend",
+        "bluesky_fetch_concurrency",
+        "meme_potential_weight",
+        "phrase_min_authors",
+        "distil_char_budget",
+        "distil_concurrency",
+    }
+)
 
 
 def _validation_detail(exc: ValidationError) -> str:
@@ -38,39 +51,28 @@ def _validation_detail(exc: ValidationError) -> str:
 
 
 def _source(key: str, stored: dict[str, str]) -> SettingSource:
-    """Which layer supplied this field, in `Settings`' own precedence.
+    """Whether this field was set here or is still its declared default.
 
-    Environment first, then the settings table, then `.env`, then the field
-    default — the order `settings_customise_sources` establishes.
+    The only two answers there are: a value is a row in the `settings` table
+    or it is nothing at all.
     """
-    if key.upper() in os.environ:
-        return "environment"
-    if key in stored:
-        return "settings"
-    if _dotenv_value(key.upper()) is not None:
-        return "dotenv"
-    return "default"
+    return "settings" if key in stored else "default"
 
 
 @router.get("", response_model=list[SettingField])
 def read_settings(store: Store = Depends(get_store)) -> list[SettingField]:
-    """Built from a fresh `Settings()`, not `app.state.settings`.
+    """Read from the store, not from `app.state.settings`.
 
-    `app.state.settings` is frozen at startup (`create_app`'s parameter),
-    and `init_settings` outranks the table in `Settings.settings_customise_
-    sources` — so `getattr` on that frozen object would never see a value a
-    `PUT` had since written, no matter how recently. The chip beside it
-    would say "settings" while the value shown was the old one: the worst
-    possible presentation, because it names the very layer that just won as
-    the source of a value that layer did not produce. A fresh `Settings()`
-    re-resolves every field through the normal precedence chain — including
-    `SettingsTableSource`, which reads the table at construction — so a
-    `PUT` is visible to the very next `GET`. `write_settings` already built
-    one of these to answer its own response before this existed as its own
-    read path; this makes that the only place that ever needs to.
+    `app.state.settings` is frozen at startup (`create_app`'s parameter), so
+    `getattr` on it would never see a value a `PUT` had since written, no
+    matter how recently. The chip beside it would say "settings" while the
+    value shown was the old one: the worst possible presentation, because it
+    names the very layer that just won as the source of a value that layer
+    did not produce. `load_settings` reads the table on each request, so a
+    `PUT` is visible to the very next `GET`.
     """
     stored = store.get_settings()
-    settings = Settings()
+    settings = load_settings(store)
     return [
         SettingField(
             key=key,
@@ -118,9 +120,10 @@ def write_settings(
     # partial save with a 400 beside it.
     for key, value in body.values.items():
         if value == "":
-            # "Reset to .env" deletes the row so the fallback applies again.
-            # Writing the default back would pin the value and make a later
-            # .env edit invisible.
+            # Reset deletes the row so the field's declared default applies
+            # again. Writing that default back as a value would pin it, and
+            # the screen could no longer tell a deliberate choice from a
+            # field nobody has ever touched.
             store.clear_setting(key)
         else:
             store.set_setting(key, value)

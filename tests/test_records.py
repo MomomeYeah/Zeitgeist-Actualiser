@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from tests.run_factory import make_run_config
-from zeitgeist.config import Settings
+from zeitgeist.config import Settings, resolve_settings
 from zeitgeist.records import (
     AutoOrigin,
     ManualOrigin,
@@ -13,11 +13,11 @@ from zeitgeist.records import (
     Stage,
     StageRecord,
 )
-from zeitgeist.runner import RUN_OVERRIDE_KEYS, resolve_settings
+from zeitgeist.store import Store
 
 
 def test_freeze_copies_the_settings_a_run_detail_config_line_shows():
-    settings = Settings(_env_file=None, llm_model="claude-sonnet-5", topic_count=5)
+    settings = Settings(llm_model="claude-sonnet-5", topic_count=5)
 
     frozen = RunConfig.freeze(settings, template_ids=None)
 
@@ -28,8 +28,9 @@ def test_freeze_copies_the_settings_a_run_detail_config_line_shows():
 
 
 def test_freeze_is_a_copy_not_a_view():
-    """The config line must show what the run used, not what .env says now."""
-    settings = Settings(_env_file=None, topic_count=5)
+    """The config line must show what the run used, not what the settings
+    table says now."""
+    settings = Settings(topic_count=5)
     frozen = RunConfig.freeze(settings, template_ids=None)
 
     settings.topic_count = 9
@@ -37,7 +38,7 @@ def test_freeze_is_a_copy_not_a_view():
     assert frozen.top_count == 5
 
 
-def test_as_overrides_round_trips_through_freeze_and_resolve_settings():
+def test_as_overrides_round_trips_through_freeze_and_resolve_settings(tmp_path):
     """The inverse of `freeze`, pinned against the real `resolve_settings`
     and the real `Settings` validator rather than against a hand-written
     expectation of the mapping. Every value here is deliberately different
@@ -59,11 +60,14 @@ def test_as_overrides_round_trips_through_freeze_and_resolve_settings():
         template_ids=["drake", "distracted-boyfriend"],
     )
 
-    overrides = cfg.as_overrides()
-    resolved = resolve_settings(Settings(_env_file=None), overrides)
+    store = Store(tmp_path / "z.db")
+    store.init_schema()
+    try:
+        resolved = resolve_settings(store, Settings(), cfg.as_overrides())
+    finally:
+        store.close()
 
     assert RunConfig.freeze(resolved, cfg.template_ids) == cfg
-    assert set(overrides) <= RUN_OVERRIDE_KEYS
 
 
 def test_a_manual_render_has_no_rationale_field_at_all():

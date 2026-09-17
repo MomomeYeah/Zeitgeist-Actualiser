@@ -1,24 +1,33 @@
 """What the New run and settings screens offer as choices.
 
 One endpoint, but it assembles from four unrelated sources — providers,
-platforms, templates and `.env` — and belongs in none of the resource
-routers.
+platforms, templates and the stored settings — and belongs in none of the
+resource routers.
 """
 
 from fastapi import APIRouter, Depends
 
-from zeitgeist.api.app import get_settings
+from zeitgeist.api.app import get_settings, get_store
 from zeitgeist.api.schemas import ConfigOptions, PlatformOption, TemplateOption
-from zeitgeist.config import KNOWN_SOURCES, TREND_SOURCES, Settings
+from zeitgeist.config import (
+    KNOWN_SOURCES,
+    RUN_KEYS,
+    TREND_SOURCES,
+    Settings,
+    resolve_settings,
+)
 from zeitgeist.llm.registry import available_models
 from zeitgeist.media.templates import load_templates
-from zeitgeist.runner import RUN_OVERRIDE_KEYS, resolve_settings
+from zeitgeist.store import Store
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
 
 @router.get("/options", response_model=ConfigOptions)
-def read_options(app_settings: Settings = Depends(get_settings)) -> ConfigOptions:
+def read_options(
+    app_settings: Settings = Depends(get_settings),
+    store: Store = Depends(get_store),
+) -> ConfigOptions:
     # Resolved now, the way the next run will resolve them, rather than read
     # off `app.state.settings`: that object is frozen at startup, so a value
     # the settings screen saved since never appeared here, and the New run
@@ -27,7 +36,7 @@ def read_options(app_settings: Settings = Depends(get_settings)) -> ConfigOption
     # `RunService.enqueue` builds for a run started from these defaults, so
     # the two cannot disagree. A comment rather than a docstring, which
     # FastAPI would publish into the OpenAPI contract.
-    settings = resolve_settings(app_settings, {})
+    settings = resolve_settings(store, app_settings, {})
     templates = load_templates(settings.templates_dir)
     return ConfigOptions(
         models=available_models(settings),
@@ -42,8 +51,6 @@ def read_options(app_settings: Settings = Depends(get_settings)) -> ConfigOption
         # Only the fields a run may actually override. Reporting every
         # `Settings` field would put `anthropic_api_key` in the response,
         # which is the one thing this endpoint must never return.
-        defaults={
-            key: str(getattr(settings, key)) for key in sorted(RUN_OVERRIDE_KEYS)
-        },
+        defaults={key: str(getattr(settings, key)) for key in sorted(RUN_KEYS)},
         anthropic_key_present=bool(settings.anthropic_api_key),
     )

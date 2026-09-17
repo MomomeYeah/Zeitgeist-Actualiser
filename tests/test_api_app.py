@@ -1,11 +1,9 @@
-import os
 import sqlite3
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.api_factory import app_of, seeded_client
+from tests.api_factory import api_db_path, app_of, seeded_client
 from tests.run_factory import make_run_config
 from zeitgeist.api import create_app
 from zeitgeist.config import Settings
@@ -15,7 +13,6 @@ from zeitgeist.store import DB_PATH, Store
 
 def _settings(tmp_path) -> Settings:
     return Settings(
-        _env_file=None,
         output_dir=tmp_path / "output",
     )
 
@@ -51,7 +48,7 @@ def test_create_app_opens_its_database_at_the_path_it_is_given(tmp_path):
     in favour of the `data/` default.
     """
     path = tmp_path / "nested" / "z.db"
-    app = create_app(Settings(_env_file=None), db_path=path)
+    app = create_app(Settings(), db_path=path)
     try:
         assert app.state.store.path == path
         assert path.is_file()
@@ -70,7 +67,7 @@ def test_create_app_defaults_to_the_database_the_constant_names(tmp_path, monkey
     """
     monkeypatch.chdir(tmp_path)
 
-    app = create_app(Settings(_env_file=None))
+    app = create_app(Settings())
     try:
         assert app.state.store.path == DB_PATH
         assert (tmp_path / "data" / "zeitgeist.db").is_file()
@@ -141,7 +138,7 @@ def test_a_run_left_running_by_a_crash_is_interrupted_on_startup(tmp_path):
     would pass every test in `test_store.py` and leave the UI polling a dead
     run forever.
     """
-    store = Store(Path(os.environ["DB_PATH"]))
+    store = Store(api_db_path(tmp_path))
     store.init_schema()
     store.start_run("20260905T120000Z", make_run_config())
     store.close()

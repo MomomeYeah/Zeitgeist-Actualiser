@@ -1,17 +1,31 @@
-"""Runtime configuration, loaded from environment and `.env`."""
+"""Runtime configuration, read from the `settings` table.
+
+There is no environment layer and no `.env`: a value is either stored in the
+database, supplied by the caller that constructed the object, or the field's
+declared default. `load_settings` and `resolve_settings` at the bottom of
+this module are the two ways anything gets one.
+"""
 
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Literal
 
-from pydantic import Field, field_validator, model_validator
-from pydantic_settings import (
-    BaseSettings,
-    NoDecode,
-    PydanticBaseSettingsSource,
-    SettingsConfigDict,
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
 )
 
-from zeitgeist.settings_source import SettingsTableSource
+if TYPE_CHECKING:
+    # Under TYPE_CHECKING because the runtime import would close a cycle:
+    # `store.py` imports `records.py`, which imports `Settings` from here for
+    # `RunConfig.freeze`. Python 3.14 does not evaluate annotations, so the
+    # two functions below can name `Store` without it.
+    from typing import Any
+
+    from zeitgeist.store import Store
 
 PACKAGE_ROOT = Path(__file__).parent
 
@@ -26,10 +40,13 @@ TREND_SOURCES: tuple[str, ...] = ("bluesky",)
 KNOWN_SOURCES: tuple[str, ...] = ITEM_SOURCES + TREND_SOURCES
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
-    )
+class Settings(BaseModel):
+    # extra="ignore" so a row for a field this version no longer declares is
+    # skipped rather than raising. A typo'd key cannot reach here: the API
+    # validates against the scoped key sets below before writing, and
+    # `enqueue` validates overrides against RUN_KEYS before a run id is
+    # issued.
+    model_config = ConfigDict(extra="ignore")
 
     lemmy_instance: str = "https://lemmy.world"
     lemmy_include_nsfw: bool = False
@@ -68,12 +85,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:11434", json_schema_extra={"scope": "global"}
     )
 
-    # NoDecode: pydantic-settings otherwise JSON-decodes any list-typed env
-    # value before validators run, so a plain CSV string like
-    # "lemmy,wikipedia" raises SettingsError before `_split_csv` ever sees it.
-    sources: Annotated[list[str], NoDecode] = Field(
-        ["bluesky"], json_schema_extra={"scope": "run"}
-    )
+    sources: list[str] = Field(["bluesky"], json_schema_extra={"scope": "run"})
     topic_count: int = Field(5, json_schema_extra={"scope": "run"})
 
     # Distinct accounts a phrase needs before it counts as recurring. Below
@@ -111,6 +123,9 @@ class Settings(BaseSettings):
     @field_validator("sources", mode="before")
     @classmethod
     def _split_csv(cls, value: object) -> object:
+        """`sources` arrives as one CSV string from both of the places a
+        value can come from now: a `settings` row, which is TEXT, and a
+        per-run override, which is a form field."""
         if isinstance(value, str):
             return [part.strip() for part in value.split(",") if part.strip()]
         return value
@@ -130,7 +145,7 @@ class Settings(BaseSettings):
         valid = ", ".join(TREND_SOURCES)
 
         if len(self.sources) != 1:
-            raise ValueError(f"SOURCES must name exactly one of: {valid}")
+            raise ValueError(f"sources must name exactly one of: {valid}")
 
         name = self.sources[0]
         if name in ITEM_SOURCES:
@@ -143,36 +158,16 @@ class Settings(BaseSettings):
 
         return self
 
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        """Slot the settings table between the environment and `.env`.
-
-        Order is precedence, highest first.
-        """
-        return (
-            init_settings,
-            env_settings,
-            SettingsTableSource(settings_cls),
-            dotenv_settings,
-            file_secret_settings,
-        )
-
 
 def _keys_with(scope: str) -> frozenset[str]:
     """The fields declaring `scope`, read off the model itself.
 
-    Two hand-maintained frozensets in two other modules are what this
-    replaces — `WRITABLE_KEYS` in settings_source.py and `RUN_OVERRIDE_KEYS`
-    in runner.py — neither of which anything connected to the field list they
-    were describing. Derived here, a new field is unscoped by default and a
-    deleted one takes its key with it.
+    Derived rather than listed, so a new field is unscoped — invisible to
+    the settings screen and to per-run overrides — until someone says
+    otherwise, and a deleted field takes its key with it. The two
+    hand-maintained frozensets this replaced named fields in modules that
+    had no connection to the field list they were describing, and drifted
+    from it.
     """
     return frozenset(
         name
@@ -190,3 +185,58 @@ SECRET_KEYS = frozenset(
     if isinstance(field.json_schema_extra, dict)
     and field.json_schema_extra.get("secret") is True
 )
+
+
+class StoredSettingError(ValueError):
+    """A row in the `settings` table does not validate.
+
+    Substituting the default for a value someone deliberately set is the
+    outcome nobody can diagnose — a run quietly using `distil_concurrency` 4
+    because the stored 0 failed `ge=1`. Now that the table *is* the
+    configuration rather than an overlay on something else, refusing to load
+    is the smaller harm. Writes are validated before they land, so the only
+    way to reach this is a hand-edited database.
+    """
+
+
+def load_settings(store: Store) -> Settings:
+    """Every stored value; every unstored field at its declared default."""
+    try:
+        # `dict[str, Any]`: every row is TEXT, and it is pydantic that turns
+        # each one back into its field's real type — or raises, below —
+        # not this function. Splatting the `dict[str, str]` `get_settings`
+        # actually returns would type-check each field against `str`,
+        # producing one diagnostic per non-string field for a mismatch the
+        # runtime validation below exists precisely to catch.
+        stored: dict[str, Any] = store.get_settings()
+        return Settings(**stored)
+    except ValidationError as exc:
+        raise StoredSettingError(
+            "Stored settings are invalid: "
+            + "; ".join(
+                f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+                for error in exc.errors()
+            )
+        ) from exc
+
+
+def resolve_settings(
+    store: Store, base: Settings, overrides: dict[str, str]
+) -> Settings:
+    """Settings for one unit of work: `base`, then what the store holds, then
+    this request's per-run overrides. Highest precedence last.
+
+    Three layers, merged in one expression a reader can see.
+
+    The store outranks `base` deliberately. `base` is `app.state.settings`,
+    frozen when the app was built, so a value saved on the settings screen
+    would otherwise never reach a run started afterwards — the bug
+    `read_settings` and `read_options` each carried their own workaround for.
+    `base` survives to supply the unscoped fields, which are never stored and
+    which a test sets by construction.
+
+    Constructing rather than `model_copy(update=...)`, which bypasses
+    validation entirely: `"9"` would stay the string `"9"` for `topic_count`
+    with no error raised anywhere.
+    """
+    return Settings(**(base.model_dump() | store.get_settings() | overrides))
