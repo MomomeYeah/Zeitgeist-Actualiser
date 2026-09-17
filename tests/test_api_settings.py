@@ -245,7 +245,15 @@ def test_a_stored_value_is_reported_as_stored_and_an_unstored_one_as_default(
 def test_the_api_key_never_comes_back_in_any_form(tmp_path):
     """Asserted over the whole serialised body, not just the key's own row:
     the value must not reach the client through `defaults`, an error message
-    or anything else either."""
+    or anything else either.
+
+    `GET /api/config/options` reaches the real Ollama at its default host
+    unless something else is stored; see `test_api_options.py`'s
+    `_no_real_ollama` for the full reasoning. `ollama_models` swallows every
+    error either way, so this is about keeping the test hermetic rather
+    than about it failing without the guard.
+    """
+    seed_settings(tmp_path, ollama_host="http://127.0.0.1:9")
     client = seeded_client(tmp_path)
     client.put("/api/settings", json={"values": {"anthropic_api_key": "sk-ant-secret"}})
 
@@ -277,7 +285,13 @@ def test_clearing_the_api_key_leaves_the_run_screen_saying_no_key_is_present(
     tmp_path,
 ):
     """The two endpoints have to agree: a cleared key must not leave New run
-    still advertising one."""
+    still advertising one.
+
+    `ollama_host` is guarded here for the same reason as
+    `test_the_api_key_never_comes_back_in_any_form`, above — this test also
+    hits `GET /api/config/options`.
+    """
+    seed_settings(tmp_path, ollama_host="http://127.0.0.1:9")
     client = seeded_client(tmp_path)
     client.put("/api/settings", json={"values": {"anthropic_api_key": "sk-ant-x"}})
     assert client.get("/api/config/options").json()["anthropic_key_present"] is True
