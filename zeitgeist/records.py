@@ -44,8 +44,11 @@ class RunConfig(BaseModel):
     """The settings a run used, frozen at its start.
 
     A copy rather than a reference: run detail's config line and the "Re-run
-    config" action must show what the run actually used, which is not
-    recoverable from a `.env` that has since been edited.
+    config" action must show what the run actually used, and settings
+    change — the table backing them can be edited from the settings screen
+    at any time, including while this run is still going. A reference would
+    have this drift to whatever the table holds *now*, not what the run
+    was actually configured with.
     """
 
     model_config = STRICT

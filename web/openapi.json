@@ -1541,7 +1541,7 @@
           "template_ids"
         ],
         "title": "RunConfig",
-        "description": "The settings a run used, frozen at its start.\n\nA copy rather than a reference: run detail's config line and the \"Re-run\nconfig\" action must show what the run actually used, which is not\nrecoverable from a `.env` that has since been edited."
+        "description": "The settings a run used, frozen at its start.\n\nA copy rather than a reference: run detail's config line and the \"Re-run\nconfig\" action must show what the run actually used, and settings\nchange \u2014 the table backing them can be edited from the settings screen\nat any time, including while this run is still going. A reference would\nhave this drift to whatever the table holds *now*, not what the run\nwas actually configured with."
       },
       "RunDetail": {
         "properties": {
@@ -1868,7 +1868,7 @@
           "values"
         ],
         "title": "SettingsUpdate",
-        "description": "An empty string clears that field's row so its declared default\napplies again, which is what \"Reset to .env\" does."
+        "description": "An empty string clears that field's row so its declared default\napplies again, which is what \"Reset to defaults\" does."
       },
       "Stage": {
         "type": "string",

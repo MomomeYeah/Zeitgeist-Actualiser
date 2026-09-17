@@ -142,8 +142,8 @@ def test_the_active_endpoint_reports_nothing_when_idle(tmp_path):
 
 def test_overrides_reach_the_run(tmp_path):
     """The four config cards on the New run screen are these overrides.
-    Dropped in the router, every run would use `.env` and the cards would be
-    decorative."""
+    Dropped in the router, every run would use the stored defaults and the
+    cards would be decorative."""
     seen: list[int] = []
 
     def execute(settings, request, store, observer, token) -> None:

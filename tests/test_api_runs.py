@@ -127,8 +127,8 @@ def test_an_empty_database_returns_an_empty_page(tmp_path):
 
 
 def test_run_detail_carries_the_frozen_config(tmp_path):
-    """The config line shows what the run used, which a since-edited .env
-    cannot supply."""
+    """The config line shows what the run used, which a since-edited
+    settings table cannot supply."""
     client = seeded_client(
         tmp_path,
         runs=[SeededRun(config=make_run_config(top_count=9, llm_model="qwen3.5"))],

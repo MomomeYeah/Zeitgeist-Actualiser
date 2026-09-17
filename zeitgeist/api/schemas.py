@@ -49,7 +49,7 @@ class SettingField(BaseModel):
 
 class SettingsUpdate(BaseModel):
     """An empty string clears that field's row so its declared default
-    applies again, which is what "Reset to .env" does."""
+    applies again, which is what "Reset to defaults" does."""
 
     model_config = STRICT
 

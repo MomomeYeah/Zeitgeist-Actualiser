@@ -377,8 +377,8 @@ def test_an_override_outside_the_allowlist_is_refused(tmp_path):
 
 def test_an_allowlisted_override_reaches_the_run(tmp_path):
     """The New run screen's config cards are these overrides. Dropped on the
-    way through, every run would silently use `.env`'s values and the screen
-    would be decorative."""
+    way through, every run would silently use the stored defaults and the
+    screen would be decorative."""
     seen: list[int] = []
 
     def execute(settings, request, store, observer, token) -> None:

@@ -236,7 +236,7 @@ def test_resuming_a_run_keeps_the_time_it_actually_began(tmp_path):
 
 def test_a_started_run_records_the_config_it_froze(tmp_path):
     """Run detail's config line and Re-run config both need what the run
-    used, which a since-edited .env cannot supply."""
+    used, which a since-edited settings table cannot supply."""
     store = _store(tmp_path)
     config = make_run_config(top_count=9, llm_model="qwen3.5")
 
