@@ -27,7 +27,15 @@
 - ruff rules `E, F, I, UP, B, SIM`, line length 88.
 - No blanket `# type: ignore`. A narrow suppression needs a comment explaining why.
 - `SCHEMA_VERSION` stays **6**. No task in this plan changes DDL. If you find yourself wanting to, stop and re-read the spec's "Storage" section.
-- Tests use a real `Store` on `tmp_path`, never a mock or a fake. The suite's hermeticity comes from the design after Task 3, not from a fixture.
+- **The `Store` is always real.** Every test that needs a database builds one
+  on `tmp_path`; no test mocks, stubs or fakes `Store` itself. The suite's
+  hermeticity comes from the design after Task 3, not from a fixture.
+- This does not forbid the codebase's existing injection seams. `execute` on
+  `RunService`, `generate` on `GenerationService` and MSW handlers on the web
+  side are how the suite already keeps the real pipeline and the network out
+  of a test, and several tasks below depend on them. They replace a slow or
+  external operation while everything the test asserts on stays real, which is
+  the distinction that matters — not the word "fake".
 - Commit after every task, once the seven gates pass.
 
 ---
