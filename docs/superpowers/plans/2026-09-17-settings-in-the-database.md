@@ -75,20 +75,23 @@ def test_create_app_opens_its_database_at_the_path_it_is_given(tmp_path):
         app.state.store.close()
 
 
-def test_create_app_defaults_to_the_module_constant():
-    """Asserted against the attribute rather than a literal string, so this
-    cannot pass by coincidence if DB_PATH is ever redefined."""
-    import inspect
+def test_create_app_defaults_to_the_database_the_constant_names(tmp_path, monkeypatch):
+    """No `db_path` argument, so the factory must resolve `DB_PATH` itself.
 
-    from zeitgeist.store import DB_PATH
+    `DB_PATH` is relative, so `chdir` keeps this hermetic while still
+    exercising the real default. Asserted on the file that appears rather
+    than on the signature object: a factory that declared the default and
+    then opened somewhere else leaves `tmp_path/data/zeitgeist.db` missing,
+    which introspecting `inspect.signature` would never notice.
+    """
+    monkeypatch.chdir(tmp_path)
 
-    default = inspect.signature(create_app).parameters["db_path"].default
-    assert default == DB_PATH
-    assert DB_PATH == Path("data") / "zeitgeist.db"
-
-
-def test_settings_no_longer_carries_a_database_path():
-    assert "db_path" not in Settings.model_fields
+    app = create_app(Settings(_env_file=None))
+    try:
+        assert app.state.store.path == DB_PATH
+        assert (tmp_path / "data" / "zeitgeist.db").is_file()
+    finally:
+        app.state.store.close()
 ```
 
 Add to `tests/test_runner.py`:
@@ -117,28 +120,35 @@ def test_the_worker_opens_its_own_connection_to_the_services_database(tmp_path):
 
 Add to `tests/test_generation.py`:
 
+Uses the helpers already in `tests/test_generation.py` — `_store`, `_service`,
+`_seed_topics`, `TEMPLATE`, `SLOTS` — and `make_topic` from
+`tests/run_factory.py`. `submit` takes `(run_id, topic_id, request)`, and it
+refuses before queuing if the analyse checkpoint is missing, so the seeding is
+load-bearing rather than decorative.
+
 ```python
-def test_a_generation_job_writes_to_the_services_database(tmp_path):
+def test_a_generation_job_opens_the_services_database(tmp_path):
     """`_run_job` used to find its database through `job.settings.db_path`.
     With that field gone it must reach the same file through the service's
-    store. Pinned by observing the row the job actually writes, rather than
-    by inspecting a path: a job writing to the wrong file leaves this
-    database empty and the assertion fails on substance.
+    own store. Pinned on the path the worker's `Store` actually carries, so
+    a job opening a different file fails on substance.
     """
-    store = Store(tmp_path / "z.db")
-    store.init_schema()
-    seed_one_run(store)  # tests/run_factory.py's existing helper
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    opened: list[Path] = []
 
-    written: list[Path] = []
+    def generate(job: GenerationJob, job_store: Store) -> None:
+        opened.append(job_store.path)
 
-    def generate(job, job_store):
-        written.append(job_store.path)
-
-    service = GenerationService(_settings(tmp_path), store, generate=generate)
-    service.submit(...)  # the module's existing submit call shape
+    service = _service(tmp_path, store, generate=generate)
+    service.submit(
+        "run-1",
+        "airport-cat",
+        ManualGeneration(template_id=TEMPLATE, caption_slots=SLOTS),
+    )
     service.shutdown()
 
-    assert written == [store.path]
+    assert opened == [store.path]
     store.close()
 ```
 
@@ -148,7 +158,7 @@ def test_a_generation_job_writes_to_the_services_database(tmp_path):
 uv run pytest tests/test_api_app.py tests/test_runner.py tests/test_generation.py -v
 ```
 
-Expected: `TypeError: create_app() got an unexpected keyword argument 'db_path'`, and `test_settings_no_longer_carries_a_database_path` failing because the field is still declared.
+Expected: `TypeError: create_app() got an unexpected keyword argument 'db_path'` from all three files.
 
 - [ ] **Step 3: Add the constant**
 
@@ -310,10 +320,6 @@ def test_the_unscoped_fields_are_the_ones_no_screen_offers():
     )
 
 
-def test_no_field_is_both_global_and_run_settable():
-    assert GLOBAL_KEYS & RUN_KEYS == frozenset()
-
-
 def test_the_api_key_is_the_only_secret_and_it_is_global():
     assert SECRET_KEYS == frozenset({"anthropic_api_key"})
     assert SECRET_KEYS <= GLOBAL_KEYS
@@ -326,9 +332,9 @@ def test_run_keys_match_the_keys_a_frozen_config_replays():
     key no run may set — so they are pinned equal here, against a real frozen
     config rather than a literal list.
     """
-    from tests.run_factory import a_run_config  # existing factory
+    from tests.run_factory import make_run_config
 
-    assert frozenset(a_run_config().as_overrides()) == RUN_KEYS
+    assert frozenset(make_run_config().as_overrides()) == RUN_KEYS
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -496,8 +502,24 @@ def test_load_settings_reads_every_scoped_field_back_in_its_real_type(store):
     assert settings.llm_model == "qwen3.5"
 
 
-def test_an_unstored_field_takes_its_declared_default(store):
-    assert load_settings(store).distil_char_budget == 24000
+def test_only_the_stored_fields_move_off_their_defaults(store):
+    """The contrast, not the defaulting.
+
+    `Settings(**{})` returning declared defaults is pydantic's behaviour, not
+    this project's, and asserting a bare `== 24000` would be a test of the
+    framework that fails the day someone legitimately retunes the default.
+    What is ours is the merge: exactly the stored keys move, and a field
+    beside them in the same load is untouched. A `load_settings` that
+    splatted the whole table over every field, or that dropped the table
+    entirely, breaks one half or the other.
+    """
+    before = load_settings(store)
+    store.set_setting("distil_char_budget", "8000")
+
+    after = load_settings(store)
+
+    assert (before.distil_char_budget, after.distil_char_budget) == (24000, 8000)
+    assert after.distil_concurrency == before.distil_concurrency
 
 
 def test_a_stored_value_that_fails_validation_raises_and_names_the_key(store):
@@ -553,12 +575,20 @@ def test_an_unscoped_field_survives_from_the_base_untouched(store):
     assert resolved.topic_count == 9
 
 
-def test_an_invalid_override_raises_rather_than_being_coerced_silently():
+def test_an_invalid_override_raises_rather_than_being_coerced_silently(store):
     """`model_copy(update=...)` would leave `"nonsense"` sitting in an int
     field with no error raised anywhere. Construction is what makes a bad
-    override a refusal on the request thread."""
-    with pytest.raises(ValueError):
+    override a refusal on the request thread.
+
+    Narrowed to `ValidationError` and to the offending key: plain
+    `ValueError` is also what `_check_sources` raises, so the wide form
+    would be satisfied by a failure that had nothing to do with the
+    override.
+    """
+    with pytest.raises(ValidationError) as caught:
         resolve_settings(store, Settings(), {"topic_count": "nonsense"})
+
+    assert "topic_count" in str(caught.value)
 
 
 def test_settings_no_longer_reads_the_environment(monkeypatch):
@@ -757,12 +787,34 @@ git commit -m "Read settings only from the database"
 Add to `tests/test_api_settings.py`:
 
 ```python
-def test_the_read_returns_every_scoped_field_and_nothing_else(tmp_path):
+def test_the_read_returns_every_scoped_field_in_key_order(tmp_path):
+    """The fourteen keys written out rather than `GLOBAL_KEYS | RUN_KEYS`:
+    the endpoint builds its list from that same union, so comparing against
+    it asserts only that a set equals itself, and a field that silently lost
+    its scope annotation would vanish from both sides at once.
+
+    Compared as a list, because the contract says sorted by key.
+    """
     client = seeded_client(tmp_path)
 
     fields = client.get("/api/settings").json()
 
-    assert {field["key"] for field in fields} == set(GLOBAL_KEYS | RUN_KEYS)
+    assert [field["key"] for field in fields] == [
+        "anthropic_api_key",
+        "bluesky_fetch_concurrency",
+        "bluesky_posts_per_trend",
+        "bluesky_trend_limit",
+        "distil_char_budget",
+        "distil_concurrency",
+        "font_path",
+        "llm_model",
+        "llm_provider",
+        "meme_potential_weight",
+        "ollama_host",
+        "phrase_min_authors",
+        "sources",
+        "topic_count",
+    ]
 
 
 def test_each_field_reports_the_scope_it_was_declared_with(tmp_path):
@@ -844,6 +896,38 @@ def test_clearing_the_api_key_leaves_the_run_screen_saying_no_key_is_present(
     assert client.get("/api/config/options").json()["anthropic_key_present"] is False
 
 
+def test_a_path_valued_field_round_trips_as_the_string_the_put_accepts(tmp_path):
+    """`font_path` is a `Path` on the model and has no JSON form: returned
+    raw it fails `SettingField`'s union outright, and returned as anything
+    but the string the `PUT` takes back it cannot be re-saved. Nothing else
+    in this task stores a Path, so without this the `isinstance(value, Path)`
+    branch of `_display` can be deleted with the suite staying green.
+
+    A bare filename rather than an absolute one, because `str(Path(...))`
+    rewrites separators per platform and a Windows run would turn
+    "C:/Windows/..." into backslashes. "impact.ttf" is its own `str`
+    everywhere, so the expected value stays a hand-derived literal.
+    """
+    client = seeded_client(tmp_path)
+
+    response = client.put(
+        "/api/settings", json={"values": {"font_path": "impact.ttf"}}
+    )
+
+    assert response.status_code == 200
+    by_key = {field["key"]: field for field in client.get("/api/settings").json()}
+    assert by_key["font_path"] == {
+        "key": "font_path",
+        "value": "impact.ttf",
+        "scope": "global",
+        "source": "settings",
+        "secret": False,
+    }
+    # The other declared type with no JSON form: joined, not returned as a
+    # list, because `SettingsUpdate` takes it back as a CSV string.
+    assert by_key["sources"]["value"] == "bluesky"
+
+
 def test_a_global_field_is_writable_here(tmp_path):
     client = seeded_client(tmp_path)
 
@@ -884,13 +968,30 @@ def test_a_rejected_request_writes_none_of_its_fields(tmp_path):
 
 
 def test_a_global_field_is_not_accepted_as_a_per_run_override(tmp_path):
-    client = seeded_client(tmp_path)
+    """`bluesky_fetch_concurrency` is global now: a run may not set it.
+
+    `execute` is supplied even though nothing should reach it. Under the
+    very mutation this test names — `enqueue` keyed on `GLOBAL_KEYS |
+    RUN_KEYS` rather than `RUN_KEYS` — the request is accepted, and without
+    a seam the real pipeline would start against the live Bluesky API on
+    whoever's machine is running the suite. The empty `started` list is the
+    second half of the assertion, and the detail check keeps an unrelated
+    400 from satisfying this.
+    """
+    started: list[str] = []
+
+    def execute(settings, request, store, observer, token):
+        started.append(request.run_id or "")
+
+    client = seeded_client(tmp_path, execute=execute)
 
     response = client.post(
         "/api/runs", json={"overrides": {"bluesky_fetch_concurrency": "2"}}
     )
 
     assert response.status_code == 400
+    assert "bluesky_fetch_concurrency" in response.json()["detail"]
+    assert started == []
 
 
 def test_a_value_saved_here_is_used_by_a_run_started_afterwards(tmp_path):
@@ -1111,6 +1212,7 @@ git commit -m "Move the shared run cards into features/config"
 
 **Files:**
 - Modify: `web/src/api/types.ts` (add `SettingScope`)
+- Modify: `web/src/test/factories.ts:422-446` (`makeSettingField`, `makeSettingFields`)
 - Modify: `web/src/features/settings/fields.ts` (two sections, new field specs, `SOURCE_LABELS`)
 - Modify: `web/src/features/settings/SettingRow.tsx` (drop the environment branch, type-aware input)
 - Create: `web/src/features/settings/SecretRow.tsx` and `SecretRow.module.css`
@@ -1120,94 +1222,323 @@ git commit -m "Move the shared run cards into features/config"
 
 **Interfaces:**
 - Consumes: Task 4's `SettingField` with `scope` and `secret`; Task 5's cards at `@/features/config/`.
-- Produces: `SecretRow({ field, onDraft, onClear })` where `field: SettingField` and `onDraft: (value: string) => void`.
+- Produces: `SecretRow({ field, draft, onDraft, onClear })` where `field: SettingField`, `draft: string | undefined`, `onDraft: (value: string) => void` and `onClear: () => void`.
+
+- [ ] **Step 0: Widen the fixtures**
+
+`SettingField` gained `scope` and `secret` in Task 4, `value` widened to
+`string | number | boolean | null`, and the response went from seven keys to
+fourteen. `web/src/test/factories.ts` still emits seven entries of
+`{key, value, source}` with a `number`-only value, so every test below would
+otherwise render against a payload the server can no longer produce — and a
+screen that crashed on the real fourteen-key response, or that read `secret`,
+found `undefined` and drew a `SettingRow` for the API key, would still pass.
+Replace lines 422-446:
+
+```ts
+export function makeSettingField(
+  options: Partial<SettingField> = {},
+): SettingField {
+  return {
+    key: options.key ?? "phrase_min_authors",
+    value: options.value ?? 3,
+    scope: options.scope ?? "run",
+    source: options.source ?? "default",
+    secret: options.secret ?? false,
+  };
+}
+
+/**
+ * All fourteen, in the order `GET /api/settings` returns them: sorted by
+ * key. Complete rather than trimmed to what a test reads — a screen that
+ * mishandled a `null` secret, a string host or a CSV `sources` would
+ * otherwise pass against a fixture that never contained one.
+ */
+export function makeSettingFields(
+  overrides: Partial<Record<string, Partial<SettingField>>> = {},
+): SettingField[] {
+  const base: SettingField[] = [
+    { key: "anthropic_api_key", value: null, scope: "global", source: "default", secret: true },
+    { key: "bluesky_fetch_concurrency", value: 8, scope: "global", source: "default", secret: false },
+    { key: "bluesky_posts_per_trend", value: 10, scope: "run", source: "default", secret: false },
+    { key: "bluesky_trend_limit", value: 25, scope: "run", source: "default", secret: false },
+    { key: "distil_char_budget", value: 24000, scope: "run", source: "default", secret: false },
+    { key: "distil_concurrency", value: 4, scope: "run", source: "default", secret: false },
+    { key: "font_path", value: null, scope: "global", source: "default", secret: false },
+    { key: "llm_model", value: "claude-sonnet-5", scope: "run", source: "default", secret: false },
+    { key: "llm_provider", value: "anthropic", scope: "run", source: "default", secret: false },
+    { key: "meme_potential_weight", value: 0.3, scope: "run", source: "default", secret: false },
+    { key: "ollama_host", value: "http://127.0.0.1:11434", scope: "global", source: "default", secret: false },
+    { key: "phrase_min_authors", value: 3, scope: "run", source: "default", secret: false },
+    { key: "sources", value: "bluesky", scope: "run", source: "default", secret: false },
+    { key: "topic_count", value: 5, scope: "run", source: "default", secret: false },
+  ];
+  return base.map((field) => ({ ...field, ...(overrides[field.key] ?? {}) }));
+}
+
+export function apiKeyField(options: Partial<SettingField> = {}): SettingField {
+  return makeSettingField({
+    key: "anthropic_api_key",
+    value: null,
+    scope: "global",
+    secret: true,
+    ...options,
+  });
+}
+```
 
 - [ ] **Step 1: Write the failing tests**
 
-In `web/src/features/settings/SettingsPage.test.tsx`:
+In `web/src/features/settings/SettingsPage.test.tsx`. Three harness rules this
+file already follows, and every test below obeys:
+
+- The render helper is `renderWithProviders(ui, { route })` from
+  `web/src/test/render.tsx`. There is no `renderWithClient`.
+- `web/src/test/server.ts` registers **no default handlers**, by policy — a
+  test that forgets one fails loudly on an unhandled request. So every test
+  declares both `GET /api/settings` and `GET /api/config/options`, the second
+  because the config cards read it.
+- A `PUT` is in flight when the click returns, so every assertion on what was
+  saved is wrapped in `await waitFor(...)`. A bare synchronous `expect` either
+  races the request or passes vacuously.
+
+Two local helpers carry the first two rules:
+
+```tsx
+function settingsHandler(fields: SettingField[]) {
+  return [
+    http.get("/api/settings", () => HttpResponse.json(fields)),
+    http.get("/api/config/options", () => HttpResponse.json(makeConfigOptions())),
+  ];
+}
+
+/** Every `PUT` body the screen sent, in order. */
+function captureSaves(fields: SettingField[]): unknown[] {
+  const saved: unknown[] = [];
+  server.use(
+    http.put("/api/settings", async ({ request }) => {
+      saved.push(await request.json());
+      return HttpResponse.json(fields);
+    }),
+  );
+  return saved;
+}
+```
 
 ```tsx
 it("draws global fields and run defaults under separate headings", async () => {
-  renderWithClient(<SettingsPage />);
+  server.use(...settingsHandler(makeSettingFields()));
 
-  expect(await screen.findByRole("heading", { name: /global/i })).toBeInTheDocument();
+  renderWithProviders(<SettingsPage />, { route: "/settings" });
+
+  expect(
+    await screen.findByRole("heading", { name: /global/i }),
+  ).toBeInTheDocument();
   expect(
     screen.getByRole("heading", { name: /defaults for new runs/i }),
   ).toBeInTheDocument();
 });
 
 it("shows an unset API key as not set, with no value in the document", async () => {
-  server.use(settingsHandler([apiKeyField({ source: "default" })]));
-  renderWithClient(<SettingsPage />);
+  server.use(...settingsHandler([apiKeyField({ source: "default" })]));
+
+  renderWithProviders(<SettingsPage />, { route: "/settings" });
 
   expect(await screen.findByText(/not set/i)).toBeInTheDocument();
-  expect(screen.getByLabelText(/anthropic_api_key/i)).toHaveValue("");
+  expect(screen.getByLabelText("anthropic_api_key")).toHaveValue("");
 });
 
 it("sends a typed API key and does not send the untouched fields beside it", async () => {
   /* The bug this guards is the one the existing `changedValues` comment
      describes: sending every field writes a row for each, pinning values
      that were only ever defaults. */
-  const saved = captureSaves(server);
-  renderWithClient(<SettingsPage />);
+  const user = userEvent.setup();
+  const fields = makeSettingFields();
+  server.use(...settingsHandler(fields));
+  const saved = captureSaves(fields);
 
-  await userEvent.type(
-    await screen.findByLabelText(/anthropic_api_key/i),
+  renderWithProviders(<SettingsPage />, { route: "/settings" });
+
+  await user.type(
+    await screen.findByLabelText("anthropic_api_key"),
     "sk-ant-typed",
   );
-  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  await user.click(screen.getByRole("button", { name: "Save" }));
 
-  expect(saved).toEqual([{ values: { anthropic_api_key: "sk-ant-typed" } }]);
+  await waitFor(() =>
+    expect(saved).toEqual([{ values: { anthropic_api_key: "sk-ant-typed" } }]),
+  );
+});
+
+it("clears a stored API key", async () => {
+  /* `changedValues` drops every empty draft, so a Clear routed through the
+     draft map can never reach the wire — this is the test that says so.
+     `onClear` must put the `""` into the payload by another route. */
+  const user = userEvent.setup();
+  const fields = [apiKeyField({ source: "settings" })];
+  server.use(...settingsHandler(fields));
+  const saved = captureSaves(fields);
+
+  renderWithProviders(<SettingsPage />, { route: "/settings" });
+
+  await user.click(await screen.findByRole("button", { name: "Clear" }));
+
+  await waitFor(() =>
+    expect(saved).toEqual([{ values: { anthropic_api_key: "" } }]),
+  );
+});
+
+it("offers no Clear for a key that was never set", async () => {
+  /* The negative half. A Clear rendered unconditionally would pass the test
+     above while inviting a no-op click on a key there is nothing to clear. */
+  server.use(...settingsHandler([apiKeyField({ source: "default" })]));
+
+  renderWithProviders(<SettingsPage />, { route: "/settings" });
+
+  expect(await screen.findByText(/not set/i)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Clear" })).not.toBeInTheDocument();
 });
 
 it("treats a reformatted number as unchanged but a real edit as changed", async () => {
   /* Both halves together: an implementation comparing raw strings passes
      the second assertion and fails the first, and one that never compares
      at all passes the first and fails the second. */
-  const saved = captureSaves(server);
-  server.use(settingsHandler([numberField("meme_potential_weight", 0.3)]));
-  renderWithClient(<SettingsPage />);
+  const user = userEvent.setup();
+  const fields = makeSettingFields();
+  server.use(...settingsHandler(fields));
+  const saved = captureSaves(fields);
+
+  renderWithProviders(<SettingsPage />, { route: "/settings" });
 
   const input = await screen.findByLabelText("meme_potential_weight");
-  await userEvent.clear(input);
-  await userEvent.type(input, "0.30");
+  await user.clear(input);
+  await user.type(input, "0.30");
   expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 
-  await userEvent.clear(input);
-  await userEvent.type(input, "0.45");
-  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  await user.clear(input);
+  await user.type(input, "0.45");
+  await user.click(screen.getByRole("button", { name: "Save" }));
 
-  expect(saved).toEqual([{ values: { meme_potential_weight: "0.45" } }]);
+  await waitFor(() =>
+    expect(saved).toEqual([{ values: { meme_potential_weight: "0.45" } }]),
+  );
 });
 
 it("compares a string field textually rather than numerically", async () => {
   /* `Number("http://...")` is NaN, so a numeric-only comparison would
      decide every host edit was unchanged and silently disable Save. */
-  const saved = captureSaves(server);
-  server.use(settingsHandler([stringField("ollama_host", "http://127.0.0.1:11434")]));
-  renderWithClient(<SettingsPage />);
+  const user = userEvent.setup();
+  const fields = makeSettingFields();
+  server.use(...settingsHandler(fields));
+  const saved = captureSaves(fields);
+
+  renderWithProviders(<SettingsPage />, { route: "/settings" });
 
   const input = await screen.findByLabelText("ollama_host");
-  await userEvent.clear(input);
-  await userEvent.type(input, "http://10.0.0.2:11434");
-  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  await user.clear(input);
+  await user.type(input, "http://10.0.0.2:11434");
+  await user.click(screen.getByRole("button", { name: "Save" }));
 
-  expect(saved).toEqual([{ values: { ollama_host: "http://10.0.0.2:11434" } }]);
+  await waitFor(() =>
+    expect(saved).toEqual([{ values: { ollama_host: "http://10.0.0.2:11434" } }]),
+  );
 });
 
-it("resets every settable field to its default", async () => {
-  const saved = captureSaves(server);
-  renderWithClient(<SettingsPage />);
+it("saves the run defaults the config cards own, under their setting names", async () => {
+  /* Four of the fourteen settable keys are reachable only through the cards,
+     and `RunConfig` and `Settings` use different names for them —
+     `top_count` against `topic_count`, `trend_limit` against
+     `bluesky_trend_limit`. A card wired to the `RunConfig` vocabulary would
+     `PUT` keys the endpoint rejects, so this asserts the wire format rather
+     than the card's own state. */
+  const user = userEvent.setup();
+  const fields = makeSettingFields();
+  server.use(...settingsHandler(fields));
+  const saved = captureSaves(fields);
 
-  await userEvent.click(
-    await screen.findByRole("button", { name: "Reset to defaults" }),
+  renderWithProviders(<SettingsPage />, { route: "/settings" });
+
+  await user.click(await screen.findByRole("button", { name: "ollama" }));
+  await user.click(screen.getByRole("radio", { name: "qwen3.5:latest" }));
+  await user.click(screen.getByRole("button", { name: "Save" }));
+
+  await waitFor(() =>
+    expect(saved).toEqual([
+      { values: { llm_provider: "ollama", llm_model: "qwen3.5:latest" } },
+    ]),
+  );
+});
+
+it("seeds the cards from the stored run defaults rather than from their own defaults", async () => {
+  /* A card that ignored the `GET` and started from its component default
+     would show "anthropic / claude-sonnet-5" over a database saying
+     otherwise, and Save would then be disabled on a screen that disagrees
+     with what the next run will use. */
+  server.use(
+    ...settingsHandler(
+      makeSettingFields({
+        llm_provider: { value: "ollama", source: "settings" },
+        llm_model: { value: "qwen3.5:latest", source: "settings" },
+        topic_count: { value: 10, source: "settings" },
+      }),
+    ),
   );
 
-  expect(Object.values(saved[0].values).every((value) => value === "")).toBe(true);
+  renderWithProviders(<SettingsPage />, { route: "/settings" });
+
+  expect(await screen.findByRole("button", { name: "ollama" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(screen.getByRole("radio", { name: "qwen3.5:latest" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  expect(screen.getByRole("button", { name: "10" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+});
+
+it("resets every settable field except the API key", async () => {
+  /* The keys written out, not an `every` over the values: `Object.values({})
+     .every(...)` is `true`, so a Reset that sent an empty payload — or only
+     the fields already drafted — would pass an `every` check while
+     resetting nothing.
+
+     Thirteen, not fourteen. `anthropic_api_key` is deliberately exempt:
+     losing your key to a button labelled "Reset to defaults" is a trap, and
+     the secret row's own Clear is the explicit way to do it. */
+  const user = userEvent.setup();
+  const fields = makeSettingFields();
+  server.use(...settingsHandler(fields));
+  const saved = captureSaves(fields);
+
+  renderWithProviders(<SettingsPage />, { route: "/settings" });
+  await screen.findByLabelText("phrase_min_authors");
+
+  await user.click(screen.getByRole("button", { name: "Reset to defaults" }));
+
+  await waitFor(() => expect(saved).toHaveLength(1));
+  expect(saved[0]).toEqual({
+    values: {
+      bluesky_fetch_concurrency: "",
+      bluesky_posts_per_trend: "",
+      bluesky_trend_limit: "",
+      distil_char_budget: "",
+      distil_concurrency: "",
+      font_path: "",
+      llm_model: "",
+      llm_provider: "",
+      meme_potential_weight: "",
+      ollama_host: "",
+      phrase_min_authors: "",
+      sources: "",
+      topic_count: "",
+    },
+  });
 });
 ```
-
-Add `apiKeyField`, `numberField`, `stringField`, `settingsHandler` and `captureSaves` to the file's existing helpers, following whatever MSW pattern the file already uses.
 
 - [ ] **Step 2: Run them to verify they fail**
 
@@ -1274,9 +1605,28 @@ export const SECTIONS: readonly SettingSection[] = [
   },
 ];
 
-export const SETTING_KEYS: readonly string[] = SECTIONS.flatMap((section) =>
-  section.cards.flatMap((card) => card.fields.map((field) => field.key)),
-);
+/**
+ * What Reset clears: every settable key except the secret.
+ *
+ * The four card-driven keys are listed rather than derived, because they are
+ * not `FieldSpec`s — deriving from `SECTIONS` alone would silently exempt
+ * them and leave Reset doing three quarters of its job. `anthropic_api_key`
+ * is exempt on purpose: losing a key to a button labelled "Reset to
+ * defaults" is a trap, and `SecretRow`'s Clear is the explicit way to do it.
+ */
+export const RESETTABLE_KEYS: readonly string[] = [
+  ...SECTIONS.flatMap((section) =>
+    section.cards.flatMap((card) =>
+      card.fields
+        .map((field) => field.key)
+        .filter((key) => key !== "anthropic_api_key"),
+    ),
+  ),
+  "llm_provider",
+  "llm_model",
+  "sources",
+  "topic_count",
+];
 ```
 
 `SOURCE_LABELS` loses two entries:
@@ -1387,7 +1737,18 @@ function changedValues(
 }
 ```
 
-Render `SECTIONS` rather than `CARDS`, each with an `<h2>` of `section.label` and a `MetaLine` of `section.blurb`. Within a card, a field with `secret` gets a `SecretRow` and everything else a `SettingRow`. `Reset to .env` becomes `Reset to defaults`, and its comment's "so the `.env` fallback applies again" becomes "so the field default applies again". The header's `MetaLine` becomes `what every run starts from`.
+`onClear` must **not** write `""` into the draft map: `changedValues` filters
+every empty draft, so a clear routed that way would be dropped before the
+request and the button would silently do nothing at all. It calls the mutation
+directly:
+
+```ts
+  function clearSecret(key: string) {
+    save.mutate({ values: { [key]: "" } }, { onSuccess: () => setDrafts({}) });
+  }
+```
+
+Render `SECTIONS` rather than `CARDS`, each with an `<h2>` of `section.label` and a `MetaLine` of `section.blurb`. Within a card, a field with `secret` gets a `SecretRow` and everything else a `SettingRow`. `Reset to .env` becomes `Reset to defaults` and maps over `RESETTABLE_KEYS` rather than `SETTING_KEYS`, and its comment's "so the `.env` fallback applies again" becomes "so the field default applies again". The header's `MetaLine` becomes `what every run starts from`.
 
 - [ ] **Step 7: Delete the `frozen.ts` caveat**
 
