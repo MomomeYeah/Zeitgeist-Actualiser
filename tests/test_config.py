@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from zeitgeist.config import Settings
+from zeitgeist.config import GLOBAL_KEYS, RUN_KEYS, SECRET_KEYS, Settings
 
 
 def _bare_settings(**overrides) -> Settings:
@@ -82,3 +82,37 @@ def test_wikipedia_settings_have_usable_defaults():
     assert settings.wikipedia_contact == (
         "https://github.com/MomomeYeah/Zeitgeist-Actualiser"
     )
+
+
+def test_the_unscoped_fields_are_the_ones_no_screen_offers():
+    """Derived from the live model, so a field added without a scope shows up
+    here as a failure rather than being silently unsettable."""
+    unscoped = frozenset(Settings.model_fields) - GLOBAL_KEYS - RUN_KEYS
+    assert unscoped == frozenset(
+        {
+            "output_dir",
+            "templates_dir",
+            "bluesky_api_base",
+            "wikipedia_project",
+            "wikipedia_contact",
+            "lemmy_instance",
+            "lemmy_include_nsfw",
+        }
+    )
+
+
+def test_the_api_key_is_the_only_secret_and_it_is_global():
+    assert SECRET_KEYS == frozenset({"anthropic_api_key"})
+    assert SECRET_KEYS <= GLOBAL_KEYS
+
+
+def test_run_keys_match_the_keys_a_frozen_config_replays():
+    """`RunConfig.as_overrides` is what a resume reposts, and `enqueue` will
+    validate those keys against `RUN_KEYS` from Task 4 on. If the two sets
+    ever differ, a resume of a perfectly ordinary run is refused as naming a
+    key no run may set — so they are pinned equal here, against a real frozen
+    config rather than a literal list.
+    """
+    from tests.run_factory import make_run_config
+
+    assert frozenset(make_run_config().as_overrides()) == RUN_KEYS
