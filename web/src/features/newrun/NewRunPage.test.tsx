@@ -88,7 +88,7 @@ describe("NewRunPage", () => {
     renderWithProviders(<NewRunPage />, { route: "/runs/new" });
 
     expect(
-      await screen.findByText("ANTHROPIC_API_KEY is not set · this run would fail"),
+      await screen.findByText("No API key · set one in Settings · this run would fail"),
     ).toBeInTheDocument();
   });
 
@@ -101,10 +101,10 @@ describe("NewRunPage", () => {
     renderWithProviders(<NewRunPage />, { route: "/runs/new" });
 
     expect(
-      await screen.findByText("key present · ANTHROPIC_API_KEY"),
+      await screen.findByText("key present · set in Settings"),
     ).toBeInTheDocument();
     expect(
-      screen.queryByText("ANTHROPIC_API_KEY is not set · this run would fail"),
+      screen.queryByText("No API key · set one in Settings · this run would fail"),
     ).not.toBeInTheDocument();
   });
 

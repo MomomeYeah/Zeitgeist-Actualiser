@@ -49,8 +49,8 @@ export function ModelCard({
       {provider === "anthropic" && (
         <p className={keyPresent ? styles.keyLine : styles.keyMissing}>
           {keyPresent
-            ? "key present · ANTHROPIC_API_KEY"
-            : "ANTHROPIC_API_KEY is not set · this run would fail"}
+            ? "key present · set in Settings"
+            : "No API key · set one in Settings · this run would fail"}
         </p>
       )}
 
