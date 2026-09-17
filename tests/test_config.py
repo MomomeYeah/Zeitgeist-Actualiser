@@ -102,7 +102,7 @@ def test_the_unscoped_fields_are_the_ones_no_screen_offers():
 
 
 def test_the_api_key_is_the_only_secret_and_it_is_global():
-    assert SECRET_KEYS == frozenset({"anthropic_api_key"})
+    assert frozenset({"anthropic_api_key"}) == SECRET_KEYS
     assert SECRET_KEYS <= GLOBAL_KEYS
 
 
