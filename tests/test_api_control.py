@@ -1,6 +1,9 @@
 import json
 import logging
 import threading
+import time
+
+from fastapi.testclient import TestClient
 
 from tests.api_factory import (
     GatedExecute,
@@ -12,6 +15,26 @@ from tests.api_factory import (
 from tests.run_factory import make_evidence, make_run_config
 from zeitgeist.config import Settings
 from zeitgeist.records import LogLine, Stage
+
+
+def wait_for_idle(client: TestClient, timeout: float = 5.0) -> None:
+    """Block until `/api/runs/active` reports nothing current or queued.
+
+    A run enqueued with no gate executes on the worker thread immediately,
+    racing whatever the request thread does next — there is no `Event` a
+    test can wait on the way `GatedExecute` and `LoggingGate` provide one.
+    Polling the same endpoint the sidebar polls is the seam that exists:
+    once it reports idle, the worker has finished `_run_one` and returned
+    to `queue.get()`, so whatever the run's `execute` did has already
+    happened.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        body = client.get("/api/runs/active").json()
+        if body["current"] is None and not body["queued"]:
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"run did not become idle within {timeout}s")
 
 
 def test_posting_a_run_returns_the_id_it_will_have(tmp_path):

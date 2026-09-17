@@ -906,8 +906,9 @@ class Store:
         self._conn.commit()
 
     def clear_setting(self, key: str) -> None:
-        """Delete the override so the .env value, or the field default, applies
-        again. This is what the settings screen's "Reset to .env" does.
+        """Delete the row so the field's declared default applies again —
+        there is no environment or `.env` layer left underneath it, just the
+        default `Settings` itself declares.
         """
         self._conn.execute("DELETE FROM settings WHERE key = ?", (key,))
         self._conn.commit()

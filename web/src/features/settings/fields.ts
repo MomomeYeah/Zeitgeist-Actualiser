@@ -78,17 +78,8 @@ export const CARDS: readonly SettingCard[] = [
   },
 ];
 
-/**
- * Four, though the design drew three.
- *
- * A shell variable outranks the settings table, so `environment` is a real
- * answer — and it is the one state where Save cannot change what the next
- * run actually uses. See the phase 6 plan, "Decisions", 5.
- */
 export const SOURCE_LABELS: Readonly<Record<SettingSource, string>> = {
   settings: "SET HERE",
-  environment: "FROM ENV",
-  dotenv: "FROM .env",
   default: "DEFAULT",
 };
 

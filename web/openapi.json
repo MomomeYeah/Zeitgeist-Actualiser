@@ -393,7 +393,7 @@
           "settings"
         ],
         "summary": "Read Settings",
-        "description": "Read from the store, not from `app.state.settings`.\n\n`app.state.settings` is frozen at startup (`create_app`'s parameter), so\n`getattr` on it would never see a value a `PUT` had since written, no\nmatter how recently. The chip beside it would say \"settings\" while the\nvalue shown was the old one: the worst possible presentation, because it\nnames the very layer that just won as the source of a value that layer\ndid not produce. `load_settings` reads the table on each request, so a\n`PUT` is visible to the very next `GET`.",
+        "description": "Built from `load_settings`, not from `app.state.settings`, which is\nfrozen when the app is built \u2014 so a `PUT` is visible to the very next\n`GET`.",
         "operationId": "read_settings_api_settings_get",
         "responses": {
           "200": {
@@ -417,7 +417,7 @@
           "settings"
         ],
         "summary": "Write Settings",
-        "description": "Write the seven tunables, then report every field's new state.\n\nSame response shape as the `GET`, so the screen re-renders its source\nchips from this reply rather than issuing a second request.",
+        "description": "Write every accepted field, then report every field's new state.\n\nSame response shape as the `GET`, so the screen re-renders its source\nchips from this reply rather than issuing a second request.",
         "operationId": "write_settings_api_settings_put",
         "requestBody": {
           "content": {
@@ -1802,23 +1802,42 @@
           "value": {
             "anyOf": [
               {
+                "type": "string"
+              },
+              {
                 "type": "number"
               },
               {
                 "type": "integer"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
               }
             ],
             "title": "Value"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "global",
+              "run"
+            ],
+            "title": "Scope"
           },
           "source": {
             "type": "string",
             "enum": [
               "settings",
-              "environment",
-              "dotenv",
               "default"
             ],
             "title": "Source"
+          },
+          "secret": {
+            "type": "boolean",
+            "title": "Secret"
           }
         },
         "additionalProperties": false,
@@ -1826,10 +1845,12 @@
         "required": [
           "key",
           "value",
-          "source"
+          "scope",
+          "source",
+          "secret"
         ],
         "title": "SettingField",
-        "description": "One tunable field, its effective value, and which layer supplied it."
+        "description": "One settable field, its effective value, and where that value came\nfrom.\n\n`value` is `None` for a secret field, always \u2014 `anthropic_api_key` is\nwritten through this endpoint and never read back out of it. `source`\nstill distinguishes a stored key from an unset one, which is all the\nscreen needs to render SET or NOT SET."
       },
       "SettingsUpdate": {
         "properties": {
@@ -1847,7 +1868,7 @@
           "values"
         ],
         "title": "SettingsUpdate",
-        "description": "An empty string clears that field's row so the `.env` fallback\napplies again, which is what \"Reset to .env\" does."
+        "description": "An empty string clears that field's row so its declared default\napplies again, which is what \"Reset to .env\" does."
       },
       "Stage": {
         "type": "string",

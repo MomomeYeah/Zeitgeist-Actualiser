@@ -46,6 +46,7 @@ export type StartRunBody = Schemas["StartRunBody"];
 export type ResumeBody = Schemas["ResumeBody"];
 export type SettingsUpdate = Schemas["SettingsUpdate"];
 export type SettingSource = SettingField["source"];
+export type SettingScope = SettingField["scope"];
 export type ConfigOptions = Schemas["ConfigOptions"];
 export type PlatformOption = Schemas["PlatformOption"];
 export type TemplateOption = Schemas["TemplateOption"];

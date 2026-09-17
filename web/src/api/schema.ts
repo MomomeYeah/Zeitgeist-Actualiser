@@ -171,20 +171,14 @@ export interface paths {
         };
         /**
          * Read Settings
-         * @description Read from the store, not from `app.state.settings`.
-         *
-         *     `app.state.settings` is frozen at startup (`create_app`'s parameter), so
-         *     `getattr` on it would never see a value a `PUT` had since written, no
-         *     matter how recently. The chip beside it would say "settings" while the
-         *     value shown was the old one: the worst possible presentation, because it
-         *     names the very layer that just won as the source of a value that layer
-         *     did not produce. `load_settings` reads the table on each request, so a
-         *     `PUT` is visible to the very next `GET`.
+         * @description Built from `load_settings`, not from `app.state.settings`, which is
+         *     frozen when the app is built — so a `PUT` is visible to the very next
+         *     `GET`.
          */
         get: operations["read_settings_api_settings_get"];
         /**
          * Write Settings
-         * @description Write the seven tunables, then report every field's new state.
+         * @description Write every accepted field, then report every field's new state.
          *
          *     Same response shape as the `GET`, so the screen re-renders its source
          *     chips from this reply rather than issuing a second request.
@@ -818,22 +812,35 @@ export interface components {
         Sentiment: "cute" | "heartwarming" | "funny" | "awe" | "schadenfreude" | "outrage" | "sad" | "scary" | "gross" | "cringe" | "mundane";
         /**
          * SettingField
-         * @description One tunable field, its effective value, and which layer supplied it.
+         * @description One settable field, its effective value, and where that value came
+         *     from.
+         *
+         *     `value` is `None` for a secret field, always — `anthropic_api_key` is
+         *     written through this endpoint and never read back out of it. `source`
+         *     still distinguishes a stored key from an unset one, which is all the
+         *     screen needs to render SET or NOT SET.
          */
         SettingField: {
             /** Key */
             key: string;
             /** Value */
-            value: number;
+            value: string | number | boolean | null;
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "global" | "run";
             /**
              * Source
              * @enum {string}
              */
-            source: "settings" | "environment" | "dotenv" | "default";
+            source: "settings" | "default";
+            /** Secret */
+            secret: boolean;
         };
         /**
          * SettingsUpdate
-         * @description An empty string clears that field's row so the `.env` fallback
+         * @description An empty string clears that field's row so its declared default
          *     applies again, which is what "Reset to .env" does.
          */
         SettingsUpdate: {

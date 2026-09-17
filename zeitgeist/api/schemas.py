@@ -24,25 +24,31 @@ from zeitgeist.models import STRICT, Dossier
 from zeitgeist.projection import TopicRow
 from zeitgeist.records import RenderRecord, RunRecordRow, Stage, StageRecord
 
-# Four layers, though the settings screen draws three chips. A shell
-# variable outranks the settings table, so `environment` is a real answer
-# and the screen consuming this needs a fourth chip or a deliberate
-# decision to fold it into one of the three.
-SettingSource = Literal["settings", "environment", "dotenv", "default"]
+SettingSource = Literal["settings", "default"]
+SettingScope = Literal["global", "run"]
 
 
 class SettingField(BaseModel):
-    """One tunable field, its effective value, and which layer supplied it."""
+    """One settable field, its effective value, and where that value came
+    from.
+
+    `value` is `None` for a secret field, always — `anthropic_api_key` is
+    written through this endpoint and never read back out of it. `source`
+    still distinguishes a stored key from an unset one, which is all the
+    screen needs to render SET or NOT SET.
+    """
 
     model_config = STRICT
 
     key: str
-    value: float | int
+    value: str | float | int | bool | None
+    scope: SettingScope
     source: SettingSource
+    secret: bool
 
 
 class SettingsUpdate(BaseModel):
-    """An empty string clears that field's row so the `.env` fallback
+    """An empty string clears that field's row so its declared default
     applies again, which is what "Reset to .env" does."""
 
     model_config = STRICT

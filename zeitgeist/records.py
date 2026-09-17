@@ -96,11 +96,6 @@ class RunConfig(BaseModel):
         `template_ids` is deliberately absent: `RunRequest` carries it as its
         own field, not as an override, so a caller replaying this config
         passes it separately.
-
-        `bluesky_fetch_concurrency` is deliberately absent too, but for a
-        different reason: it has no field on `RunConfig` at all, so a resume
-        cannot replay it and it keeps resolving from whatever the settings
-        table says now. That is the one tunable a resume does not freeze.
         """
         return {
             "sources": ",".join(self.sources),

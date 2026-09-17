@@ -24,6 +24,7 @@ import type {
   RunStatus,
   RunSummary,
   SettingField,
+  SettingScope,
   SettingSource,
   Stage,
   StageRecord,
@@ -420,27 +421,83 @@ export function makeConfigOptions(
 }
 
 export function makeSettingField(
-  options: { key?: string; value?: number; source?: SettingSource } = {},
+  options: {
+    key?: string;
+    value?: SettingField["value"];
+    scope?: SettingScope;
+    source?: SettingSource;
+    secret?: boolean;
+  } = {},
 ): SettingField {
   return {
     key: options.key ?? "phrase_min_authors",
     value: options.value ?? 3,
+    scope: options.scope ?? "run",
     source: options.source ?? "default",
+    secret: options.secret ?? false,
   };
 }
 
-/** All seven, in the order `GET /api/settings` returns them: sorted by key. */
+/**
+ * The seven fields this screen draws, in the order `GET /api/settings`
+ * returns them: sorted by key. Not the full fourteen `GET /api/settings`
+ * now reports — the settings screen (`fields.ts`'s `CARDS`) still only
+ * draws these seven, so a fixture carrying the rest would assert nothing
+ * any test here reads.
+ */
 export function makeSettingFields(
   overrides: Partial<Record<string, Partial<SettingField>>> = {},
 ): SettingField[] {
   const base: SettingField[] = [
-    { key: "bluesky_fetch_concurrency", value: 8, source: "default" },
-    { key: "bluesky_posts_per_trend", value: 10, source: "default" },
-    { key: "bluesky_trend_limit", value: 25, source: "default" },
-    { key: "distil_char_budget", value: 24000, source: "default" },
-    { key: "distil_concurrency", value: 4, source: "default" },
-    { key: "meme_potential_weight", value: 0.3, source: "default" },
-    { key: "phrase_min_authors", value: 3, source: "default" },
+    {
+      key: "bluesky_fetch_concurrency",
+      value: 8,
+      scope: "global",
+      source: "default",
+      secret: false,
+    },
+    {
+      key: "bluesky_posts_per_trend",
+      value: 10,
+      scope: "run",
+      source: "default",
+      secret: false,
+    },
+    {
+      key: "bluesky_trend_limit",
+      value: 25,
+      scope: "run",
+      source: "default",
+      secret: false,
+    },
+    {
+      key: "distil_char_budget",
+      value: 24000,
+      scope: "run",
+      source: "default",
+      secret: false,
+    },
+    {
+      key: "distil_concurrency",
+      value: 4,
+      scope: "run",
+      source: "default",
+      secret: false,
+    },
+    {
+      key: "meme_potential_weight",
+      value: 0.3,
+      scope: "run",
+      source: "default",
+      secret: false,
+    },
+    {
+      key: "phrase_min_authors",
+      value: 3,
+      scope: "run",
+      source: "default",
+      secret: false,
+    },
   ];
   return base.map((field) => ({ ...field, ...(overrides[field.key] ?? {}) }));
 }

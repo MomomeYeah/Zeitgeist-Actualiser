@@ -36,16 +36,11 @@ describe("SettingsPage", () => {
     expect(screen.queryByText("trend_limit")).not.toBeInTheDocument();
   });
 
-  it("says where each value came from, including the environment", async () => {
-    // Four layers, though the design drew three. A shell variable outranks
-    // the settings table, so `environment` is a real answer — and it is the
-    // one state where saving cannot change what the next run uses.
+  it("says where each value came from", async () => {
     server.use(
       http.get("/api/settings", () =>
         HttpResponse.json([
           makeSettingField({ key: "phrase_min_authors", source: "settings" }),
-          makeSettingField({ key: "distil_concurrency", source: "environment" }),
-          makeSettingField({ key: "distil_char_budget", source: "dotenv" }),
           makeSettingField({ key: "meme_potential_weight", source: "default" }),
         ]),
       ),
@@ -54,57 +49,15 @@ describe("SettingsPage", () => {
     renderWithProviders(<SettingsPage />, { route: "/settings" });
 
     expect(await screen.findByText("SET HERE")).toBeInTheDocument();
-    expect(screen.getByText("FROM ENV")).toBeInTheDocument();
-    expect(screen.getByText("FROM .env")).toBeInTheDocument();
     expect(screen.getByText("DEFAULT")).toBeInTheDocument();
   });
 
-  it("will not let you edit a field the shell controls, and says why", async () => {
-    // A shell `DISTIL_CONCURRENCY=8` outranks the settings table —
-    // deliberately, as the more explicit act. So Save on such a field wrote
-    // a row that changed nothing anybody could see: the value snapped
-    // straight back on the reply, the chip still read FROM ENV, and no
-    // part of the screen accounted for it. The row was the one control
-    // that could not do what it appeared to.
+  it("leaves every field editable", async () => {
     const user = userEvent.setup();
     server.use(
       http.get("/api/settings", () =>
         HttpResponse.json([
-          makeSettingField({
-            key: "distil_concurrency",
-            source: "environment",
-            value: 4,
-          }),
-        ]),
-      ),
-    );
-
-    renderWithProviders(<SettingsPage />, { route: "/settings" });
-
-    const input = await screen.findByLabelText("distil_concurrency");
-    await user.click(input);
-    await user.keyboard("8");
-
-    // Typed at, and unchanged — the behaviour, not the `readonly`
-    // attribute that happens to produce it. Save stays disabled because
-    // nothing was edited, which is the second half of not accepting an
-    // edit that would silently revert.
-    expect(input).toHaveValue(4);
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    expect(
-      screen.getByText(/DISTIL_CONCURRENCY is set in this server/),
-    ).toBeInTheDocument();
-  });
-
-  it("leaves every other field editable", async () => {
-    // The negative case. A read-only rule applied to the wrong condition —
-    // or to all four sources — would pass the test above while making the
-    // whole screen a display.
-    const user = userEvent.setup();
-    server.use(
-      http.get("/api/settings", () =>
-        HttpResponse.json([
-          makeSettingField({ key: "distil_concurrency", source: "dotenv", value: 4 }),
+          makeSettingField({ key: "distil_concurrency", source: "settings", value: 4 }),
         ]),
       ),
     );
@@ -116,7 +69,6 @@ describe("SettingsPage", () => {
     await user.type(input, "8");
 
     expect(input).toHaveValue(8);
-    expect(screen.queryByText(/is set in this server/)).not.toBeInTheDocument();
   });
 
   it("carries the API ceiling on the field that has one", async () => {
