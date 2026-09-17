@@ -78,7 +78,6 @@ def _settings(tmp_path, **overrides: Any) -> Settings:
         distil_concurrency=1,
         topic_count=1,
         output_dir=tmp_path / "output",
-        db_path=tmp_path / "data" / "z.db",
         templates_dir=_template_library(tmp_path),
     )
     return Settings(**(base | overrides))

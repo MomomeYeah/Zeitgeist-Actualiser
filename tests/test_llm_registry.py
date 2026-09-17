@@ -91,13 +91,13 @@ def test_ollama_models_closes_the_client_it_owns_when_none_is_injected(monkeypat
     assert created[0].closed is True
 
 
-def test_available_models_reports_both_providers(tmp_path):
+def test_available_models_reports_both_providers():
     """The New run screen swaps the model list when the provider changes, so
     it needs both at once. Returning only the configured provider's models
     would make that swap require a second request the screen does not make.
     """
     client = _FakeClient({"models": [{"name": "qwen3.5"}]})
-    settings = Settings(_env_file=None, db_path=tmp_path / "z.db")
+    settings = Settings(_env_file=None)
 
     models = available_models(settings, client=client)
 

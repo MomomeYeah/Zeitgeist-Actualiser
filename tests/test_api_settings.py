@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from tests.api_factory import api_settings, seeded_client
+from tests.api_factory import seeded_client
 from zeitgeist.config import Settings
 from zeitgeist.settings_source import WRITABLE_KEYS
 from zeitgeist.store import Store
@@ -18,8 +18,7 @@ def test_every_tunable_field_is_reported(tmp_path):
 
 
 def test_a_stored_override_reports_itself_as_set_here(tmp_path):
-    settings = api_settings(tmp_path)
-    store = Store(settings.db_path)
+    store = Store(Path(os.environ["DB_PATH"]))
     store.init_schema()
     store.set_setting("bluesky_trend_limit", "11")
     store.close()
@@ -64,8 +63,7 @@ def test_a_shell_variable_beats_a_stored_override(tmp_path, monkeypatch):
     """Both layers set the same key here, which no other test does. Every
     other case leaves the layer it is not testing empty, so swapping the
     first two branches of `_source` would pass all of them."""
-    settings = api_settings(tmp_path)
-    store = Store(settings.db_path)
+    store = Store(Path(os.environ["DB_PATH"]))
     store.init_schema()
     store.set_setting("bluesky_trend_limit", "11")
     store.close()

@@ -1,20 +1,21 @@
+import os
 import sqlite3
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.api_factory import api_settings, app_of, seeded_client
+from tests.api_factory import app_of, seeded_client
 from tests.run_factory import make_run_config
 from zeitgeist.api import create_app
 from zeitgeist.config import Settings
 from zeitgeist.schema import SCHEMA_VERSION
-from zeitgeist.store import Store
+from zeitgeist.store import DB_PATH, Store
 
 
 def _settings(tmp_path) -> Settings:
     return Settings(
         _env_file=None,
-        db_path=tmp_path / "data" / "z.db",
         output_dir=tmp_path / "output",
     )
 
@@ -22,7 +23,9 @@ def _settings(tmp_path) -> Settings:
 def test_the_app_serves_its_openapi_schema(tmp_path):
     """The schema is the contract phase 5 generates its client from, so it
     has to be reachable before any endpoint exists."""
-    client = TestClient(create_app(_settings(tmp_path)))
+    client = TestClient(
+        create_app(_settings(tmp_path), db_path=tmp_path / "data" / "z.db")
+    )
 
     response = client.get("/openapi.json")
 
@@ -35,9 +38,44 @@ def test_the_app_opens_the_database_it_was_given(tmp_path):
     would make every test depend on whether the tool had been run locally."""
     settings = _settings(tmp_path)
 
-    create_app(settings)
+    create_app(settings, db_path=tmp_path / "data" / "z.db")
 
     assert (tmp_path / "data" / "z.db").is_file()
+
+
+def test_create_app_opens_its_database_at_the_path_it_is_given(tmp_path):
+    """The path is a parameter of the factory, not a field of Settings.
+
+    `nested/` does not exist beforehand: `Store.__init__` creates the parent,
+    and a test that pre-created it would pass even if the path were ignored
+    in favour of the `data/` default.
+    """
+    path = tmp_path / "nested" / "z.db"
+    app = create_app(Settings(_env_file=None), db_path=path)
+    try:
+        assert app.state.store.path == path
+        assert path.is_file()
+    finally:
+        app.state.store.close()
+
+
+def test_create_app_defaults_to_the_database_the_constant_names(tmp_path, monkeypatch):
+    """No `db_path` argument, so the factory must resolve `DB_PATH` itself.
+
+    `DB_PATH` is relative, so `chdir` keeps this hermetic while still
+    exercising the real default. Asserted on the file that appears rather
+    than on the signature object: a factory that declared the default and
+    then opened somewhere else leaves `tmp_path/data/zeitgeist.db` missing,
+    which introspecting `inspect.signature` would never notice.
+    """
+    monkeypatch.chdir(tmp_path)
+
+    app = create_app(Settings(_env_file=None))
+    try:
+        assert app.state.store.path == DB_PATH
+        assert (tmp_path / "data" / "zeitgeist.db").is_file()
+    finally:
+        app.state.store.close()
 
 
 def test_the_app_closes_its_store_when_it_shuts_down(tmp_path):
@@ -45,7 +83,7 @@ def test_the_app_closes_its_store_when_it_shuts_down(tmp_path):
     `finally: store.close()` would pass every other test in this module,
     none of which enters the client as a context manager itself.
     """
-    app = create_app(_settings(tmp_path))
+    app = create_app(_settings(tmp_path), db_path=tmp_path / "data" / "z.db")
 
     with TestClient(app) as client:
         client.get("/openapi.json")
@@ -83,7 +121,7 @@ def test_seeded_client_runs_the_apps_lifespan(tmp_path):
 def test_the_app_creates_its_schema_on_startup(tmp_path):
     """A fresh install serves an empty database rather than 500ing on the
     first query."""
-    create_app(_settings(tmp_path))
+    create_app(_settings(tmp_path), db_path=tmp_path / "data" / "z.db")
 
     conn = sqlite3.connect(tmp_path / "data" / "z.db")
     try:
@@ -103,8 +141,7 @@ def test_a_run_left_running_by_a_crash_is_interrupted_on_startup(tmp_path):
     would pass every test in `test_store.py` and leave the UI polling a dead
     run forever.
     """
-    settings = api_settings(tmp_path)
-    store = Store(settings.db_path)
+    store = Store(Path(os.environ["DB_PATH"]))
     store.init_schema()
     store.start_run("20260905T120000Z", make_run_config())
     store.close()

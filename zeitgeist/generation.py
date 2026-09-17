@@ -481,12 +481,13 @@ class GenerationService:
         storage would buy nothing and would hold a connection open for the
         process's lifetime.
 
-        `job.settings` rather than `self._settings`: the job carries the
-        settings this work was resolved under, and reaching past it to the
-        service's base snapshot would be a second, quieter source of truth
-        for the same value.
+        The job's own `settings` still governs everything tunable — that is
+        what `resolve_settings` resolved it for — but the database is the
+        same file for every job in this service, so its location comes from
+        `self._store` rather than from `job.settings`, which no longer
+        carries one.
         """
-        store = Store(job.settings.db_path)
+        store = Store(self._store.path)
         try:
             self._generate(job, store)
         except Exception as exc:  # noqa: BLE001 - one job's failure is a row

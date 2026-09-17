@@ -18,7 +18,7 @@ SCHEMA_PATH = Path(__file__).resolve().parent.parent / "web" / "openapi.json"
 
 
 def test_checked_in_openapi_matches_the_app(tmp_path):
-    app = create_app(Settings(db_path=tmp_path / "z.db", output_dir=tmp_path / "out"))
+    app = create_app(Settings(output_dir=tmp_path / "out"), db_path=tmp_path / "z.db")
 
     assert SCHEMA_PATH.is_file(), (
         f"{SCHEMA_PATH} is missing. Run: uv run python scripts/dump_openapi.py"

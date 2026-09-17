@@ -1,6 +1,8 @@
+import os
 from datetime import UTC, datetime
+from pathlib import Path
 
-from tests.api_factory import SeededRun, api_settings, app_of, seeded_client
+from tests.api_factory import SeededRun, app_of, seeded_client
 from tests.run_factory import (
     make_dossier,
     make_render_record,
@@ -165,7 +167,7 @@ def test_a_run_with_every_checkpoint_resumes_from_generate(tmp_path):
     # SeededRun writes the analyse checkpoint; write the other three directly
     # so all four exist. Empty payloads are enough - resume_stage asks which
     # stages have a row, not what is in it.
-    store = Store(api_settings(tmp_path).db_path)
+    store = Store(Path(os.environ["DB_PATH"]))
     store.write_checkpoint(
         "20260901T120000Z",
         Stage.INGEST,
@@ -186,7 +188,7 @@ def test_a_run_with_every_checkpoint_resumes_from_generate(tmp_path):
 
 def test_a_run_that_failed_at_evaluate_resumes_from_evaluate(tmp_path):
     client = seeded_client(tmp_path, runs=[SeededRun()])
-    store = Store(api_settings(tmp_path).db_path)
+    store = Store(Path(os.environ["DB_PATH"]))
     store.write_checkpoint("20260901T120000Z", Stage.INGEST, [])
     store.close()
 
@@ -410,7 +412,7 @@ def test_topic_detail_reports_no_score_breakdown_for_a_pruned_checkpoint(tmp_pat
     client = seeded_client(
         tmp_path, runs=[SeededRun(topics=[make_topic("cats")], evidence=[])]
     )
-    store = Store(api_settings(tmp_path).db_path)
+    store = Store(Path(os.environ["DB_PATH"]))
     store._conn.execute(
         "DELETE FROM checkpoints WHERE run_id = ? AND stage = ?",
         ("20260901T120000Z", "analyse"),
@@ -596,7 +598,7 @@ def test_the_log_of_a_run_with_no_lines_is_empty(tmp_path):
 
 def test_the_log_endpoint_filters_on_verbose(tmp_path):
     client = seeded_client(tmp_path, runs=[SeededRun()])
-    store = Store(api_settings(tmp_path).db_path)
+    store = Store(Path(os.environ["DB_PATH"]))
     store._conn.execute(
         "INSERT INTO log_lines (run_id, seq, logged_at, level, logger, message) "
         "VALUES (?, ?, ?, ?, ?, ?)",

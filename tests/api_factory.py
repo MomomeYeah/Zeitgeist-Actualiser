@@ -4,8 +4,9 @@ Seeded through the store's own writers rather than raw SQL: a hand-written
 INSERT would keep passing after `write_analyse_checkpoint` changed shape,
 and the endpoints would be serving a table layout nothing produces.
 
-`api_settings` points `output_dir` inside `tmp_path` and reads `db_path`
-from `DB_PATH`, so a test's renders and database are its own.
+`api_settings` points `output_dir` inside `tmp_path`; `seeded_client` reads
+the database path from `DB_PATH` and passes it to `create_app` itself, so a
+test's renders and database are its own.
 """
 
 import logging
@@ -127,15 +128,13 @@ def api_settings(
 ) -> Settings:
     """Build the `Settings` a test's `TestClient` runs against.
 
-    `db_path` is read from `DB_PATH` rather than chosen here, because
-    `SettingsTableSource` resolves the settings table from that variable and
-    not from `Settings.db_path` — asking the object being constructed where
-    its own table lives would be circular (see
-    settings_source.SettingsTableSource's docstring). `conftest`'s autouse
-    fixture already points `DB_PATH` at a per-test path inside `tmp_path`
-    before every test body runs, so reading it here makes this factory and
-    the settings source agree by construction, with no environment mutation
-    and nothing to clean up.
+    The database path is not one of its fields: `Settings` no longer carries
+    one, so `seeded_client` reads `DB_PATH` itself and passes it straight to
+    `create_app`. `conftest`'s autouse fixture already points `DB_PATH` at a
+    per-test path inside `tmp_path` before every test body runs, so that and
+    `SettingsTableSource` (which reads the same variable — see its
+    docstring) agree by construction, with no environment mutation and
+    nothing to clean up.
 
     `templates_dir` lets a test own its template library outright, the way
     `test_pipeline.py` already does: a generation test that named a shipped
@@ -162,7 +161,6 @@ def api_settings(
     # identical arguments either way.
     kwargs: dict[str, Any] = {
         "_env_file": None,
-        "db_path": Path(os.environ["DB_PATH"]),
         "output_dir": tmp_path / "output",
     }
     if templates_dir is not None:
@@ -266,12 +264,15 @@ def seeded_client(
         templates_dir=templates_dir,
         anthropic_api_key=anthropic_api_key,
     )
-    store = Store(settings.db_path)
+    db_path = Path(os.environ["DB_PATH"])
+    store = Store(db_path)
     store.init_schema()
     for spec in runs:
         seed_run(store, spec)
     store.close()
-    client = TestClient(create_app(settings, execute=execute, generate=generate))
+    client = TestClient(
+        create_app(settings, db_path=db_path, execute=execute, generate=generate)
+    )
     client.__enter__()
     _open_clients.append(client)
     return client

@@ -154,13 +154,13 @@ def test_a_posted_template_selection_reaches_the_run(tmp_path):
 
 
 def test_an_override_outside_the_allowlist_is_a_400(tmp_path):
-    """`db_path` and `anthropic_api_key` are not run options. The service
+    """`output_dir` and `anthropic_api_key` are not run options. The service
     raises ValueError; a router that let it escape would return 500 and tell
     the user the server was broken rather than the request."""
     client = seeded_client(tmp_path)
 
     response = client.post(
-        "/api/runs", json={"overrides": {"db_path": "/tmp/elsewhere.db"}}
+        "/api/runs", json={"overrides": {"output_dir": "/tmp/elsewhere"}}
     )
 
     assert response.status_code == 400

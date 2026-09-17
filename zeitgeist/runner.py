@@ -29,9 +29,9 @@ from zeitgeist.store import Store
 log = logging.getLogger(__name__)
 
 # What the New run screen offers, and what "Re-run config" reposts. Anything
-# outside this cannot be set per run: a request able to write `db_path` or
-# `anthropic_api_key` would point a run at another database or hand it a key,
-# neither of which is a run option.
+# outside this cannot be set per run: a request able to write `output_dir` or
+# `anthropic_api_key` would point a run at another directory or hand it a
+# key, neither of which is a run option.
 RUN_OVERRIDE_KEYS = WRITABLE_KEYS | {
     "llm_provider",
     "llm_model",
@@ -45,9 +45,9 @@ def resolve_settings(base: Settings, overrides: dict[str, str]) -> Settings:
     `overrides` for what is, and the normal precedence chain for the rest.
 
     Only the fields *outside* `RUN_OVERRIDE_KEYS` are taken from `base`.
-    Those are the fields a run cannot set for itself — `db_path`,
-    `output_dir`, `anthropic_api_key` and the rest — and the API's own
-    `Settings` may carry programmatic values for them that must survive.
+    Those are the fields a run cannot set for itself — `output_dir`,
+    `anthropic_api_key` and the rest — and the API's own `Settings` may
+    carry programmatic values for them that must survive.
     Splatting *every* field would pin every run-settable field at its value
     from the caller's construction: `init_settings` outranks everything
     else in `Settings.settings_customise_sources`, so a value written to
@@ -256,7 +256,7 @@ class RunService:
         # (see test_runner.py's coverage of _work's except/finally) has no
         # other seam to reach it through, since _work always builds this
         # itself rather than taking it as a constructor argument.
-        self._worker_store = worker_store or (lambda: Store(self._settings.db_path))
+        self._worker_store = worker_store or (lambda: Store(store.path))
         self._queue: queue.Queue[Any] = queue.Queue()
         self._thread: threading.Thread | None = None
         # Guards the three dicts below, which the request threads read and

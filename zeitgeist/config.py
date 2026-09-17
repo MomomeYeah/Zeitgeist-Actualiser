@@ -91,7 +91,6 @@ class Settings(BaseSettings):
     font_path: Path | None = None
     templates_dir: Path = PACKAGE_ROOT / "media" / "templates"
     output_dir: Path = Path("output")
-    db_path: Path = Path("data") / "zeitgeist.db"
 
     @field_validator("sources", mode="before")
     @classmethod

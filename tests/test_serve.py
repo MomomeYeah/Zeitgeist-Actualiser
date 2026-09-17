@@ -97,15 +97,21 @@ def test_a_stale_database_is_reported_without_a_traceback(
     """The exception's own message is well-written and actionable -- "Delete
     it and re-run" -- which an uncaught traceback would bury. This is also
     the repository owner's actual local state, so it is the first thing
-    this command would show them."""
+    this command would show them.
+
+    `serve.main` calls `create_app(Settings())` with no `db_path`, so the
+    factory opens `DB_PATH` -- `data/zeitgeist.db`, relative to the process
+    -- itself; there is no longer an environment variable to repoint, only
+    `chdir` and a database left at that exact relative path.
+    """
     monkeypatch.chdir(tmp_path)
-    db_path = tmp_path / "stale.db"
+    db_path = tmp_path / "data" / "zeitgeist.db"
+    db_path.parent.mkdir()
     conn = sqlite3.connect(db_path)
     conn.executescript("CREATE TABLE placeholder (id INTEGER PRIMARY KEY)")
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION - 1}")
     conn.commit()
     conn.close()
-    monkeypatch.setenv("DB_PATH", str(db_path))
     calls = _capture_run(monkeypatch)
 
     exit_code = serve.main([])

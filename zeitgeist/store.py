@@ -28,7 +28,13 @@ from zeitgeist.records import (
 )
 from zeitgeist.schema import SCHEMA, SCHEMA_VERSION
 
-__all__ = ["SCHEMA_VERSION", "MissingCheckpoint", "Store", "StoreSchemaError"]
+__all__ = [
+    "DB_PATH",
+    "SCHEMA_VERSION",
+    "MissingCheckpoint",
+    "Store",
+    "StoreSchemaError",
+]
 
 # score_components carries this alongside the real platform sub-scores. It is a
 # multiplier, not a platform's opinion, so it must never reach topic_scores or be
@@ -117,6 +123,13 @@ def _serialized[T](cls: type[T]) -> type[T]:
         if inspect.isfunction(member) and not name.startswith("_"):
             setattr(cls, name, _holding_lock(member))
     return cls
+
+
+# Where the database lives. A constant rather than a setting: it is the one
+# thing that cannot be read out of the database it names, and a tool with one
+# database has nothing to gain from making its location configurable. Tests
+# reach past it through `create_app(db_path=...)`.
+DB_PATH = Path("data") / "zeitgeist.db"
 
 
 @_serialized
