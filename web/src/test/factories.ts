@@ -399,7 +399,6 @@ export function makeConfigOptions(
       { id: "two_buttons", slots: ["left", "right", "sweating"] },
     ],
     defaults: options.defaults ?? {
-      bluesky_fetch_concurrency: "8",
       bluesky_posts_per_trend: "10",
       bluesky_trend_limit: "25",
       distil_char_budget: "24000",
