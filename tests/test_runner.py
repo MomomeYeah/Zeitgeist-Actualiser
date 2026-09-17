@@ -1,8 +1,6 @@
 import logging
-import os
 import sqlite3
 import threading
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -17,15 +15,12 @@ from zeitgeist.runner import (
     RunnerUnavailable,
     RunRequest,
     RunService,
-    resolve_settings,
 )
 from zeitgeist.store import Store
 
 
 def _settings(tmp_path) -> Settings:
     return Settings(
-        _env_file=None,
-        db_path=tmp_path / "z.db",
         output_dir=tmp_path / "output",
     )
 
@@ -37,10 +32,30 @@ def _open_store(tmp_path) -> Store:
     from the same thread as everything else here, but the real one is
     touched from whatever thread FastAPI dispatches a request onto.
     """
-    settings = _settings(tmp_path)
-    store = Store(settings.db_path, check_same_thread=False)
+    store = Store(tmp_path / "z.db", check_same_thread=False)
     store.init_schema()
     return store
+
+
+def test_the_worker_opens_its_own_connection_to_the_services_database(tmp_path):
+    """RunService's worker thread needs a connection of its own — sqlite3
+    handles are thread-bound — but it must be to the same file, which is now
+    read from the store rather than from Settings.
+
+    Asserts on a second, distinct Store object pointed at the same path, not
+    merely on `is not`: a default that returned `self._store` would be a
+    thread-safety bug that an identity check alone would let through.
+    """
+    store = Store(tmp_path / "z.db")
+    store.init_schema()
+    service = RunService(Settings(), store)
+    worker = service._worker_store()
+    try:
+        assert worker is not store
+        assert worker.path == store.path
+    finally:
+        worker.close()
+        store.close()
 
 
 class _Gate:
@@ -173,7 +188,7 @@ def test_an_aborted_run_is_recorded_as_aborted(tmp_path):
     queued = service.enqueue(RunRequest())
     service.shutdown(timeout=10)
 
-    store = Store(_settings(tmp_path).db_path)
+    store = Store(tmp_path / "z.db")
     store.init_schema()
     record = store.get_run(queued.run_id)
     store.close()
@@ -192,7 +207,7 @@ def test_a_run_that_raises_is_recorded_as_failed_with_its_error(tmp_path):
     queued = service.enqueue(RunRequest())
     service.shutdown(timeout=10)
 
-    store = Store(_settings(tmp_path).db_path)
+    store = Store(tmp_path / "z.db")
     store.init_schema()
     record = store.get_run(queued.run_id)
     store.close()
@@ -300,7 +315,7 @@ def test_a_run_stopped_after_a_stage_is_recorded_as_aborted(tmp_path):
     released.set()
     service.shutdown(timeout=10)
 
-    store = Store(_settings(tmp_path).db_path)
+    store = Store(tmp_path / "z.db")
     store.init_schema()
     record = store.get_run(queued.run_id)
     store.close()
@@ -347,23 +362,23 @@ def test_a_run_gets_a_log_buffer_for_its_duration(tmp_path):
 
 
 def test_an_override_outside_the_allowlist_is_refused(tmp_path):
-    """`db_path`, `output_dir` and `anthropic_api_key` are not run options.
-    A request able to set them could point a run at another database or hand
-    it a key, neither of which the New run screen offers."""
+    """`output_dir` and `anthropic_api_key` are not run options. A request
+    able to set them could point a run at another directory or hand it a
+    key, neither of which the New run screen offers."""
     gate = _Gate()
     gate.release.set()
     service = _service(tmp_path, gate)
     try:
         with pytest.raises(ValueError):
-            service.enqueue(RunRequest(overrides={"db_path": "/tmp/elsewhere.db"}))
+            service.enqueue(RunRequest(overrides={"output_dir": "/tmp/elsewhere"}))
     finally:
         service.shutdown(timeout=10)
 
 
 def test_an_allowlisted_override_reaches_the_run(tmp_path):
     """The New run screen's config cards are these overrides. Dropped on the
-    way through, every run would silently use `.env`'s values and the screen
-    would be decorative."""
+    way through, every run would silently use the stored defaults and the
+    screen would be decorative."""
     seen: list[int] = []
 
     def execute(settings, request, store, observer, token) -> None:
@@ -396,7 +411,7 @@ def test_a_run_that_fails_before_any_row_exists_still_leaves_a_failed_row(tmp_pa
     queued = service.enqueue(RunRequest())
     service.shutdown(timeout=10)
 
-    store = Store(_settings(tmp_path).db_path)
+    store = Store(tmp_path / "z.db")
     store.init_schema()
     record = store.get_run(queued.run_id)
     store.close()
@@ -528,7 +543,7 @@ def test_a_failed_row_write_during_enqueue_leaves_the_service_clean(tmp_path):
     """
     run_id = "will-fail-once"
     settings = _settings(tmp_path)
-    failing_store = _StartRunFailsOnceStore(settings.db_path, fails_for=run_id)
+    failing_store = _StartRunFailsOnceStore(tmp_path / "z.db", fails_for=run_id)
     failing_store.init_schema()
     service = RunService(settings, failing_store, execute=lambda *a: None)
 
@@ -661,7 +676,7 @@ def test_the_worker_survives_fail_run_itself_raising(tmp_path):
     exploding_run_id = "explodes-recording-its-own-failure"
 
     def worker_store() -> Store:
-        return _FailRunRaisesStore(settings.db_path, raises_for=exploding_run_id)
+        return _FailRunRaisesStore(tmp_path / "z.db", raises_for=exploding_run_id)
 
     seen: list[str] = []
 
@@ -686,7 +701,7 @@ def test_the_worker_survives_fail_run_itself_raising(tmp_path):
     assert seen == [exploding_run_id, second.run_id]
     assert service.active().current is None
 
-    reader = Store(settings.db_path)
+    reader = Store(tmp_path / "z.db")
     reader.init_schema()
     record = reader.get_run(second.run_id)
     reader.close()
@@ -718,7 +733,7 @@ def test_a_run_failing_after_a_later_stage_is_recorded_with_that_stage(tmp_path)
     released.set()
     service.shutdown(timeout=10)
 
-    store = Store(_settings(tmp_path).db_path)
+    store = Store(tmp_path / "z.db")
     store.init_schema()
     record = store.get_run(queued.run_id)
     store.close()
@@ -761,7 +776,7 @@ def test_a_log_flush_failing_after_the_run_finished_leaves_it_finished(tmp_path)
     ):
         run_id = _run_to_completion(service, RunRequest())
 
-    store = Store(_settings(tmp_path).db_path)
+    store = Store(tmp_path / "z.db")
     store.init_schema()
     record = store.get_run(run_id)
     store.close()
@@ -788,74 +803,29 @@ def test_aborting_a_completed_run_reports_that_it_did_nothing(tmp_path):
 
 
 def test_a_run_picks_up_the_settings_table_for_fields_it_does_not_override(
-    tmp_path, monkeypatch
+    tmp_path,
 ):
     """`PUT /api/settings` writes to this table, and the spec's promise is
-    that changes apply to new runs. Splatting *every* field of this
-    service's own startup settings as constructor arguments would pin every
-    run-settable field at its value from `RunService.__init__` forever —
-    `init_settings` outranks the table in `Settings.settings_customise_
-    sources` — making that promise false until a restart. A request that
-    does not override `phrase_min_authors` must still see a value written
-    to the table after the service started.
-
-    `SettingsTableSource` cannot resolve its database from a constructed
-    `Settings.db_path` — that would be circular — so it re-derives its own
-    path from `DB_PATH`/`.env` instead (see `zeitgeist/settings_source.py`).
-    `DB_PATH` has to point at this test's database for the table to be
-    consulted at all, the same as every test in `test_settings_source.py`.
+    that changes apply to new runs. This service's own `Settings` was frozen
+    when it was constructed, so a request that does not override
+    `phrase_min_authors` can only see the 7 because `_build_settings`
+    resolves against the store rather than splatting that frozen object —
+    the difference between the promise holding and holding until restart.
     """
-    settings = _settings(tmp_path)
-    monkeypatch.setenv("DB_PATH", str(settings.db_path))
-    store = Store(settings.db_path)
-    store.init_schema()
-    store.set_setting("phrase_min_authors", "7")
-    store.close()
-
     seen: list[int] = []
 
     def execute(settings, request, store, observer, token) -> None:
         seen.append(settings.phrase_min_authors)
 
-    service = RunService(settings, _open_store(tmp_path), execute=execute)
+    store = _open_store(tmp_path)
+    service = RunService(_settings(tmp_path), store, execute=execute)
     service.start()
+
+    store.set_setting("phrase_min_authors", "7")
     service.enqueue(RunRequest())
     service.shutdown(timeout=10)
 
     assert seen == [7]
-
-
-def test_resolve_settings_picks_up_a_value_written_to_the_settings_table(tmp_path):
-    """The base snapshot is fixed when the service is constructed. A field
-    the settings screen writes afterwards must still reach the next run —
-    and the next generation job, which layers the same way."""
-    store = Store(Path(os.environ["DB_PATH"]))
-    store.init_schema()
-    store.set_setting("distil_concurrency", "7")
-
-    resolved = resolve_settings(Settings(_env_file=None), {})
-
-    assert resolved.distil_concurrency == 7
-
-
-def test_resolve_settings_lets_an_override_outrank_the_table(tmp_path):
-    store = Store(Path(os.environ["DB_PATH"]))
-    store.init_schema()
-    store.set_setting("distil_concurrency", "7")
-
-    resolved = resolve_settings(Settings(_env_file=None), {"distil_concurrency": "2"})
-
-    assert resolved.distil_concurrency == 2
-
-
-def test_resolve_settings_keeps_fields_a_run_cannot_set(tmp_path):
-    """`output_dir` and `db_path` may hold programmatic values the API was
-    constructed with. Only the run-settable fields resolve afresh."""
-    base = Settings(_env_file=None, output_dir=tmp_path / "somewhere")
-
-    resolved = resolve_settings(base, {})
-
-    assert resolved.output_dir == tmp_path / "somewhere"
 
 
 def test_a_running_stage_gets_a_row_while_it_is_still_running(tmp_path):
@@ -1070,7 +1040,7 @@ def test_enqueue_opens_the_row_and_registers_the_run_together(tmp_path):
         # blocked on `RunService._lock`, which `enqueue` still holds.
         assert not answered.wait(timeout=0.5)
 
-    store = _PeekingStore(settings.db_path, peek)
+    store = _PeekingStore(tmp_path / "z.db", peek)
     store.init_schema()
     service = RunService(settings, store, execute=gate)
     service.start()

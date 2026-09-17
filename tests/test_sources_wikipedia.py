@@ -223,7 +223,6 @@ def test_from_settings_wires_the_project_and_contact_through():
     contact only shows up in the request that goes out.
     """
     settings = Settings(
-        _env_file=None,
         wikipedia_project="fr.wikipedia",
         wikipedia_contact="https://example.org/bot",
     )

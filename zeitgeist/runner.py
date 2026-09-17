@@ -15,63 +15,17 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from zeitgeist.config import Settings
+from zeitgeist.config import RUN_KEYS, Settings, resolve_settings
 from zeitgeist.llm.factory import build_provider
 from zeitgeist.logcapture import RunLogBuffer, capture_run_log
 from zeitgeist.models import STRICT
 from zeitgeist.pipeline import new_run_id, run_pipeline
 from zeitgeist.progress import Aborted, CancelToken, NullObserver, RunObserver
 from zeitgeist.records import RunConfig, RunError, Stage, StageRecord
-from zeitgeist.settings_source import WRITABLE_KEYS
 from zeitgeist.sources import build_trend_source
 from zeitgeist.store import Store
 
 log = logging.getLogger(__name__)
-
-# What the New run screen offers, and what "Re-run config" reposts. Anything
-# outside this cannot be set per run: a request able to write `db_path` or
-# `anthropic_api_key` would point a run at another database or hand it a key,
-# neither of which is a run option.
-RUN_OVERRIDE_KEYS = WRITABLE_KEYS | {
-    "llm_provider",
-    "llm_model",
-    "sources",
-    "topic_count",
-}
-
-
-def resolve_settings(base: Settings, overrides: dict[str, str]) -> Settings:
-    """Build a per-run `Settings`: `base` for everything not run-settable,
-    `overrides` for what is, and the normal precedence chain for the rest.
-
-    Only the fields *outside* `RUN_OVERRIDE_KEYS` are taken from `base`.
-    Those are the fields a run cannot set for itself — `db_path`,
-    `output_dir`, `anthropic_api_key` and the rest — and the API's own
-    `Settings` may carry programmatic values for them that must survive.
-    Splatting *every* field would pin every run-settable field at its value
-    from the caller's construction: `init_settings` outranks everything
-    else in `Settings.settings_customise_sources`, so a value written to
-    the settings table afterwards (`PUT /api/settings`) would never reach a
-    run started later. Leaving those fields out lets them resolve through
-    the normal precedence chain instead, picking up the table's current
-    value when the request itself does not override them.
-
-    Building a fresh `Settings` rather than `model_copy(update=...)`, which
-    bypasses validation entirely: `"9"` would stay the string `"9"` for
-    `topic_count`, with no error raised anywhere. Constructing instead runs
-    the overrides through pydantic as constructor arguments — the
-    highest-precedence layer, which is exactly what a per-run override
-    should be — so they arrive coerced to the right type, and an invalid
-    one (an unknown source, a non-numeric count) raises `ValueError` here.
-
-    A module-level function rather than a `RunService` method because
-    `GenerationService` needs the identical layering: an on-demand render
-    is a new action taken now, against the settings in force now, and a
-    second copy of the reasoning above would drift from this one.
-    """
-    snapshot = base.model_dump(exclude=set(RUN_OVERRIDE_KEYS))
-    return Settings(**(snapshot | dict(overrides)))
-
 
 SHUTDOWN = object()
 
@@ -256,7 +210,7 @@ class RunService:
         # (see test_runner.py's coverage of _work's except/finally) has no
         # other seam to reach it through, since _work always builds this
         # itself rather than taking it as a constructor argument.
-        self._worker_store = worker_store or (lambda: Store(self._settings.db_path))
+        self._worker_store = worker_store or (lambda: Store(store.path))
         self._queue: queue.Queue[Any] = queue.Queue()
         self._thread: threading.Thread | None = None
         # Guards the three dicts below, which the request threads read and
@@ -321,7 +275,11 @@ class RunService:
         )
 
     def enqueue(self, request: RunRequest) -> QueuedRun:
-        unknown = sorted(set(request.overrides) - RUN_OVERRIDE_KEYS)
+        # Anything outside RUN_KEYS cannot be set per run: a request able to
+        # write `output_dir` or `anthropic_api_key` would point a run at
+        # another directory or hand it a key, neither of which is a run
+        # option.
+        unknown = sorted(set(request.overrides) - RUN_KEYS)
         if unknown:
             raise ValueError(f"Not settable per run: {', '.join(unknown)}")
         # Validate on the request thread, before a run_id is ever issued. A
@@ -409,7 +367,7 @@ class RunService:
     def _build_settings(self, overrides: dict[str, str]) -> Settings:
         """This service's own settings, layered with the request's
         overrides. See `resolve_settings`."""
-        return resolve_settings(self._settings, overrides)
+        return resolve_settings(self._store, self._settings, overrides)
 
     def active(self) -> ActiveRuns:
         with self._lock:

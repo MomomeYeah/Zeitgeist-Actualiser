@@ -44,24 +44,6 @@
   color: var(--text-55);
 }
 
-/* The read-only note under a field the shell supplies. `contrast-light`
-   rather than `text-55`: it is the one line on this screen that says a
-   control will not do what it looks like it does, and it has to read as
-   different from the explanation directly above it. */
-.pinned {
-  margin: 6px 0 0;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1.5;
-  color: var(--contrast-light);
-}
-
-.input[readonly] {
-  border-style: dashed;
-  color: var(--text-55);
-  cursor: default;
-}
-
 .hint {
   margin-left: 6px;
   font-family: var(--font-mono);
@@ -71,10 +53,8 @@
 
 /* One class per source. Reached dynamically as `styles[field.source]`, so
    `no-raw-colours.test.ts`'s phantom-class check skips these by design —
-   check all four by eye against `SOURCE_LABELS` in fields.ts. */
+   check both by eye against `SOURCE_LABELS` in fields.ts. */
 .settings,
-.environment,
-.dotenv,
 .default {
   font-family: var(--font-mono);
   font-size: 9.5px;
@@ -89,16 +69,6 @@
 .settings {
   background: var(--accent-tint);
   color: var(--accent);
-}
-
-.environment {
-  background: var(--chip-fill-strong);
-  color: var(--text-70);
-}
-
-.dotenv {
-  background: var(--chip-fill);
-  color: var(--text-70);
 }
 
 .default {

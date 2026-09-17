@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -35,17 +36,15 @@ def _settings(tmp_path) -> Settings:
     `anthropic_api_key` is set because `GenerationService.submit` calls
     `build_provider` on the request thread, and `llm_provider` defaults to
     `"anthropic"`, whose factory raises `ValueError` on an empty key —
-    which `conftest`'s autouse fixture guarantees, since it strips
-    `ANTHROPIC_API_KEY` from the environment for every test. Without this
-    every `LLMGeneration` test would die in `submit` before reaching the
-    behaviour it names. It stays hermetic: `AnthropicProvider.__init__`
+    which a freshly constructed `Settings` has, since nothing populates it
+    and there is no environment for a real key to leak in from. Without
+    this every `LLMGeneration` test would die in `submit` before reaching
+    the behaviour it names. It stays hermetic: `AnthropicProvider.__init__`
     only constructs the SDK client and makes no network call, and every
     test here supplies its own `FakeLLMProvider` for the actual work.
     """
     return Settings(
-        _env_file=None,
         output_dir=tmp_path / "output",
-        db_path=tmp_path / "z.db",
         anthropic_api_key="key",
         templates_dir=write_library(
             tmp_path / "templates",
@@ -185,9 +184,7 @@ def test_the_model_is_only_offered_the_template_the_panel_named(tmp_path):
     """
     store = _store(tmp_path)
     settings = Settings(
-        _env_file=None,
         output_dir=tmp_path / "output",
-        db_path=tmp_path / "z.db",
         anthropic_api_key="key",
         templates_dir=write_library(
             tmp_path / "templates",
@@ -238,9 +235,7 @@ def _settings_with(tmp_path, *template_ids: str) -> Settings:
     named" are the same prompt, and a test could not tell them apart.
     """
     return Settings(
-        _env_file=None,
         output_dir=tmp_path / "output",
-        db_path=tmp_path / "z.db",
         anthropic_api_key="key",
         templates_dir=write_library(
             tmp_path / "templates",
@@ -451,6 +446,31 @@ def _service(tmp_path, store, **kwargs) -> GenerationService:
 
 def _seed_topics(store: Store, *topics) -> None:
     store.write_analyse_checkpoint("run-1", list(topics), 0.3)
+
+
+def test_a_generation_job_opens_the_services_database(tmp_path):
+    """`_run_job` used to find its database through `job.settings.db_path`.
+    With that field gone it must reach the same file through the service's
+    own store. Pinned on the path the worker's `Store` actually carries, so
+    a job opening a different file fails on substance.
+    """
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    opened: list[Path] = []
+
+    def generate(job: GenerationJob, job_store: Store) -> None:
+        opened.append(job_store.path)
+
+    service = _service(tmp_path, store, generate=generate)
+    service.submit(
+        "run-1",
+        "airport-cat",
+        ManualGeneration(template_id=TEMPLATE, caption_slots=SLOTS),
+    )
+    service.shutdown()
+
+    assert opened == [store.path]
+    store.close()
 
 
 @dataclass

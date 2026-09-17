@@ -3,32 +3,56 @@ import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 
+import type { SettingField } from "@/api/types";
 import { SettingsPage } from "@/features/settings/SettingsPage";
-import { makeSettingField, makeSettingFields } from "@/test/factories";
+import {
+  apiKeyField,
+  makeConfigOptions,
+  makeSettingField,
+  makeSettingFields,
+} from "@/test/factories";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/server";
 
+function settingsHandler(fields: SettingField[]) {
+  return [
+    http.get("/api/settings", () => HttpResponse.json(fields)),
+    http.get("/api/config/options", () => HttpResponse.json(makeConfigOptions())),
+  ];
+}
+
+/** Every `PUT` body the screen sent, in order. */
+function captureSaves(fields: SettingField[]): unknown[] {
+  const saved: unknown[] = [];
+  server.use(
+    http.put("/api/settings", async ({ request }) => {
+      saved.push(await request.json());
+      return HttpResponse.json(fields);
+    }),
+  );
+  return saved;
+}
+
 describe("SettingsPage", () => {
-  it("groups the seven writable fields into the three cards", async () => {
-    server.use(
-      http.get("/api/settings", () => HttpResponse.json(makeSettingFields())),
-    );
+  it("draws global fields and run defaults under separate headings", async () => {
+    server.use(...settingsHandler(makeSettingFields()));
 
     renderWithProviders(<SettingsPage />, { route: "/settings" });
 
-    expect(await screen.findByText("Fan-out")).toBeInTheDocument();
-    expect(screen.getByText("Ranking")).toBeInTheDocument();
-    expect(screen.getByText("Distillation")).toBeInTheDocument();
-    expect(screen.getAllByRole("spinbutton")).toHaveLength(7);
+    expect(
+      await screen.findByRole("heading", { name: /global/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /defaults for new runs/i }),
+    ).toBeInTheDocument();
   });
 
   it("names each field by the key a layer would actually match", async () => {
-    // Not `trend_limit`. The environment variable, the .env line and the
-    // settings row are all `bluesky_trend_limit`, and a screen whose whole
-    // job is showing which layer won must not print a name no layer uses.
-    server.use(
-      http.get("/api/settings", () => HttpResponse.json(makeSettingFields())),
-    );
+    // Not `trend_limit`. `RunConfig` and `Settings` use different
+    // vocabularies for this field, and the settings table's own row is
+    // keyed `bluesky_trend_limit` — a screen whose whole job is showing
+    // which layer a value came from must not print a name no layer uses.
+    server.use(...settingsHandler(makeSettingFields()));
 
     renderWithProviders(<SettingsPage />, { route: "/settings" });
 
@@ -36,162 +60,131 @@ describe("SettingsPage", () => {
     expect(screen.queryByText("trend_limit")).not.toBeInTheDocument();
   });
 
-  it("says where each value came from, including the environment", async () => {
-    // Four layers, though the design drew three. A shell variable outranks
-    // the settings table, so `environment` is a real answer — and it is the
-    // one state where saving cannot change what the next run uses.
+  it("says where each value came from", async () => {
+    // The contrast is the point: an implementation that always rendered
+    // DEFAULT would still pass a test that only checked for DEFAULT.
     server.use(
-      http.get("/api/settings", () =>
-        HttpResponse.json([
-          makeSettingField({ key: "phrase_min_authors", source: "settings" }),
-          makeSettingField({ key: "distil_concurrency", source: "environment" }),
-          makeSettingField({ key: "distil_char_budget", source: "dotenv" }),
-          makeSettingField({ key: "meme_potential_weight", source: "default" }),
-        ]),
-      ),
+      ...settingsHandler([
+        makeSettingField({ key: "phrase_min_authors", source: "settings" }),
+        makeSettingField({ key: "meme_potential_weight", source: "default" }),
+      ]),
     );
 
     renderWithProviders(<SettingsPage />, { route: "/settings" });
 
     expect(await screen.findByText("SET HERE")).toBeInTheDocument();
-    expect(screen.getByText("FROM ENV")).toBeInTheDocument();
-    expect(screen.getByText("FROM .env")).toBeInTheDocument();
     expect(screen.getByText("DEFAULT")).toBeInTheDocument();
   });
 
-  it("will not let you edit a field the shell controls, and says why", async () => {
-    // A shell `DISTIL_CONCURRENCY=8` outranks the settings table —
-    // deliberately, as the more explicit act. So Save on such a field wrote
-    // a row that changed nothing anybody could see: the value snapped
-    // straight back on the reply, the chip still read FROM ENV, and no
-    // part of the screen accounted for it. The row was the one control
-    // that could not do what it appeared to.
-    const user = userEvent.setup();
-    server.use(
-      http.get("/api/settings", () =>
-        HttpResponse.json([
-          makeSettingField({
-            key: "distil_concurrency",
-            source: "environment",
-            value: 4,
-          }),
-        ]),
-      ),
-    );
+  it("shows an unset API key as not set, with no value in the document", async () => {
+    server.use(...settingsHandler([apiKeyField({ source: "default" })]));
 
     renderWithProviders(<SettingsPage />, { route: "/settings" });
 
-    const input = await screen.findByLabelText("distil_concurrency");
-    await user.click(input);
-    await user.keyboard("8");
-
-    // Typed at, and unchanged — the behaviour, not the `readonly`
-    // attribute that happens to produce it. Save stays disabled because
-    // nothing was edited, which is the second half of not accepting an
-    // edit that would silently revert.
-    expect(input).toHaveValue(4);
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    expect(
-      screen.getByText(/DISTIL_CONCURRENCY is set in this server/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/not set/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("anthropic_api_key")).toHaveValue("");
   });
 
-  it("leaves every other field editable", async () => {
-    // The negative case. A read-only rule applied to the wrong condition —
-    // or to all four sources — would pass the test above while making the
-    // whole screen a display.
+  it("sends a typed API key and does not send the untouched fields beside it", async () => {
+    /* The bug this guards is the one the existing `changedValues` comment
+       describes: sending every field writes a row for each, pinning values
+       that were only ever defaults. */
     const user = userEvent.setup();
-    server.use(
-      http.get("/api/settings", () =>
-        HttpResponse.json([
-          makeSettingField({ key: "distil_concurrency", source: "dotenv", value: 4 }),
-        ]),
-      ),
-    );
+    const fields = makeSettingFields();
+    server.use(...settingsHandler(fields));
+    const saved = captureSaves(fields);
 
     renderWithProviders(<SettingsPage />, { route: "/settings" });
 
-    const input = await screen.findByLabelText("distil_concurrency");
-    await user.clear(input);
-    await user.type(input, "8");
-
-    expect(input).toHaveValue(8);
-    expect(screen.queryByText(/is set in this server/)).not.toBeInTheDocument();
-  });
-
-  it("carries the API ceiling on the field that has one", async () => {
-    server.use(
-      http.get("/api/settings", () => HttpResponse.json(makeSettingFields())),
+    await user.type(
+      await screen.findByLabelText("anthropic_api_key"),
+      "sk-ant-typed",
     );
-
-    renderWithProviders(<SettingsPage />, { route: "/settings" });
-
-    expect(await screen.findByText("max 25 · API ceiling")).toBeInTheDocument();
-  });
-
-  it("saves only the fields that were edited", async () => {
-    // Sending all seven would write a settings row for every one of them,
-    // pinning six values that were only ever defaults — and a later .env
-    // edit would then be invisible.
-    const user = userEvent.setup();
-    let sent: unknown = null;
-    server.use(
-      http.get("/api/settings", () => HttpResponse.json(makeSettingFields())),
-      http.put("/api/settings", async ({ request }) => {
-        sent = await request.json();
-        return HttpResponse.json(makeSettingFields());
-      }),
-    );
-
-    renderWithProviders(<SettingsPage />, { route: "/settings" });
-
-    const field = await screen.findByLabelText("phrase_min_authors");
-    await user.clear(field);
-    await user.type(field, "9");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
-      expect(sent).toEqual({ values: { phrase_min_authors: "9" } }),
+      expect(saved).toEqual([{ values: { anthropic_api_key: "sk-ant-typed" } }]),
     );
   });
 
-  it("resets every field to its .env value by clearing the rows", async () => {
-    // An empty string deletes the row so the fallback applies again.
-    // Writing the default back would pin the value and make a later .env
-    // edit invisible — the endpoint's own reasoning, honoured here.
+  it("clears a stored API key", async () => {
+    /* `changedValues` drops every empty draft, so a Clear routed through the
+       draft map can never reach the wire — this is the test that says so.
+       `onClear` must put the `""` into the payload by another route. */
     const user = userEvent.setup();
-    let sent: unknown = null;
-    server.use(
-      http.get("/api/settings", () => HttpResponse.json(makeSettingFields())),
-      http.put("/api/settings", async ({ request }) => {
-        sent = await request.json();
-        return HttpResponse.json(makeSettingFields());
-      }),
-    );
+    const fields = [apiKeyField({ source: "settings" })];
+    server.use(...settingsHandler(fields));
+    const saved = captureSaves(fields);
 
     renderWithProviders(<SettingsPage />, { route: "/settings" });
-    await screen.findByLabelText("phrase_min_authors");
 
-    await user.click(screen.getByRole("button", { name: "Reset to .env" }));
+    await user.click(await screen.findByRole("button", { name: "Clear" }));
 
-    await waitFor(() => expect(sent).not.toBeNull());
-    expect(sent).toEqual({
-      values: {
-        bluesky_fetch_concurrency: "",
-        bluesky_posts_per_trend: "",
-        bluesky_trend_limit: "",
-        distil_char_budget: "",
-        distil_concurrency: "",
-        meme_potential_weight: "",
-        phrase_min_authors: "",
-      },
-    });
+    await waitFor(() =>
+      expect(saved).toEqual([{ values: { anthropic_api_key: "" } }]),
+    );
+  });
+
+  it("offers no Clear for a key that was never set", async () => {
+    /* The negative half. A Clear rendered unconditionally would pass the test
+       above while inviting a no-op click on a key there is nothing to clear. */
+    server.use(...settingsHandler([apiKeyField({ source: "default" })]));
+
+    renderWithProviders(<SettingsPage />, { route: "/settings" });
+
+    expect(await screen.findByText(/not set/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear" })).not.toBeInTheDocument();
+  });
+
+  it("treats a reformatted number as unchanged but a real edit as changed", async () => {
+    /* Both halves together: an implementation comparing raw strings passes
+       the second assertion and fails the first, and one that never compares
+       at all passes the first and fails the second. */
+    const user = userEvent.setup();
+    const fields = makeSettingFields();
+    server.use(...settingsHandler(fields));
+    const saved = captureSaves(fields);
+
+    renderWithProviders(<SettingsPage />, { route: "/settings" });
+
+    const input = await screen.findByLabelText("meme_potential_weight");
+    await user.clear(input);
+    await user.type(input, "0.30");
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+
+    await user.clear(input);
+    await user.type(input, "0.45");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(saved).toEqual([{ values: { meme_potential_weight: "0.45" } }]),
+    );
+  });
+
+  it("compares a string field textually rather than numerically", async () => {
+    /* `Number("http://...")` is NaN, so a numeric-only comparison would
+       decide every host edit was unchanged and silently disable Save. */
+    const user = userEvent.setup();
+    const fields = makeSettingFields();
+    server.use(...settingsHandler(fields));
+    const saved = captureSaves(fields);
+
+    renderWithProviders(<SettingsPage />, { route: "/settings" });
+
+    const input = await screen.findByLabelText("ollama_host");
+    await user.clear(input);
+    await user.type(input, "http://10.0.0.2:11434");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(saved).toEqual([{ values: { ollama_host: "http://10.0.0.2:11434" } }]),
+    );
   });
 
   it("shows the server's own rejection when a value is out of range", async () => {
     const user = userEvent.setup();
     server.use(
-      http.get("/api/settings", () => HttpResponse.json(makeSettingFields())),
+      ...settingsHandler(makeSettingFields()),
       http.put("/api/settings", () =>
         HttpResponse.json(
           {
@@ -210,57 +203,109 @@ describe("SettingsPage", () => {
     await user.type(field, "2");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(
-      await screen.findByText(
-        "meme_potential_weight: Input should be less than or equal to 1",
-      ),
-    ).toBeInTheDocument();
+    // The PUT is still in flight when the click returns; the failure
+    // message only exists once the mutation actually settles.
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "meme_potential_weight: Input should be less than or equal to 1",
+        ),
+      ).toBeInTheDocument(),
+    );
   });
 
-  it("does not enable Save when a draft is only reformatted, not changed", async () => {
-    // "0.30" and 0.3 are the same number; sending it would pin a value
-    // that was never actually edited. Comparing as strings — what the plan
-    // originally specified — would treat this reformatting as a genuine
-    // change and both enable Save and send the field.
+  it("saves the run defaults the config cards own, under their setting names", async () => {
+    /* Four of the fourteen settable keys are reachable only through the cards,
+       and `RunConfig` and `Settings` use different names for them —
+       `top_count` against `topic_count`, `trend_limit` against
+       `bluesky_trend_limit`. A card wired to the `RunConfig` vocabulary would
+       `PUT` keys the endpoint rejects, so this asserts the wire format rather
+       than the card's own state. */
     const user = userEvent.setup();
-    let sent: unknown = null;
-    server.use(
-      http.get("/api/settings", () => HttpResponse.json(makeSettingFields())),
-      http.put("/api/settings", async ({ request }) => {
-        sent = await request.json();
-        return HttpResponse.json(makeSettingFields());
-      }),
-    );
+    const fields = makeSettingFields();
+    server.use(...settingsHandler(fields));
+    const saved = captureSaves(fields);
 
     renderWithProviders(<SettingsPage />, { route: "/settings" });
 
-    const field = await screen.findByLabelText("meme_potential_weight");
-    await user.clear(field);
-    await user.type(field, "0.30");
-
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-
+    await user.click(await screen.findByRole("button", { name: "ollama" }));
+    await user.click(screen.getByRole("radio", { name: "qwen3.5:latest" }));
     await user.click(screen.getByRole("button", { name: "Save" }));
-    expect(sent).toBeNull();
+
+    await waitFor(() =>
+      expect(saved).toEqual([
+        { values: { llm_provider: "ollama", llm_model: "qwen3.5:latest" } },
+      ]),
+    );
   });
 
-  it("disables Save until a field genuinely differs from its current value", async () => {
-    // Silent no-ops are worse than a disabled button: if nothing has
-    // changed, Save should say so up front rather than swallow the click.
-    const user = userEvent.setup();
+  it("seeds the cards from the stored run defaults rather than from their own defaults", async () => {
+    /* A card that ignored the `GET` and started from its component default
+       would show "anthropic / claude-sonnet-5" over a database saying
+       otherwise, and Save would then be disabled on a screen that disagrees
+       with what the next run will use. */
     server.use(
-      http.get("/api/settings", () => HttpResponse.json(makeSettingFields())),
+      ...settingsHandler(
+        makeSettingFields({
+          llm_provider: { value: "ollama", source: "settings" },
+          llm_model: { value: "qwen3.5:latest", source: "settings" },
+          topic_count: { value: 10, source: "settings" },
+        }),
+      ),
     );
 
     renderWithProviders(<SettingsPage />, { route: "/settings" });
 
+    expect(await screen.findByRole("button", { name: "ollama" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("radio", { name: "qwen3.5:latest" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "10" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("resets every settable field except the API key", async () => {
+    /* The keys written out, not an `every` over the values: `Object.values({})
+       .every(...)` is `true`, so a Reset that sent an empty payload — or only
+       the fields already drafted — would pass an `every` check while
+       resetting nothing.
+
+       Thirteen, not fourteen. `anthropic_api_key` is deliberately exempt:
+       losing your key to a button labelled "Reset to defaults" is a trap, and
+       the secret row's own Clear is the explicit way to do it. */
+    const user = userEvent.setup();
+    const fields = makeSettingFields();
+    server.use(...settingsHandler(fields));
+    const saved = captureSaves(fields);
+
+    renderWithProviders(<SettingsPage />, { route: "/settings" });
     await screen.findByLabelText("phrase_min_authors");
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 
-    const field = screen.getByLabelText("phrase_min_authors");
-    await user.clear(field);
-    await user.type(field, "9");
+    await user.click(screen.getByRole("button", { name: "Reset to defaults" }));
 
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0]).toEqual({
+      values: {
+        bluesky_fetch_concurrency: "",
+        bluesky_posts_per_trend: "",
+        bluesky_trend_limit: "",
+        distil_char_budget: "",
+        distil_concurrency: "",
+        font_path: "",
+        llm_model: "",
+        llm_provider: "",
+        meme_potential_weight: "",
+        ollama_host: "",
+        phrase_min_authors: "",
+        sources: "",
+        topic_count: "",
+      },
+    });
   });
 });

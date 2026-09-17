@@ -1,6 +1,9 @@
 import json
 import logging
 import threading
+import time
+
+from fastapi.testclient import TestClient
 
 from tests.api_factory import (
     GatedExecute,
@@ -12,6 +15,26 @@ from tests.api_factory import (
 from tests.run_factory import make_evidence, make_run_config
 from zeitgeist.config import Settings
 from zeitgeist.records import LogLine, Stage
+
+
+def wait_for_idle(client: TestClient, timeout: float = 5.0) -> None:
+    """Block until `/api/runs/active` reports nothing current or queued.
+
+    A run enqueued with no gate executes on the worker thread immediately,
+    racing whatever the request thread does next — there is no `Event` a
+    test can wait on the way `GatedExecute` and `LoggingGate` provide one.
+    Polling the same endpoint the sidebar polls is the seam that exists:
+    once it reports idle, the worker has finished `_run_one` and returned
+    to `queue.get()`, so whatever the run's `execute` did has already
+    happened.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        body = client.get("/api/runs/active").json()
+        if body["current"] is None and not body["queued"]:
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"run did not become idle within {timeout}s")
 
 
 def test_posting_a_run_returns_the_id_it_will_have(tmp_path):
@@ -119,8 +142,8 @@ def test_the_active_endpoint_reports_nothing_when_idle(tmp_path):
 
 def test_overrides_reach_the_run(tmp_path):
     """The four config cards on the New run screen are these overrides.
-    Dropped in the router, every run would use `.env` and the cards would be
-    decorative."""
+    Dropped in the router, every run would use the stored defaults and the
+    cards would be decorative."""
     seen: list[int] = []
 
     def execute(settings, request, store, observer, token) -> None:
@@ -154,13 +177,13 @@ def test_a_posted_template_selection_reaches_the_run(tmp_path):
 
 
 def test_an_override_outside_the_allowlist_is_a_400(tmp_path):
-    """`db_path` and `anthropic_api_key` are not run options. The service
+    """`output_dir` and `anthropic_api_key` are not run options. The service
     raises ValueError; a router that let it escape would return 500 and tell
     the user the server was broken rather than the request."""
     client = seeded_client(tmp_path)
 
     response = client.post(
-        "/api/runs", json={"overrides": {"db_path": "/tmp/elsewhere.db"}}
+        "/api/runs", json={"overrides": {"output_dir": "/tmp/elsewhere"}}
     )
 
     assert response.status_code == 400
@@ -177,6 +200,26 @@ def test_the_api_key_is_not_accepted_as_an_override(tmp_path):
     )
 
     assert response.status_code == 400
+
+
+def test_a_validation_failure_on_start_run_does_not_leak_input_value(tmp_path):
+    """`resolve_settings` raises a bare `pydantic.ValidationError`, which is
+    a `ValueError` subclass — so an unqualified `except ValueError` renders
+    it with `str(exc)`, and pydantic's own rendering includes
+    `input_value=...` for every offending field. That is the same leak
+    `format_validation_errors` was written to keep out of every other 400
+    this project returns; this pins it against the one path that used to
+    miss it.
+    """
+    client = seeded_client(tmp_path)
+
+    response = client.post("/api/runs", json={"overrides": {"distil_concurrency": "0"}})
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "distil_concurrency" in detail
+    assert "greater than or equal to 1" in detail
+    assert "input_value" not in detail
 
 
 def test_resuming_reuses_the_runs_existing_id(tmp_path):
@@ -403,6 +446,34 @@ def test_resuming_a_run_whose_frozen_config_no_longer_validates_is_a_400(tmp_pat
     assert response.status_code == 400
     assert "dormant" in response.json()["detail"]
     assert seen == []
+
+
+def test_resuming_with_an_invalid_frozen_config_does_not_leak_input_value(tmp_path):
+    """The `resume_run` half of the same finding `test_a_validation_failure_
+    on_start_run_does_not_leak_input_value` pins for `start_run`:
+    `ValidationError` must be caught ahead of the generic `ValueError`
+    branch here too, or the replayed frozen config's rejected value rides
+    along in the response body.
+    """
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id="20260901T120000Z",
+                config=make_run_config(sources=["lemmy"]),
+                evidence=[make_evidence(["p1"])],
+            )
+        ],
+    )
+
+    response = client.post(
+        "/api/runs/20260901T120000Z/resume", json={"stage": "evaluate"}
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "dormant" in detail
+    assert "input_value" not in detail
 
 
 def test_resuming_an_unknown_run_is_a_404(tmp_path):

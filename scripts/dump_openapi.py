@@ -32,7 +32,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         scratch = Path(tmp)
         app = create_app(
-            Settings(db_path=scratch / "openapi.db", output_dir=scratch / "out")
+            Settings(output_dir=scratch / "out"), db_path=scratch / "openapi.db"
         )
         document = app.openapi()
         # create_app opens its Store immediately, not inside the lifespan,

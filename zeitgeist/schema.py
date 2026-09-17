@@ -127,8 +127,8 @@ CREATE TABLE IF NOT EXISTS log_lines (
 );
 
 -- One row per tuning field the settings screen has overridden. Absent means
--- fall through to .env. The one table with no run behind it, and so the one
--- with no foreign key: a setting outlives every run.
+-- the field's declared default applies. The one table with no run behind
+-- it, and so the one with no foreign key: a setting outlives every run.
 CREATE TABLE IF NOT EXISTS settings (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL,

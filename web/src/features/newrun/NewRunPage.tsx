@@ -7,10 +7,10 @@ import { useActiveRun, useConfigOptions, useRun, useStartRun } from "@/api/queri
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { MetaLine } from "@/components/MetaLine";
 import { QueryBoundary } from "@/components/QueryBoundary";
-import { CountCard } from "@/features/newrun/CountCard";
+import { CountCard } from "@/features/config/CountCard";
 import { frozenTunables } from "@/features/newrun/frozen";
-import { ModelCard } from "@/features/newrun/ModelCard";
-import { PlatformCard } from "@/features/newrun/PlatformCard";
+import { ModelCard } from "@/features/config/ModelCard";
+import { PlatformCard } from "@/features/config/PlatformCard";
 import { TemplateCard } from "@/features/newrun/TemplateCard";
 import { shortRunId } from "@/format";
 

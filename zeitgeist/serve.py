@@ -14,7 +14,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from zeitgeist.api import create_app
-from zeitgeist.config import Settings
+from zeitgeist.config import StoredSettingError
 from zeitgeist.store import StoreSchemaError
 
 
@@ -26,8 +26,12 @@ def _app() -> FastAPI:
     `--reload` outright (uvicorn refuses it at startup). Naming this factory
     keeps that requirement satisfied without building the app before we know
     whether reload was even asked for.
+
+    No `Settings` argument: `create_app` resolves every scoped field from
+    the store itself now, which is what lets a value saved on the settings
+    screen survive a reload without this factory doing anything special.
     """
-    return create_app(Settings())
+    return create_app()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -56,13 +60,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        app = create_app(Settings())
-    except StoreSchemaError as error:
-        # The exception's own message already says what to do about it
-        # ("delete it and re-run"); a bare traceback would bury that as the
-        # first thing anyone running this command against a stale database
-        # sees. Nothing else here is caught: a genuine bug should still
-        # surface as a traceback.
+        app = create_app()
+    except (StoreSchemaError, StoredSettingError) as error:
+        # Both exceptions' own messages already say what to do about it —
+        # "delete it and re-run" for a stale schema, the offending key for a
+        # stored value that no longer validates — so a bare traceback would
+        # bury that as the first thing anyone running this command against a
+        # broken database sees. Nothing else here is caught: a genuine bug
+        # should still surface as a traceback.
         print(str(error), file=sys.stderr)
         return 1
 

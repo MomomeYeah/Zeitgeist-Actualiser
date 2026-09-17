@@ -20,10 +20,28 @@
   align-items: start;
 }
 
+/* The two sections — Global, then Defaults for new runs — stacked with more
+   air between them than between the cards inside one, so the eye reads
+   "two groups" before it reads "seven cards". */
+.sections {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.sectionTitle {
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
 .cards {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  margin-top: 10px;
 }
 
 .card {

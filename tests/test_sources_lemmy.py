@@ -241,7 +241,6 @@ def test_from_settings_wires_config_into_the_request():
     include_nsfw or a mis-assigned instance only shows up in the request.
     """
     settings = Settings(
-        _env_file=None,
         anthropic_api_key="key",
         lemmy_instance="https://lemmy.ml",
         lemmy_include_nsfw=True,

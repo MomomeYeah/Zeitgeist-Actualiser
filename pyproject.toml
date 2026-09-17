@@ -5,7 +5,6 @@ description = "Finds what the internet is talking about and makes memes about it
 requires-python = ">=3.14"
 dependencies = [
     "pydantic>=2.12",
-    "pydantic-settings>=2.6",
     "anthropic>=0.40",
     "httpx>=0.28",
     "pillow>=11.3",

@@ -171,25 +171,14 @@ export interface paths {
         };
         /**
          * Read Settings
-         * @description Built from a fresh `Settings()`, not `app.state.settings`.
-         *
-         *     `app.state.settings` is frozen at startup (`create_app`'s parameter),
-         *     and `init_settings` outranks the table in `Settings.settings_customise_
-         *     sources` — so `getattr` on that frozen object would never see a value a
-         *     `PUT` had since written, no matter how recently. The chip beside it
-         *     would say "settings" while the value shown was the old one: the worst
-         *     possible presentation, because it names the very layer that just won as
-         *     the source of a value that layer did not produce. A fresh `Settings()`
-         *     re-resolves every field through the normal precedence chain — including
-         *     `SettingsTableSource`, which reads the table at construction — so a
-         *     `PUT` is visible to the very next `GET`. `write_settings` already built
-         *     one of these to answer its own response before this existed as its own
-         *     read path; this makes that the only place that ever needs to.
+         * @description Built from `load_settings`, not from `app.state.settings`, which is
+         *     frozen when the app is built — so a `PUT` is visible to the very next
+         *     `GET`.
          */
         get: operations["read_settings_api_settings_get"];
         /**
          * Write Settings
-         * @description Write the seven tunables, then report every field's new state.
+         * @description Write every accepted field, then report every field's new state.
          *
          *     Same response shape as the `GET`, so the screen re-renders its source
          *     chips from this reply rather than issuing a second request.
@@ -698,8 +687,11 @@ export interface components {
          * @description The settings a run used, frozen at its start.
          *
          *     A copy rather than a reference: run detail's config line and the "Re-run
-         *     config" action must show what the run actually used, which is not
-         *     recoverable from a `.env` that has since been edited.
+         *     config" action must show what the run actually used, and settings
+         *     change — the table backing them can be edited from the settings screen
+         *     at any time, including while this run is still going. A reference would
+         *     have this drift to whatever the table holds *now*, not what the run
+         *     was actually configured with.
          */
         RunConfig: {
             /** Sources */
@@ -823,23 +815,36 @@ export interface components {
         Sentiment: "cute" | "heartwarming" | "funny" | "awe" | "schadenfreude" | "outrage" | "sad" | "scary" | "gross" | "cringe" | "mundane";
         /**
          * SettingField
-         * @description One tunable field, its effective value, and which layer supplied it.
+         * @description One settable field, its effective value, and where that value came
+         *     from.
+         *
+         *     `value` is `None` for a secret field, always — `anthropic_api_key` is
+         *     written through this endpoint and never read back out of it. `source`
+         *     still distinguishes a stored key from an unset one, which is all the
+         *     screen needs to render SET or NOT SET.
          */
         SettingField: {
             /** Key */
             key: string;
             /** Value */
-            value: number;
+            value: string | number | boolean | null;
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "global" | "run";
             /**
              * Source
              * @enum {string}
              */
-            source: "settings" | "environment" | "dotenv" | "default";
+            source: "settings" | "default";
+            /** Secret */
+            secret: boolean;
         };
         /**
          * SettingsUpdate
-         * @description An empty string clears that field's row so the `.env` fallback
-         *     applies again, which is what "Reset to .env" does.
+         * @description An empty string clears that field's row so its declared default
+         *     applies again, which is what "Reset to defaults" does.
          */
         SettingsUpdate: {
             /** Values */

@@ -3,18 +3,16 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.api_factory import api_settings, app_of, seeded_client
+from tests.api_factory import api_db_path, app_of, seeded_client
 from tests.run_factory import make_run_config
 from zeitgeist.api import create_app
-from zeitgeist.config import Settings
+from zeitgeist.config import Settings, StoredSettingError
 from zeitgeist.schema import SCHEMA_VERSION
-from zeitgeist.store import Store
+from zeitgeist.store import DB_PATH, Store
 
 
 def _settings(tmp_path) -> Settings:
     return Settings(
-        _env_file=None,
-        db_path=tmp_path / "data" / "z.db",
         output_dir=tmp_path / "output",
     )
 
@@ -22,7 +20,9 @@ def _settings(tmp_path) -> Settings:
 def test_the_app_serves_its_openapi_schema(tmp_path):
     """The schema is the contract phase 5 generates its client from, so it
     has to be reachable before any endpoint exists."""
-    client = TestClient(create_app(_settings(tmp_path)))
+    client = TestClient(
+        create_app(_settings(tmp_path), db_path=tmp_path / "data" / "z.db")
+    )
 
     response = client.get("/openapi.json")
 
@@ -35,9 +35,105 @@ def test_the_app_opens_the_database_it_was_given(tmp_path):
     would make every test depend on whether the tool had been run locally."""
     settings = _settings(tmp_path)
 
-    create_app(settings)
+    create_app(settings, db_path=tmp_path / "data" / "z.db")
 
     assert (tmp_path / "data" / "z.db").is_file()
+
+
+def test_create_app_opens_its_database_at_the_path_it_is_given(tmp_path):
+    """The path is a parameter of the factory, not a field of Settings.
+
+    `nested/` does not exist beforehand: `Store.__init__` creates the parent,
+    and a test that pre-created it would pass even if the path were ignored
+    in favour of the `data/` default.
+    """
+    path = tmp_path / "nested" / "z.db"
+    app = create_app(Settings(), db_path=path)
+    try:
+        assert app.state.store.path == path
+        assert path.is_file()
+    finally:
+        app.state.store.close()
+
+
+def test_create_app_defaults_to_the_database_the_constant_names(tmp_path, monkeypatch):
+    """No `db_path` argument, so the factory must resolve `DB_PATH` itself.
+
+    `DB_PATH` is relative, so `chdir` keeps this hermetic while still
+    exercising the real default. Asserted on the file that appears rather
+    than on the signature object: a factory that declared the default and
+    then opened somewhere else leaves `tmp_path/data/zeitgeist.db` missing,
+    which introspecting `inspect.signature` would never notice.
+    """
+    monkeypatch.chdir(tmp_path)
+
+    app = create_app(Settings())
+    try:
+        assert app.state.store.path == DB_PATH
+        assert (tmp_path / "data" / "zeitgeist.db").is_file()
+    finally:
+        app.state.store.close()
+
+
+def test_create_app_with_no_settings_resolves_them_from_the_store(tmp_path):
+    """Finding A / the design spec's Bootstrap section: `create_app()`
+    with no `settings` argument is the real production path now, and it
+    has to read the store rather than build an all-defaults `Settings` --
+    otherwise every field the settings screen ever saved would be ignored
+    until the next request re-resolved it, and a fresh test asserting this
+    against the wrong Settings would never notice.
+    """
+    db_path = tmp_path / "data" / "z.db"
+    store = Store(db_path)
+    store.init_schema()
+    store.set_setting("topic_count", "9")
+    store.close()
+
+    app = create_app(db_path=db_path)
+    try:
+        assert app.state.settings.topic_count == 9
+    finally:
+        app.state.store.close()
+
+
+def test_create_app_with_a_settings_argument_does_not_touch_the_store(tmp_path):
+    """The critical detail in Finding A's fix: a test (or any caller) that
+    passes its own `Settings` must get exactly that object back, not one
+    resolved against whatever the store on disk happens to hold. Passing a
+    value the store does *not* have -- and a store that holds a different,
+    validation-failing row for the same key -- proves the store was never
+    consulted on this path.
+    """
+    db_path = tmp_path / "data" / "z.db"
+    store = Store(db_path)
+    store.init_schema()
+    store.set_setting("distil_concurrency", "0")  # would raise if loaded
+    store.close()
+
+    app = create_app(Settings(topic_count=3), db_path=db_path)
+    try:
+        assert app.state.settings.topic_count == 3
+        assert app.state.settings.distil_concurrency == 4  # the field default
+    finally:
+        app.state.store.close()
+
+
+def test_create_app_with_no_settings_raises_on_a_stored_value_that_fails_validation(
+    tmp_path,
+):
+    """The failure path `serve.main` catches. `create_app` itself must be
+    what raises -- `StoredSettingError`, naming the key -- rather than
+    silently substituting the default and leaving the mystery bug for
+    whichever endpoint reads the field next.
+    """
+    db_path = tmp_path / "data" / "z.db"
+    store = Store(db_path)
+    store.init_schema()
+    store.set_setting("distil_concurrency", "0")
+    store.close()
+
+    with pytest.raises(StoredSettingError, match="distil_concurrency"):
+        create_app(db_path=db_path)
 
 
 def test_the_app_closes_its_store_when_it_shuts_down(tmp_path):
@@ -45,7 +141,7 @@ def test_the_app_closes_its_store_when_it_shuts_down(tmp_path):
     `finally: store.close()` would pass every other test in this module,
     none of which enters the client as a context manager itself.
     """
-    app = create_app(_settings(tmp_path))
+    app = create_app(_settings(tmp_path), db_path=tmp_path / "data" / "z.db")
 
     with TestClient(app) as client:
         client.get("/openapi.json")
@@ -83,7 +179,7 @@ def test_seeded_client_runs_the_apps_lifespan(tmp_path):
 def test_the_app_creates_its_schema_on_startup(tmp_path):
     """A fresh install serves an empty database rather than 500ing on the
     first query."""
-    create_app(_settings(tmp_path))
+    create_app(_settings(tmp_path), db_path=tmp_path / "data" / "z.db")
 
     conn = sqlite3.connect(tmp_path / "data" / "z.db")
     try:
@@ -103,8 +199,7 @@ def test_a_run_left_running_by_a_crash_is_interrupted_on_startup(tmp_path):
     would pass every test in `test_store.py` and leave the UI polling a dead
     run forever.
     """
-    settings = api_settings(tmp_path)
-    store = Store(settings.db_path)
+    store = Store(api_db_path(tmp_path))
     store.init_schema()
     store.start_run("20260905T120000Z", make_run_config())
     store.close()

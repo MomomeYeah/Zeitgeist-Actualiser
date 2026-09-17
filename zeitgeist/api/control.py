@@ -12,10 +12,12 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 
 from zeitgeist.api.app import get_runner, get_store
 from zeitgeist.api.runs import _run_or_404, resume_stage
 from zeitgeist.api.schemas import ResumeBody, RunActionAck, StartRunBody
+from zeitgeist.config import format_validation_errors
 from zeitgeist.records import ORDER
 from zeitgeist.runner import (
     ActiveRuns,
@@ -63,6 +65,21 @@ def start_run(
         # flight — a conflict, not a malformed request, so this must not
         # fall into the generic ValueError branch below and come out a 400.
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValidationError as exc:
+        # A `ValidationError` is a `ValueError` subclass, so it would
+        # otherwise fall into the branch below and render as `str(exc)` —
+        # which includes pydantic's `input_value` for every offending
+        # field, putting whatever the request sent (or, replayed from a
+        # stored value, whatever the database held) into the response
+        # body. `anthropic_api_key` is unconstrained today so it cannot
+        # reach this specific path, but the stance is that no route leaks a
+        # secret field's value, and the channel opens the moment any secret
+        # field gains a constraint. Caught ahead of `ValueError` for that
+        # reason, and rendered through the same formatter `load_settings`
+        # and `write_settings` already use.
+        raise HTTPException(
+            status_code=400, detail=format_validation_errors(exc)
+        ) from exc
     except ValueError as exc:
         # The allowlist refused a field. That is the request's fault, not the
         # server's, and letting it escape as a 500 would say the opposite.
@@ -135,10 +152,7 @@ def resume_run(
                 # whatever the settings table/.env said *now* and
                 # Store.start_run overwrote the run's stored config with
                 # that — a run started with top_count 3 could resume reading
-                # top_count 5. bluesky_fetch_concurrency is the one tunable
-                # this does not replay: RunConfig has no field for it, so it
-                # still resolves from current settings (see
-                # RunConfig.as_overrides's docstring).
+                # top_count 5.
                 overrides=run.config.as_overrides(),
             )
         )
@@ -158,6 +172,15 @@ def resume_run(
         # different messages for them. Caught before `ValueError` below, for
         # the reason `start_run` gives: a conflict is not a bad request.
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValidationError as exc:
+        # Same reasoning as `start_run`'s identical branch: a bare
+        # `str(exc)` on a `ValidationError` — a `ValueError` subclass, so it
+        # would otherwise be caught below — carries `input_value` into the
+        # response body. Caught ahead of `ValueError` and rendered through
+        # `format_validation_errors` instead.
+        raise HTTPException(
+            status_code=400, detail=format_validation_errors(exc)
+        ) from exc
     except ValueError as exc:
         # The replayed frozen config no longer validates — a run frozen
         # with a source that has since gone dormant, say. `enqueue` refuses

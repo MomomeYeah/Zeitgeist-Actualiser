@@ -11,29 +11,52 @@ uv sync
 ```
 
 That creates `.venv/`, installs the exact versions in `uv.lock`, and fetches
-the Python version named in `.python-version` if you do not have it. Then copy
-the config template:
+the Python version named in `.python-version` if you do not have it.
+
+Then start the server and open Settings:
 
 ```bash
-copy .env.example .env
+uv run zeitgeist
 ```
 
-Fill in `.env`. The only value you must supply is `ANTHROPIC_API_KEY` (or
-switch to Ollama, below). `SOURCES` picks the platforms to scrape.
+Configuration lives in the database at `data/zeitgeist.db`, not in a file you
+edit. The one value you must supply is your Anthropic API key, on the
+Settings screen — or switch the provider to Ollama, below. Everything else
+has a working default.
+
+Upgrading from a build that used `.env`: the file is no longer read. Your run
+history and tuned values survive — the schema is unchanged — but the API key,
+provider and model revert to their defaults until you re-enter them on the
+Settings screen.
+
+If the server refuses to start with a message naming a settings key ("Stored
+settings are invalid: ..."), a row in the `settings` table no longer passes
+that field's validation — most likely hand-edited, or written by an older
+build with looser rules. There is no `.env` to fall back to, so the fix is to
+open `data/zeitgeist.db` and either correct or delete the offending row:
+
+```bash
+sqlite3 data/zeitgeist.db "delete from settings where key = 'distil_concurrency'"
+```
+
+Deleting a row reverts that one field to its declared default; nothing else
+is affected.
 
 ### Sources
 
-`SOURCES=bluesky` is the default and needs no credentials — the AT Protocol
-AppView answers these endpoints unauthenticated. `SOURCES` must currently
-name exactly one platform: `lemmy` and `wikipedia` are dormant (kept in the
+`bluesky` is the default platform and needs no credentials — the AT Protocol
+AppView answers these endpoints unauthenticated. Exactly one platform can be
+selected at a time: `lemmy` and `wikipedia` are dormant (kept in the
 codebase, but rejected at startup) until a consolidation phase exists that
 can build dossiers from a flat item list rather than from Bluesky's own
 trend clusters.
 
-`LEMMY_INSTANCE` chooses the Lemmy instance to query; because instances
-federate, one already returns posts from across the network.
-`LEMMY_INCLUDE_NSFW` maps to the API's own `show_nsfw` flag and is off by
-default.
+The Lemmy instance queried, and whether NSFW posts are included, are not
+settings — `lemmy_instance` and `lemmy_include_nsfw` in `zeitgeist/config.py`
+are plain constants, changeable only by editing the source. Because
+instances federate, the default instance already returns posts from across
+the network; NSFW inclusion maps to the API's own `show_nsfw` flag and is off
+by default.
 
 `wikipedia` adds Wikimedia pageviews — the top 1000 most-viewed articles for
 the most recent day with data. It needs no credentials. Unlike Lemmy it
@@ -42,9 +65,11 @@ no body text, so a topic Wikipedia alone found is dropped rather than
 ranked. Its role is corroboration — a topic trending on Lemmy *and*
 spiking on Wikipedia outranks one trending on Lemmy alone.
 
-`WIKIPEDIA_CONTACT` is interpolated into the User-Agent. Wikimedia's API
+The contact URL interpolated into the User-Agent is likewise a constant,
+`wikipedia_contact` in `zeitgeist/config.py`, not a setting. Wikimedia's API
 policy asks for contact information and may rate-limit or block generic
-agents, so set it to your own repository or contact URL if you fork this.
+agents, so change it there to your own repository or contact URL if you fork
+this.
 
 `bluesky` adds Bluesky posts and needs no credentials — the AT Protocol
 AppView answers these endpoints unauthenticated. Ingest fetches Bluesky's own
@@ -58,21 +83,23 @@ US politics; and trend discovery uses an endpoint in Bluesky's `unspecced`
 namespace, which is explicitly not a stable API. Reading the posts and
 threads themselves uses stable endpoints.
 
-`BLUESKY_API_BASE` exists to point at a mirror and should not normally be
-changed. Note that `public.api.bsky.app` is not a valid substitute — it
-returns 403 on parts of the API.
+The API host, `bluesky_api_base` in `zeitgeist/config.py`, exists to point at
+a mirror and is a constant rather than a setting — nobody is expected to
+change it in normal use. Note that `public.api.bsky.app` is not a valid
+substitute — it returns 403 on parts of the API.
 
 The fan-out budget is explicit rather than a single number, because "how
 many trends" and "how many posts per trend" cannot be expressed by one
-`limit`: `BLUESKY_TREND_LIMIT` (default 25, the `getTrends` ceiling, not a
-preference) bounds how many trends are fetched, `BLUESKY_POSTS_PER_TREND`
-(default 10) bounds how many posts per trend, and
-`BLUESKY_FETCH_CONCURRENCY` (default 8) bounds how many of those requests
-run at once.
+`limit`: the Settings screen's `bluesky_trend_limit` (default 25, the
+`getTrends` ceiling, not a preference) bounds how many trends are fetched,
+`bluesky_posts_per_trend` (default 10) bounds how many posts per trend, and
+`bluesky_fetch_concurrency` (default 8, a global rather than a per-run
+value — see [The settings screen](#the-settings-screen)) bounds how many of
+those requests run at once.
 
 Each platform scores its own contribution to a topic, normalised within that
-platform, before results across platforms are combined. `SOURCES` currently
-allows only one platform at a time (above) — `Settings` rejects anything
+platform, before results across platforms are combined. The platform setting
+currently allows only one at a time (above) — `Settings` rejects anything
 else at startup — so that combination step has only one input today. The
 split still buys something with a single platform live: each scorer's
 sub-scores are normalised within that platform alone, rather than lumped
@@ -95,11 +122,11 @@ The pipeline runs four stages, each checkpointed before the next begins:
 1. **Ingest** — fetches Bluesky's own trends, then each trend's posts, then
    the reply threads under those posts, concurrently.
 2. **Analyse** — mines recurring phrases deterministically (a phrase counts
-   once `PHRASE_MIN_AUTHORS` distinct accounts have used it), then makes one
+   once `phrase_min_authors` distinct accounts have used it), then makes one
    LLM call per trend producing a dossier: what happened, what people are
    saying, how the event feels, and what posture the conversation is taking.
 3. **Evaluate** — ranks topics on trend score alone and keeps the top
-   `TOPIC_COUNT`.
+   `topic_count`.
 4. **Generate** — writes captions and renders one PNG per selected topic.
 
 Stage checkpoints are written to SQLite at `data/zeitgeist.db`; rendered
@@ -165,24 +192,22 @@ $ ollama show qwen3.5
 
 ## Using a local model
 
-Install Ollama, pull a model, then set in `.env`:
-
-```
-LLM_PROVIDER=ollama
-LLM_MODEL=qwen2.5:14b
-```
+Install Ollama, pull a model, then set the provider to `ollama` and pick the
+model on the Settings screen — that becomes the default for every new run.
+To compare two models without changing your default, set them on New run
+instead, for one run only.
 
 Nothing else changes. Comparing the two backends on identical input is the
 point of the provider abstraction.
 
 The analyse stage's per-trend distillation call is tunable independently of
-the provider:
+the provider, on the Settings screen's Distillation card:
 
-- `DISTIL_CHAR_BUDGET` (default 24000) is the reply characters sent per
+- `distil_char_budget` (default 24000) is the reply characters sent per
   call. A single trend can yield hundreds of replies; a small-context local
   model truncates silently well before that, so lower this for one and raise
   it for a hosted provider with a larger window.
-- `DISTIL_CONCURRENCY` (default 4) is how many distillation calls run in
+- `distil_concurrency` (default 4) is how many distillation calls run in
   parallel. Local Ollama serialises on one GPU, so 1-2 is right there; a
   hosted provider benefits from the default.
 
@@ -235,10 +260,11 @@ run over HTTP:
   retroactively on lines already recorded.
 - **Settings.** `GET /api/config/options` reports the providers and their
   models, which platforms are enabled, the template library and its slots,
-  the `.env` defaults, and whether an API key is set — never the key itself.
-  `PUT /api/settings` writes the seven tunables; an empty value clears the
-  row so `.env` applies again. Changes apply to new runs — a run already in
-  flight keeps the config it froze when it started.
+  the resolved defaults for every run-scoped field, and whether an API key
+  is set — never the key itself. `PUT /api/settings` writes any settable
+  field; an empty value clears the row so the field's declared default
+  applies again. Changes apply to new runs — a run already in flight keeps
+  the config it froze when it started.
 
 Phase 4 completes the API. Memes can now be generated for a topic on
 demand, long after its run ended:
@@ -342,26 +368,32 @@ way Abort does.
 
 ### The settings screen
 
-`/settings` edits the seven fields a run is tuned with and nothing else:
-`bluesky_trend_limit`, `bluesky_posts_per_trend`,
-`bluesky_fetch_concurrency`, `meme_potential_weight`, `phrase_min_authors`,
-`distil_char_budget` and `distil_concurrency`. The default provider and
-model, the API key, and where the database and output live stay in `.env` —
-a screen that could rewrite where the database lives, or read a key back
-out, would be a different and worse thing than a tuning screen. (New run
-still picks the provider and model per run.)
+`/settings` has two sections. **Global** is one value, used by everything,
+regardless of which run it is: `anthropic_api_key` (never read back out to
+the browser once saved — replace or clear it, but not view it),
+`ollama_host`, `bluesky_fetch_concurrency` (a property of this machine and
+its network, not a choice about a run) and `font_path`. **Defaults for new
+runs** is what New run starts from and any run can override: the provider
+and model, the platform, how many ranked topics get memes, and the fan-out,
+ranking and distillation tunables — `bluesky_trend_limit`,
+`bluesky_posts_per_trend`, `meme_potential_weight`, `phrase_min_authors`,
+`distil_char_budget` and `distil_concurrency`. Where the output and
+template directories live are not settings at all: they are unscoped
+constants in `zeitgeist/config.py`, changeable only by editing the source,
+and the database path is likewise a constant, `DB_PATH` in
+`zeitgeist/store.py` — a screen that could rewrite where the database lives
+would be a different and worse thing than a tuning screen.
 
 Each field says where its value came from: `SET HERE` (saved on this
-screen), `FROM ENV` (a variable in the shell that started `zeitgeist`),
-`FROM .env` or `DEFAULT`. The shell outranks this screen, and this screen
-outranks `.env`. A `FROM ENV` field is therefore read-only and says which
-variable holds it: saving one would write a row that changed nothing anybody
-could see, because the value would snap straight back from the shell. Unset
-the variable and restart to edit it here. A value `Settings` would reject —
-`meme_potential_weight` above 1, say — is refused with the server's own
-sentence and nothing is written.
-**Reset to .env** deletes every saved row, so each field falls back to
-`.env` or its default rather than pinning today's value.
+screen) or `DEFAULT` (the field's declared default — nothing has been saved
+for it). There is no third state: the database is the only place
+configuration lives, so a value either is in it or is not. A value
+`Settings` would reject — `meme_potential_weight` above 1, say — is refused
+with the server's own sentence and nothing is written.
+**Reset to defaults** clears every saved row but the API key, so each field
+falls back to its declared default rather than pinning today's value.
+Clearing the key itself is its own row's **Clear** button, kept separate so
+a button labelled "reset" can never lose it by accident.
 
 Changes apply to the next run. A run already in flight keeps the config it
 froze when it started, which its page's config line shows.
@@ -395,10 +427,9 @@ opens straight to that topic. The full-size meme view carries its own
 **Delete**, in the footer beside Download PNG — offered whether or not the
 image loaded, and returning you to the topic once it succeeds.
 
-On-demand generation reads its provider and model from `.env`, or the
-shell environment — Settings does not edit either, and the panels have no
-form of their own for it — and runs on its own executor, so it keeps
-working while a run is in flight.
+On-demand generation reads its provider and model from the Settings
+screen's saved defaults — the panels have no form of their own for it — and
+runs on its own executor, so it keeps working while a run is in flight.
 
 The client's TypeScript types are generated from the API's own OpenAPI
 schema and checked in. After changing any response model, regenerate both:

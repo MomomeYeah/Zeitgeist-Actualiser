@@ -1,10 +1,10 @@
 """The FastAPI app and the two dependencies every router uses.
 
-The factory takes `Settings` rather than building its own so a test can
-point it at `tmp_path`. A factory that reached for the ambient database
-would make the suite's result depend on whether the tool had been run
-locally, which is the hermeticity problem `conftest` already guards against
-for `Settings` itself.
+The factory takes the database path as its own argument rather than reading
+it off `Settings` so a test can point it at `tmp_path` explicitly. The path
+is an explicit argument for the same reason `Settings` is: a factory that
+reached for the ambient database would make the suite's result depend on
+whether the tool had been run locally.
 
 One `Store` for the app's lifetime rather than one per request: `sqlite3`
 connections are thread-bound, reads need no isolation from each other, and
@@ -14,13 +14,14 @@ phase 3's worker thread constructs its own connection anyway.
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 
-from zeitgeist.config import Settings
+from zeitgeist.config import Settings, load_settings
 from zeitgeist.generation import GenerateFn, GenerationService
 from zeitgeist.runner import ExecuteFn, RunService
-from zeitgeist.store import Store
+from zeitgeist.store import DB_PATH, Store
 
 log = logging.getLogger(__name__)
 
@@ -45,8 +46,9 @@ def get_generator(request: Request) -> GenerationService:
 
 
 def create_app(
-    settings: Settings,
+    settings: Settings | None = None,
     *,
+    db_path: Path = DB_PATH,
     execute: ExecuteFn | None = None,
     generate: GenerateFn | None = None,
 ) -> FastAPI:
@@ -62,8 +64,18 @@ def create_app(
     # legitimately touched from more than one thread. Store serialises its
     # own methods to make that safe; see the parameter's docstring on
     # Store.__init__ for why SQLite's serialized mode alone is not.
-    store = Store(settings.db_path, check_same_thread=False)
+    store = Store(db_path, check_same_thread=False)
     store.init_schema()
+
+    # `None` means the real bootstrap: resolve every scoped field from the
+    # store now that the schema exists to read it from. A test that passes
+    # its own `Settings` skips this entirely — that object is what it wants
+    # the app built with, and must not be second-guessed against whatever a
+    # `tmp_path` store happens to hold. `load_settings` raises
+    # `StoredSettingError` for a row that fails validation; `serve.py` is
+    # what catches it, the same way it already catches `StoreSchemaError`.
+    if settings is None:
+        settings = load_settings(store)
 
     interrupted = store.reconcile_interrupted()
     if interrupted:

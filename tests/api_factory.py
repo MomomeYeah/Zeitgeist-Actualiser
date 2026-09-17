@@ -4,12 +4,12 @@ Seeded through the store's own writers rather than raw SQL: a hand-written
 INSERT would keep passing after `write_analyse_checkpoint` changed shape,
 and the endpoints would be serving a table layout nothing produces.
 
-`api_settings` points `output_dir` inside `tmp_path` and reads `db_path`
-from `DB_PATH`, so a test's renders and database are its own.
+`api_settings` points `output_dir` inside `tmp_path`; `seeded_client` puts
+the database at `api_db_path(tmp_path)` and passes it to `create_app`
+itself, so a test's renders and database are its own.
 """
 
 import logging
-import os
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -45,6 +45,33 @@ from zeitgeist.store import Store
 # each one after the test body finishes — the same shape `TestClient` itself
 # would use if two tests couldn't ever run inside the same process.
 _open_clients: list[TestClient] = []
+
+
+def api_db_path(tmp_path: Path) -> Path:
+    """The database `seeded_client` will build its app over.
+
+    Named rather than inlined because a test that seeds a `settings` row
+    before the client exists — which is the only way to set a stored value
+    the app must read at startup — has to write into the same file, and a
+    second test spelling that filename itself would keep passing while
+    silently exercising an empty table.
+    """
+    return tmp_path / "zeitgeist.db"
+
+
+def seed_settings(tmp_path: Path, **values: str) -> None:
+    """Store `values` in the database `seeded_client` is about to build its
+    app over.
+
+    The only way to hand a test's app a configured value other than the few
+    `api_settings` constructs it with: the table is where configuration
+    lives, and the app reads it afresh on each request.
+    """
+    store = Store(api_db_path(tmp_path))
+    store.init_schema()
+    for key, value in values.items():
+        store.set_setting(key, value)
+    store.close()
 
 
 def app_of(client: TestClient) -> FastAPI:
@@ -127,15 +154,11 @@ def api_settings(
 ) -> Settings:
     """Build the `Settings` a test's `TestClient` runs against.
 
-    `db_path` is read from `DB_PATH` rather than chosen here, because
-    `SettingsTableSource` resolves the settings table from that variable and
-    not from `Settings.db_path` — asking the object being constructed where
-    its own table lives would be circular (see
-    settings_source.SettingsTableSource's docstring). `conftest`'s autouse
-    fixture already points `DB_PATH` at a per-test path inside `tmp_path`
-    before every test body runs, so reading it here makes this factory and
-    the settings source agree by construction, with no environment mutation
-    and nothing to clean up.
+    Only the fields a test needs to own outright: everything scoped comes
+    from the store the app is built over, and anything set here would be the
+    base layer that the store outranks anyway (see `resolve_settings`). The
+    database path is not among them at all — `seeded_client` passes it
+    straight to `create_app`.
 
     `templates_dir` lets a test own its template library outright, the way
     `test_pipeline.py` already does: a generation test that named a shipped
@@ -144,8 +167,8 @@ def api_settings(
 
     `anthropic_api_key` exists because `GenerationService.submit` builds a
     provider on the request thread, and `llm_provider` defaults to
-    "anthropic", whose factory raises on an empty key — which this suite
-    guarantees, since `conftest` strips `ANTHROPIC_API_KEY` for every test.
+    "anthropic", whose factory raises on an empty key — which is what a test
+    gets, since nothing has stored one and the field defaults to "".
     A test posting `mode: "llm"` without it gets a 400 from the endpoint's
     `except ValueError` branch rather than the 202 it is asserting on. It
     stays hermetic: `AnthropicProvider.__init__` only constructs the SDK
@@ -160,11 +183,7 @@ def api_settings(
     # `dict[str, Any]` sidesteps that — the values really are heterogeneous
     # here, `Settings` still validates them, and the resulting call passes
     # identical arguments either way.
-    kwargs: dict[str, Any] = {
-        "_env_file": None,
-        "db_path": Path(os.environ["DB_PATH"]),
-        "output_dir": tmp_path / "output",
-    }
+    kwargs: dict[str, Any] = {"output_dir": tmp_path / "output"}
     if templates_dir is not None:
         kwargs["templates_dir"] = templates_dir
     if anthropic_api_key is not None:
@@ -266,12 +285,15 @@ def seeded_client(
         templates_dir=templates_dir,
         anthropic_api_key=anthropic_api_key,
     )
-    store = Store(settings.db_path)
+    db_path = api_db_path(tmp_path)
+    store = Store(db_path)
     store.init_schema()
     for spec in runs:
         seed_run(store, spec)
     store.close()
-    client = TestClient(create_app(settings, execute=execute, generate=generate))
+    client = TestClient(
+        create_app(settings, db_path=db_path, execute=execute, generate=generate)
+    )
     client.__enter__()
     _open_clients.append(client)
     return client
