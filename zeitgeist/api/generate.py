@@ -11,9 +11,11 @@ thing.
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
+from pydantic import ValidationError
 
 from zeitgeist.api.app import get_generator, get_store
 from zeitgeist.api.runs import _run_or_404
+from zeitgeist.config import format_validation_errors
 from zeitgeist.generation import (
     GenerationRequest,
     GenerationService,
@@ -80,6 +82,17 @@ def create_renders(
         ) from exc
     except UnknownTopic as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValidationError as exc:
+        # `resolve_settings`, above, can raise this for a stored value that
+        # no longer validates. It is a `ValueError` subclass, so without
+        # this branch it would fall into the one below and render as
+        # `str(exc)` — which carries pydantic's `input_value` for every
+        # offending field into the response body. Caught ahead of
+        # `ValueError` and rendered through the same formatter `control.py`
+        # uses for the same reason.
+        raise HTTPException(
+            status_code=400, detail=format_validation_errors(exc)
+        ) from exc
     except ValueError as exc:
         # GenerationRefused (an unknown template, captions that do not fit)
         # and build_provider's "ANTHROPIC_API_KEY is required" alike: both

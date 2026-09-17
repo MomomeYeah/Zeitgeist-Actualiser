@@ -29,6 +29,19 @@ history and tuned values survive — the schema is unchanged — but the API key
 provider and model revert to their defaults until you re-enter them on the
 Settings screen.
 
+If the server refuses to start with a message naming a settings key ("Stored
+settings are invalid: ..."), a row in the `settings` table no longer passes
+that field's validation — most likely hand-edited, or written by an older
+build with looser rules. There is no `.env` to fall back to, so the fix is to
+open `data/zeitgeist.db` and either correct or delete the offending row:
+
+```bash
+sqlite3 data/zeitgeist.db "delete from settings where key = 'distil_concurrency'"
+```
+
+Deleting a row reverts that one field to its declared default; nothing else
+is affected.
+
 ### Sources
 
 `bluesky` is the default platform and needs no credentials — the AT Protocol

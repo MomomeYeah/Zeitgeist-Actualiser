@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from tests.api_factory import api_db_path, app_of, seeded_client
 from tests.run_factory import make_run_config
 from zeitgeist.api import create_app
-from zeitgeist.config import Settings
+from zeitgeist.config import Settings, StoredSettingError
 from zeitgeist.schema import SCHEMA_VERSION
 from zeitgeist.store import DB_PATH, Store
 
@@ -73,6 +73,67 @@ def test_create_app_defaults_to_the_database_the_constant_names(tmp_path, monkey
         assert (tmp_path / "data" / "zeitgeist.db").is_file()
     finally:
         app.state.store.close()
+
+
+def test_create_app_with_no_settings_resolves_them_from_the_store(tmp_path):
+    """Finding A / the design spec's Bootstrap section: `create_app()`
+    with no `settings` argument is the real production path now, and it
+    has to read the store rather than build an all-defaults `Settings` --
+    otherwise every field the settings screen ever saved would be ignored
+    until the next request re-resolved it, and a fresh test asserting this
+    against the wrong Settings would never notice.
+    """
+    db_path = tmp_path / "data" / "z.db"
+    store = Store(db_path)
+    store.init_schema()
+    store.set_setting("topic_count", "9")
+    store.close()
+
+    app = create_app(db_path=db_path)
+    try:
+        assert app.state.settings.topic_count == 9
+    finally:
+        app.state.store.close()
+
+
+def test_create_app_with_a_settings_argument_does_not_touch_the_store(tmp_path):
+    """The critical detail in Finding A's fix: a test (or any caller) that
+    passes its own `Settings` must get exactly that object back, not one
+    resolved against whatever the store on disk happens to hold. Passing a
+    value the store does *not* have -- and a store that holds a different,
+    validation-failing row for the same key -- proves the store was never
+    consulted on this path.
+    """
+    db_path = tmp_path / "data" / "z.db"
+    store = Store(db_path)
+    store.init_schema()
+    store.set_setting("distil_concurrency", "0")  # would raise if loaded
+    store.close()
+
+    app = create_app(Settings(topic_count=3), db_path=db_path)
+    try:
+        assert app.state.settings.topic_count == 3
+        assert app.state.settings.distil_concurrency == 4  # the field default
+    finally:
+        app.state.store.close()
+
+
+def test_create_app_with_no_settings_raises_on_a_stored_value_that_fails_validation(
+    tmp_path,
+):
+    """The failure path `serve.main` catches. `create_app` itself must be
+    what raises -- `StoredSettingError`, naming the key -- rather than
+    silently substituting the default and leaving the mystery bug for
+    whichever endpoint reads the field next.
+    """
+    db_path = tmp_path / "data" / "z.db"
+    store = Store(db_path)
+    store.init_schema()
+    store.set_setting("distil_concurrency", "0")
+    store.close()
+
+    with pytest.raises(StoredSettingError, match="distil_concurrency"):
+        create_app(db_path=db_path)
 
 
 def test_the_app_closes_its_store_when_it_shuts_down(tmp_path):

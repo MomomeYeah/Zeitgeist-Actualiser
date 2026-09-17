@@ -202,6 +202,26 @@ def test_the_api_key_is_not_accepted_as_an_override(tmp_path):
     assert response.status_code == 400
 
 
+def test_a_validation_failure_on_start_run_does_not_leak_input_value(tmp_path):
+    """`resolve_settings` raises a bare `pydantic.ValidationError`, which is
+    a `ValueError` subclass — so an unqualified `except ValueError` renders
+    it with `str(exc)`, and pydantic's own rendering includes
+    `input_value=...` for every offending field. That is the same leak
+    `format_validation_errors` was written to keep out of every other 400
+    this project returns; this pins it against the one path that used to
+    miss it.
+    """
+    client = seeded_client(tmp_path)
+
+    response = client.post("/api/runs", json={"overrides": {"distil_concurrency": "0"}})
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "distil_concurrency" in detail
+    assert "greater than or equal to 1" in detail
+    assert "input_value" not in detail
+
+
 def test_resuming_reuses_the_runs_existing_id(tmp_path):
     """Resume continues a run rather than starting a new one — its
     checkpoints are the whole point. A resume that allocated a fresh id would
@@ -426,6 +446,34 @@ def test_resuming_a_run_whose_frozen_config_no_longer_validates_is_a_400(tmp_pat
     assert response.status_code == 400
     assert "dormant" in response.json()["detail"]
     assert seen == []
+
+
+def test_resuming_with_an_invalid_frozen_config_does_not_leak_input_value(tmp_path):
+    """The `resume_run` half of the same finding `test_a_validation_failure_
+    on_start_run_does_not_leak_input_value` pins for `start_run`:
+    `ValidationError` must be caught ahead of the generic `ValueError`
+    branch here too, or the replayed frozen config's rejected value rides
+    along in the response body.
+    """
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id="20260901T120000Z",
+                config=make_run_config(sources=["lemmy"]),
+                evidence=[make_evidence(["p1"])],
+            )
+        ],
+    )
+
+    response = client.post(
+        "/api/runs/20260901T120000Z/resume", json={"stage": "evaluate"}
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "dormant" in detail
+    assert "input_value" not in detail
 
 
 def test_resuming_an_unknown_run_is_a_404(tmp_path):

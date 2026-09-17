@@ -18,7 +18,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 
-from zeitgeist.config import Settings
+from zeitgeist.config import Settings, load_settings
 from zeitgeist.generation import GenerateFn, GenerationService
 from zeitgeist.runner import ExecuteFn, RunService
 from zeitgeist.store import DB_PATH, Store
@@ -46,7 +46,7 @@ def get_generator(request: Request) -> GenerationService:
 
 
 def create_app(
-    settings: Settings,
+    settings: Settings | None = None,
     *,
     db_path: Path = DB_PATH,
     execute: ExecuteFn | None = None,
@@ -66,6 +66,16 @@ def create_app(
     # Store.__init__ for why SQLite's serialized mode alone is not.
     store = Store(db_path, check_same_thread=False)
     store.init_schema()
+
+    # `None` means the real bootstrap: resolve every scoped field from the
+    # store now that the schema exists to read it from. A test that passes
+    # its own `Settings` skips this entirely — that object is what it wants
+    # the app built with, and must not be second-guessed against whatever a
+    # `tmp_path` store happens to hold. `load_settings` raises
+    # `StoredSettingError` for a row that fails validation; `serve.py` is
+    # what catches it, the same way it already catches `StoreSchemaError`.
+    if settings is None:
+        settings = load_settings(store)
 
     interrupted = store.reconcile_interrupted()
     if interrupted:

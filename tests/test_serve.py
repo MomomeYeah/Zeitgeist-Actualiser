@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 import zeitgeist.serve as serve
 from zeitgeist.schema import SCHEMA_VERSION
+from zeitgeist.store import Store
 
 
 def _capture_run(monkeypatch):
@@ -121,3 +122,32 @@ def test_a_stale_database_is_reported_without_a_traceback(
     captured = capsys.readouterr()
     assert "Traceback" not in captured.err
     assert "Delete it and re-run" in captured.err
+
+
+def test_a_stored_setting_that_fails_validation_is_reported_without_a_traceback(
+    monkeypatch, tmp_path, capsys
+):
+    """The other half of Finding A: `create_app()` now loads settings from
+    the store itself, so a hand-edited row that no longer validates must
+    fail the same way a stale schema does -- a readable message on stderr
+    naming the key, not a 500 from the first endpoint anyone happens to hit.
+
+    `distil_concurrency` is `ge=1`; `0` is what a hand edit or a bug would
+    leave behind. There is no `.env` to fall back to any more, so the
+    recovery is editing or deleting this row directly -- README.md says so.
+    """
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "data" / "zeitgeist.db"
+    store = Store(db_path)
+    store.init_schema()
+    store.set_setting("distil_concurrency", "0")
+    store.close()
+    calls = _capture_run(monkeypatch)
+
+    exit_code = serve.main([])
+
+    assert exit_code != 0
+    assert calls == []  # uvicorn.run must never be reached on this path.
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    assert "distil_concurrency" in captured.err
