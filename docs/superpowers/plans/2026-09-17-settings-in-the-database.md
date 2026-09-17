@@ -269,38 +269,20 @@ Purely additive: the new key sets exist but nothing consumes them yet, so the su
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `tests/test_config.py`:
+Add to `tests/test_config.py`.
+
+There is deliberately no `assert RUN_KEYS == {...ten literals...}` or its
+`GLOBAL_KEYS` twin here, and adding one back would be a regression. Every bug
+such a test could catch is already caught: a typo'd `scope` string drops the
+field into `test_the_unscoped_fields_are_the_ones_no_screen_offers`, and a
+field moved between scopes makes `RUN_KEYS` and the keys a frozen `RunConfig`
+replays disagree. What a literal set uniquely fails on is a deliberate
+reclassification — which the `as_overrides` test below has already blessed. A
+test whose only failures are decisions fires on redesign and sleeps through
+bugs.
 
 ```python
 from zeitgeist.config import GLOBAL_KEYS, RUN_KEYS, SECRET_KEYS, Settings
-
-
-def test_run_keys_are_exactly_the_fields_a_run_may_set():
-    assert RUN_KEYS == frozenset(
-        {
-            "llm_provider",
-            "llm_model",
-            "sources",
-            "topic_count",
-            "bluesky_trend_limit",
-            "bluesky_posts_per_trend",
-            "meme_potential_weight",
-            "phrase_min_authors",
-            "distil_char_budget",
-            "distil_concurrency",
-        }
-    )
-
-
-def test_global_keys_are_exactly_the_fields_set_once_for_the_install():
-    assert GLOBAL_KEYS == frozenset(
-        {
-            "anthropic_api_key",
-            "ollama_host",
-            "bluesky_fetch_concurrency",
-            "font_path",
-        }
-    )
 
 
 def test_the_unscoped_fields_are_the_ones_no_screen_offers():
