@@ -867,6 +867,37 @@ def test_a_run_can_be_excluded_once_its_jobs_have_finished(tmp_path):
     store.close()
 
 
+def test_a_run_is_not_left_excluded_forever_if_the_workers_store_fails_to_open(
+    tmp_path, monkeypatch
+):
+    """`_run` claims the run in `submit` and must release it "however it
+    ends" — including a failure before there is even a job to run.
+    `Store(self._store.path)` can raise (a locked database mid `PRAGMA
+    journal_mode = WAL`, say), and a locked database is not producible
+    portably in a test, so this replaces `zeitgeist.generation.Store` with
+    a callable that raises instead, standing in for that failure. `submit`
+    itself never constructs a `Store` — it reuses the service's own
+    `self._store` — so only the worker's construction inside `_run` is
+    affected; `submit` still runs to completion and hands the job to the
+    pool.
+    """
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    def explode(path):
+        raise RuntimeError("the worker's database could not be opened")
+
+    monkeypatch.setattr("zeitgeist.generation.Store", explode)
+
+    service.submit("run-1", "airport-cat", MANUAL)
+    service.shutdown()  # Waits for the job, however it ends.
+
+    with service.excluding("run-1"):
+        pass
+    store.close()
+
+
 def test_excluding_releases_the_run_when_the_guarded_delete_fails(tmp_path):
     """The delete `excluding` guards can itself be refused — the run turned
     out to be live. That refusal must not leave the run excluded from

@@ -555,16 +555,21 @@ class GenerationService:
         same file for every job in this service, so its location comes from
         `self._store` rather than from `job.settings`, which no longer
         carries one. Releases the run's claim when the job ends, however it
-        ends, so `excluding` stops refusing its deletion.
+        ends, so `excluding` stops refusing its deletion — including if
+        opening `store` itself raises, or if `store.close()` does: the
+        outer `finally` covers the whole body, not just the generation
+        call, so no failure here can leave a run permanently excluded.
         """
-        store = Store(self._store.path)
         try:
-            self._generate(job, store)
-        except Exception as exc:  # noqa: BLE001 - one job's failure is a row
-            log.exception("Generation job for topic %s failed", job.topic.id)
-            self._fail_unfinished(store, job, exc)
+            store = Store(self._store.path)
+            try:
+                self._generate(job, store)
+            except Exception as exc:  # noqa: BLE001 - one job's failure is a row
+                log.exception("Generation job for topic %s failed", job.topic.id)
+                self._fail_unfinished(store, job, exc)
+            finally:
+                store.close()
         finally:
-            store.close()
             self._release(run_id)
 
     def _fail_unfinished(
