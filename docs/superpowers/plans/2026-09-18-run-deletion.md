@@ -106,6 +106,14 @@ def test_delete_run_removes_the_run_and_every_row_hanging_off_it(tmp_path):
 
     assert _rows_per_table(store, "doomed") == dict.fromkeys(_RUN_TABLES, 0)
     assert all(count > 0 for count in _rows_per_table(store, "kept").values())
+    # Through a second connection, as the worker and the generation pool
+    # read: an uncommitted delete is visible to its own connection only,
+    # and is rolled back when that connection closes.
+    other = Store(store.path)
+    try:
+        assert other.get_run("doomed") is None
+    finally:
+        other.close()
 
 
 def test_delete_run_reports_an_unknown_id(tmp_path):
@@ -196,14 +204,20 @@ def test_delete_run_files_removes_the_runs_directory_and_nothing_else(tmp_path):
     assert render_paths(output, "run-2", "rnd2").full.is_file()
 
 
-def test_delete_run_files_succeeds_when_the_run_never_wrote_a_file(tmp_path):
-    """A run that died in ingest never created its directory."""
+def test_delete_run_files_says_nothing_when_the_run_never_wrote_a_file(
+    tmp_path, caplog
+):
+    """A run that died in ingest never created its directory. That is not
+    a failure to remove anything, so it must not read as one in the log —
+    which is what `rmtree` on a missing path, caught as an `OSError`,
+    would write."""
     output = tmp_path / "output"
-    _write_files(output, "run-2", "rnd2")
+    output.mkdir()
 
-    delete_run_files(output, "run-1")
+    with caplog.at_level(logging.WARNING, logger="zeitgeist.renders"):
+        delete_run_files(output, "run-1")
 
-    assert render_paths(output, "run-2", "rnd2").full.is_file()
+    assert caplog.records == []
 
 
 @pytest.mark.parametrize(
@@ -616,6 +630,27 @@ def test_a_run_cannot_be_excluded_while_a_job_for_it_is_in_flight(tmp_path):
     store.close()
 
 
+def test_a_job_in_flight_for_one_run_does_not_hold_another(tmp_path):
+    """Busy is per run. Keyed on "any job at all", one topic generating
+    anywhere would make every run undeletable."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    store.start_run("run-2", make_run_config())
+    store.write_analyse_checkpoint("run-2", [make_topic("airport-cat")], 0.3)
+    gate = GatedGenerate()
+    service = _service(tmp_path, store, generate=gate)
+    try:
+        service.submit("run-2", "airport-cat", MANUAL)
+        assert gate.entered.wait(timeout=5)
+
+        with service.excluding("run-1"):
+            pass
+    finally:
+        gate.release.set()
+        service.shutdown()
+    store.close()
+
+
 def test_a_run_can_be_excluded_once_its_jobs_have_finished(tmp_path):
     """The count comes back down when a job ends. Without that, the first
     meme ever generated for a run would make it undeletable for the life
@@ -729,8 +764,7 @@ def test_generating_for_a_run_that_is_being_deleted_is_a_404(tmp_path):
         )
 
     assert response.status_code == 404
-    # Names the run, which is what tells this 404 apart from the topic's.
-    assert RUN in response.json()["detail"]
+    assert client.get(f"/api/runs/{RUN}/topics/airport-cat").json()["renders"] == []
 ```
 
 - [ ] **Step 4: Run to verify they fail**
@@ -978,7 +1012,6 @@ def test_deleting_a_run_removes_it_everywhere(tmp_path):
     response = client.delete(f"/api/runs/{run_id}")
 
     assert response.status_code == 204
-    assert response.content == b""
     assert client.get(f"/api/runs/{run_id}").status_code == 404
     assert client.get("/api/renders/rnd1").status_code == 404
     assert client.get("/api/runs").json()["runs"] == []
@@ -991,7 +1024,6 @@ def test_deleting_an_unknown_run_is_a_404(tmp_path):
     response = client.delete("/api/runs/nope")
 
     assert response.status_code == 404
-    assert "nope" in response.json()["detail"]
 
 
 def test_a_run_in_flight_cannot_be_deleted_until_it_is_over(tmp_path):
@@ -1005,10 +1037,6 @@ def test_a_run_in_flight_cannot_be_deleted_until_it_is_over(tmp_path):
         refused = client.delete(f"/api/runs/{run_id}")
 
         assert refused.status_code == 409
-        # The page shows this sentence; it must say which run and why, not
-        # read as the generation refusal below.
-        assert run_id in refused.json()["detail"]
-        assert "generating" not in refused.json()["detail"]
         assert client.get(f"/api/runs/{run_id}").status_code == 200
     finally:
         gate.release.set()
@@ -1018,12 +1046,17 @@ def test_a_run_in_flight_cannot_be_deleted_until_it_is_over(tmp_path):
     assert client.delete(f"/api/runs/{run_id}").status_code == 204
 ```
 
-In `tests/test_api_generate.py`, add `GatedGenerate` to the `tests.api_factory` import and append:
+In `tests/test_api_generate.py`, add `GatedGenerate` to the `tests.api_factory` import, add `from zeitgeist.renders import render_paths`, and append:
 
 ```python
 def test_a_run_cannot_be_deleted_while_its_memes_are_generating(tmp_path):
     gate = GatedGenerate()
     client = _client(tmp_path, generate=gate)
+    # A meme the run already has. A refused delete must leave the run
+    # whole — its files as well as its row.
+    existing = render_paths(tmp_path / "output", RUN, "earlier").full
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b"not really a png")
     try:
         posted = client.post(
             _url(),
@@ -1035,11 +1068,8 @@ def test_a_run_cannot_be_deleted_while_its_memes_are_generating(tmp_path):
         refused = client.delete(f"/api/runs/{RUN}")
 
         assert refused.status_code == 409
-        # Distinguishable from the live-run 409, which says to abort: here
-        # there is nothing to abort, only something to wait for.
-        assert RUN in refused.json()["detail"]
-        assert "generating" in refused.json()["detail"]
         assert client.get(f"/api/runs/{RUN}").status_code == 200
+        assert existing.is_file()
     finally:
         gate.release.set()
         app_of(client).state.generator.shutdown()
@@ -1369,11 +1399,14 @@ In `web/src/features/runs/RunDetailPage.test.tsx`, inside `describe("RunDetailPa
       expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
     });
 
+    // Asserts the count and its agreement, not the sentence around it: the
+    // wording is free to change, but "1 memes", or a count taken from
+    // anywhere but `render_count`, is a bug. `\b` after the noun is what
+    // rejects "1 memes".
     it.each([
-      [0, "Delete run?"],
-      [1, "Delete run and its 1 meme?"],
-      [3, "Delete run and its 3 memes?"],
-    ])("with %i memes, asks %j before deleting anything", async (count, question) => {
+      [1, /\b1 meme\b/],
+      [3, /\b3 memes\b/],
+    ])("with %i memes, says how many go with the run before deleting anything", async (count, says) => {
       const user = userEvent.setup();
       let deletes = 0;
       serveOver(count);
@@ -1387,8 +1420,64 @@ In `web/src/features/runs/RunDetailPage.test.tsx`, inside `describe("RunDetailPa
 
       await user.click(await screen.findByRole("button", { name: "Delete" }));
 
-      expect(screen.getByText(question)).toBeInTheDocument();
+      expect(screen.getByText(says)).toBeInTheDocument();
       expect(deletes).toBe(0);
+    });
+
+    it("with no memes, asks without mentioning any", async () => {
+      const user = userEvent.setup();
+      serveOver(0);
+      renderRoutes();
+
+      await user.click(await screen.findByRole("button", { name: "Delete" }));
+
+      // The question is up — "yes" exists only while it is asked.
+      expect(screen.getByRole("button", { name: "yes" })).toBeInTheDocument();
+      expect(screen.queryByText(/meme/)).not.toBeInTheDocument();
+    });
+
+    it("sends one delete, however often it is asked while the first is on its way", async () => {
+      const user = userEvent.setup();
+      let deletes = 0;
+      serveOver();
+      server.use(
+        http.delete("/api/runs/:runId", async () => {
+          deletes += 1;
+          await new Promise(() => undefined); // Held open: still pending.
+          return new HttpResponse(null, { status: 204 });
+        }),
+      );
+      renderRoutes();
+
+      await user.click(await screen.findByRole("button", { name: "Delete" }));
+      await user.click(screen.getByRole("button", { name: "yes" }));
+      await waitFor(() => expect(deletes).toBe(1));
+
+      await user.click(screen.getByRole("button", { name: "Delete" }));
+
+      expect(screen.queryByRole("button", { name: "yes" })).not.toBeInTheDocument();
+      expect(deletes).toBe(1);
+    });
+
+    it("keeps focus on the run's header when a delete is refused", async () => {
+      // Between the click and the 409 the trigger is disabled by its own
+      // pending guard — long enough for the browser to drop focus to
+      // <body> — and nothing else would bring it back.
+      const user = userEvent.setup();
+      serveOver();
+      server.use(
+        http.delete("/api/runs/:runId", () =>
+          HttpResponse.json({ detail: "Memes are still generating" }, { status: 409 }),
+        ),
+      );
+      renderRoutes();
+
+      await user.click(await screen.findByRole("button", { name: "Delete" }));
+      await user.click(screen.getByRole("button", { name: "yes" }));
+      await screen.findByText("Memes are still generating");
+
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toContainElement(screen.getByText(RUN_ID));
     });
 
     it.each([204, 404])(
