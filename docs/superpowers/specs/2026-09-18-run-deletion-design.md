@@ -119,9 +119,12 @@ happens after the lock is released.
 run exists before calling `enqueue`, and `Store.start_run` is an upsert. A
 delete landing between the two would let `enqueue` insert a fresh
 `run_records` row with no checkpoints behind it — a deleted run coming back
-as an empty shell that then fails. So when `request.run_id` is set (a
-resume), `enqueue` confirms `store.get_run(run_id)` is not `None` inside the
-lock, and raises `UnknownRun` if it is; `resume_run` maps that to 404.
+as an empty shell that then fails. So `enqueue` takes a keyword-only
+`resuming: bool = False`, which `resume_run` passes as `True`; when it is
+set, `enqueue` confirms `store.get_run(run_id)` is not `None` inside the
+lock, and raises `UnknownRun` if it is; `resume_run` maps that to 404. A
+flag rather than inferring a resume from `request.run_id` being set,
+because tests (and nothing else) enqueue brand-new runs under a chosen id.
 
 ### Guard 2: on-demand generation
 
@@ -140,19 +143,23 @@ service's own in-memory state is the truth, so it tracks it:
 - `_in_flight: dict[str, int]` — jobs per run, and `_deleting: set[str]`,
   both guarded by the existing `_lock`.
 - `submit` increments `_in_flight[run_id]` after `_ensure_pool` and before
-  `_seed`, refusing with `UnknownRun` (→ 404) if `run_id` is in
-  `_deleting`. Every path out of `submit` that does not hand the job to the
-  pool decrements it again.
+  anything else, refusing with `UnknownRun` (→ 404) if `run_id` is in
+  `_deleting`. Having claimed the run, it confirms `store.get_run(run_id)`
+  is not `None`, raising `UnknownRun` if it is. Every path out of `submit`
+  that does not hand the job to the pool decrements it again.
 - `_run` decrements in its `finally`, removing the key at zero.
 - `excluding(run_id)` is a context manager: under `_lock`, raise
   `RunBusy` (→ 409) if `_in_flight.get(run_id)` is non-zero, otherwise add
   `run_id` to `_deleting`; on exit, discard it.
 
-`_deleting` closes the window where `submit` has validated the run but not
-yet seeded its rows: without it, the seed would hit the foreign key after
-the row was deleted and surface as an `IntegrityError` 500. After exit the
-row is gone, so a later `submit` fails `_run_or_404` in the endpoint as it
-would for any unknown run.
+Claim first, then check, is what makes this airtight. Either `submit`'s
+claim lands first, and `excluding` refuses the delete; or `excluding` lands
+first, and the claim is refused; or the whole delete finishes first, and
+the existence check refuses. Without it, a `submit` that passed the
+endpoint's `_run_or_404` just before a delete would reach `_seed` after
+the row was gone and hit the foreign key as an `IntegrityError` 500 — or,
+earlier, `read_checkpoint` would answer `MissingCheckpoint`, a 409 claiming
+the run never analysed.
 
 ### `RunDetail.render_count`
 
@@ -173,17 +180,19 @@ In `web/src/api/queries.ts`, beside `useDeleteRender` and shaped like it:
 
 - `apiDelete` on `/api/runs/{runId}`. A 404 resolves as success: the run
   is already gone, which is the outcome asked for.
-- On success, removes every cached query under `queryKeys.run(runId)`'s
-  prefix — detail, ranking, log, each topic detail — rather than
-  invalidating them, since there is nothing left to refetch. Then
-  invalidates the Runs list, `active`, the topics index and render views.
+- On success, marks every cached query under `queryKeys.run(runId)`'s
+  prefix — detail, ranking, log, each topic detail — stale *without*
+  refetching (`refetchType: "none"`), the way `useDeleteRender` treats the
+  render it removed. Then invalidates everything else under `["runs"]`
+  (the list, `active`) with a predicate excluding this run's keys, the
+  topics index, and marks render records stale without a refetch.
 - **The detail page must not flash "No such run." between success and
   navigation.** Its own run query is still mounted when the mutation
   succeeds; refetching it would 404 and render the missing state for a
-  frame. Whatever ordering achieves this — navigating before the cache is
-  touched, or excluding the run's own keys from the refetch — the
-  implementation plan chooses; the requirement is that the screen goes
-  straight from the header to the Runs list.
+  frame. Excluding the run's own keys from the refetch is what prevents
+  it, and marking them stale is what makes pressing Back afterwards ask
+  the server again — and get "No such run." — rather than draw the deleted
+  run from cache.
 
 ### The Delete action
 
@@ -217,7 +226,7 @@ handing focus to the header, since the header is going too.
 
 | Situation | Result |
 |---|---|
-| Run is live or queued | 409, `RunAlreadyActive`'s "Run … is already queued or executing"; button not offered in the UI |
+| Run is live or queued | 409, "Run … is queued or executing; abort it before deleting it."; button not offered in the UI |
 | Generation job in flight for the run | 409, sentence says memes are still generating; shown under the buttons |
 | Deleted from another tab first | 404 → treated as success, navigate to `/runs` |
 | Resume from another tab after delete | 404 from the resume, run not recreated |
