@@ -1670,6 +1670,71 @@ def test_delete_render_reports_an_unknown_id(tmp_path):
     assert store.delete_render("nope") is False
 
 
+# Every table that hangs off `run_records`. Named here rather than read from
+# `sqlite_master` so a new child table is a decision this test is updated
+# for, not one it silently absorbs.
+_RUN_TABLES = (
+    "run_records",
+    "checkpoints",
+    "run_stages",
+    "run_topics",
+    "renders",
+    "log_lines",
+    "topic_scores",
+)
+
+
+def _rows_per_table(store: Store, run_id: str) -> dict[str, int]:
+    return {
+        table: store._conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE run_id = ?", (run_id,)
+        ).fetchone()[0]
+        for table in _RUN_TABLES
+    }
+
+
+def _fill_every_table(store: Store, run_id: str) -> None:
+    """One row in every child table, each through the writer production
+    uses — `_analyse` covers the checkpoint, `run_topics` and
+    `topic_scores` in one transaction."""
+    _analyse(store, run_id, [_topic("Cats", {"bluesky": 0.5})])
+    store.record_stage(run_id, make_stage_record(Stage.ANALYSE))
+    store.add_render(make_render_record(f"{run_id}-r", run_id=run_id, topic_id="cats"))
+    _log(store, run_id, 1, "INFO", "hello")
+
+
+def test_delete_run_removes_the_run_and_every_row_hanging_off_it(tmp_path):
+    """The cascade is the whole mechanism. With foreign keys off — the
+    SQLite default — this deletes one row and leaves six tables of
+    orphans behind it."""
+    store = _store(tmp_path)
+    _fill_every_table(store, "doomed")
+    _fill_every_table(store, "kept")
+    # The fixture must actually reach every table, or a zero below proves
+    # nothing about the cascade.
+    assert all(count > 0 for count in _rows_per_table(store, "doomed").values())
+
+    assert store.delete_run("doomed") is True
+
+    assert _rows_per_table(store, "doomed") == dict.fromkeys(_RUN_TABLES, 0)
+    assert all(count > 0 for count in _rows_per_table(store, "kept").values())
+    # Through a second connection, as the worker and the generation pool
+    # read: an uncommitted delete is visible to its own connection only,
+    # and is rolled back when that connection closes.
+    other = Store(store.path)
+    try:
+        assert other.get_run("doomed") is None
+    finally:
+        other.close()
+
+
+def test_delete_run_reports_an_unknown_id(tmp_path):
+    """The endpoint 404s on it, so a silent success would be a lie."""
+    store = _store(tmp_path)
+
+    assert store.delete_run("nope") is False
+
+
 def test_renders_for_topic_excludes_other_topics_and_other_runs(tmp_path):
     store = _store(tmp_path, "r1", "r2")
     store.add_render(make_render_record("a", run_id="r1", topic_id="cat"))

@@ -32,6 +32,7 @@ __all__ = [
     "DB_PATH",
     "SCHEMA_VERSION",
     "MissingCheckpoint",
+    "UnknownRun",
     "Store",
     "StoreSchemaError",
 ]
@@ -72,6 +73,19 @@ class MissingCheckpoint(Exception):
 
     Distinct from an empty checkpoint, which is a result: a generate stage
     that briefed nothing wrote `[]`, and resuming past it is legitimate.
+    """
+
+
+class UnknownRun(LookupError):
+    """No `run_records` row for that id.
+
+    Raised where a run vanished between a caller's check and its write —
+    deleted from another tab — so the API can answer 404 rather than let
+    the write recreate the row or trip a foreign key. A `LookupError`, like
+    `UnknownTopic`, so it cannot be mistaken for a malformed request.
+
+    Here rather than in `runner.py` or `generation.py` because both raise
+    it, and both already import this module.
     """
 
 
@@ -346,6 +360,21 @@ class Store:
             (_now(), run_id),
         )
         self._conn.commit()
+
+    def delete_run(self, run_id: str) -> bool:
+        """Remove the run and, by cascade, every row that hangs off it.
+        False means there was no such run.
+
+        One statement: every child table references `run_records` with
+        `ON DELETE CASCADE`, and `__init__` turns enforcement on. The run's
+        files are not this method's business — see
+        `zeitgeist.renders.delete_run_files`.
+        """
+        cursor = self._conn.execute(
+            "DELETE FROM run_records WHERE run_id = ?", (run_id,)
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
 
     def get_run(self, run_id: str) -> RunRecordRow | None:
         row = self._conn.execute(
