@@ -5,6 +5,20 @@
   margin: 0 auto;
 }
 
+/* Once the window is wider than the app, a gutter of page colour opens on
+   each side. The rail is darker than the page, so the left gutter read as
+   a band of its own, while the content is the page colour, so the right
+   one read as more content. A hairline on both edges makes the two
+   gutters, which are one colour, look like one thing.
+   1180px is `--app-width`; a custom property cannot be read in a media
+   query. Narrower than that the edges would be the window's own, where a
+   line would just be a stripe. */
+@media (min-width: 1180px) {
+  .shell {
+    border-inline: 1px solid var(--border);
+  }
+}
+
 .content {
   flex: 1;
   min-width: 0;

@@ -21,6 +21,15 @@ ol {
   list-style: none;
 }
 
+/* The app is dark-only, and says so to the browser. Without it the widgets
+   the browser draws itself — a <select>'s popup, scrollbars — come out in
+   the light scheme: the template picker's options inherited the page's
+   light text onto the popup's white fill, and only the highlighted one was
+   legible. */
+:root {
+  color-scheme: dark;
+}
+
 body {
   background: var(--bg);
   color: var(--text);

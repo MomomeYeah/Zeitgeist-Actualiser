@@ -129,6 +129,55 @@ def test_blank_caption_leaves_that_area_untouched(tmp_path, template_dir):
         assert ImageStat.Stat(difference).sum[0] == 0
 
 
+def _render_bytes(tmp_path, template_dir, name: str, top: str) -> bytes:
+    directory, manifest = template_dir
+    out = tmp_path / f"{name}.png"
+    render_meme(_brief(top=top, bottom="same"), manifest, directory, out, FONT)
+    return out.read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("caption", "fallback"),
+    [
+        # The bundled font is a subset: no dashes, no accented letters.
+        # Drawn as-is, each came out as the .notdef box.
+        ("prank \u2014 farmer", "prank - farmer"),
+        ("2020\u20132024", "2020-2024"),
+        ("caf\xe9 ni\xf1o \xfcber", "cafe nino uber"),
+    ],
+)
+def test_a_character_the_font_lacks_is_drawn_as_its_nearest_ascii(
+    tmp_path, template_dir, caption, fallback
+):
+    """Byte-identical to rendering the fallback text directly, which a
+    .notdef box in place of the dash or the accented letter could not be.
+    """
+    assert _render_bytes(tmp_path, template_dir, "given", caption) == _render_bytes(
+        tmp_path, template_dir, "fallback", fallback
+    )
+
+
+def test_a_character_the_font_has_is_drawn_unchanged(tmp_path, template_dir):
+    """The bundled font does have curly quotes, so they must survive: the
+    fallback is for missing glyphs, not a blanket ASCII-fication.
+    """
+    curly = _render_bytes(tmp_path, template_dir, "curly", "\u201cquoted\u201d")
+    straight = _render_bytes(tmp_path, template_dir, "straight", '"quoted"')
+    assert curly != straight
+
+
+def test_a_character_with_no_fallback_is_dropped_and_logged(
+    tmp_path, template_dir, caplog
+):
+    """An emoji has no ASCII stand-in. Dropping it beats a box in the
+    middle of the joke, but the caption did lose something, so say so.
+    """
+    with caplog.at_level(logging.WARNING, logger="zeitgeist.media.render"):
+        given = _render_bytes(tmp_path, template_dir, "given", "so true \U0001f602")
+    assert given == _render_bytes(tmp_path, template_dir, "fallback", "so true")
+    assert any("\U0001f602" in record.getMessage() for record in caplog.records)
+
+
 def test_output_is_reproducible(tmp_path, template_dir):
     directory, manifest = template_dir
     brief = _brief(top="Same input", bottom="Same output")

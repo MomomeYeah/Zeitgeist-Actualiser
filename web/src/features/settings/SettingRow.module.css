@@ -35,6 +35,19 @@
   text-align: right;
 }
 
+/* A text value — a URL, a path — in the 72px box sized for a number showed
+   "http://" and nothing more. It gets a track that grows to 280px when the
+   card has room and gives way first when it has not, and reads from the
+   left, where a path starts. */
+.text .head {
+  grid-template-columns: 1fr auto minmax(0, 280px);
+}
+
+.text .input {
+  width: 100%;
+  text-align: left;
+}
+
 .explanation {
   margin: 6px 0 0;
   font-family: var(--font-ui);

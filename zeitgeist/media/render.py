@@ -1,7 +1,9 @@
 """Pillow compositing. Fully deterministic: no model involvement at all."""
 
 import logging
+import math
 import textwrap
+import unicodedata
 from pathlib import Path
 from typing import cast
 
@@ -42,6 +44,82 @@ def resolve_font(font_path: Path | None, size: int) -> ImageFont.FreeTypeFont:
         raise RenderError(f"Could not load font {font_path}: {exc}") from exc
 
 
+# Stand-ins for characters a font has no glyph for. Only consulted when the
+# glyph is missing: Pillow's bundled font is a subset that has curly quotes
+# but no dashes, and a real .ttf may have both.
+_FALLBACKS = {
+    "\u00a0": " ",  # no-break space
+    "\u2010": "-",  # hyphen
+    "\u2011": "-",  # non-breaking hyphen
+    "\u2012": "-",  # figure dash
+    "\u2013": "-",  # en dash
+    "\u2014": "-",  # em dash
+    "\u2015": "-",  # horizontal bar
+    "\u2212": "-",  # minus sign
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u2026": "...",
+    "\u2022": "*",  # bullet
+}
+
+# A noncharacter: no font maps it, so it draws as the font's .notdef glyph.
+_NOTDEF = "\uffff"
+
+
+def _glyph(font: ImageFont.FreeTypeFont, char: str) -> tuple[tuple[int, int], bytes]:
+    left, top, right, bottom = font.getbbox(char)
+    width = max(math.ceil(right) - math.floor(left), 1)
+    height = max(math.ceil(bottom) - math.floor(top), 1)
+    image = Image.new("L", (width, height))
+    ImageDraw.Draw(image).text((-left, -top), char, font=font, fill=255)
+    return image.size, image.tobytes()
+
+
+def _drawable(text: str, font: ImageFont.FreeTypeFont) -> str:
+    """`text` with every character the font would draw as .notdef replaced.
+
+    Pillow draws a missing glyph as the font's .notdef box rather than
+    falling back to another font, so an em dash in a caption came out as a
+    box in the middle of the meme. A missing character is swapped for its
+    entry in `_FALLBACKS`, else for its accent-stripped base letter, else
+    dropped — a gap reads better than a box.
+    """
+    notdef = _glyph(font, _NOTDEF)
+    cache: dict[str, bool] = {}
+
+    def has(char: str) -> bool:
+        if char.isascii():
+            return True
+        if char not in cache:
+            cache[char] = _glyph(font, char) != notdef
+        return cache[char]
+
+    out: list[str] = []
+    dropped: list[str] = []
+    for char in text:
+        if has(char):
+            out.append(char)
+        elif char in _FALLBACKS:
+            out.append(_FALLBACKS[char])
+        elif (base := _strip_accents(char)) and all(map(has, base)):
+            out.append(base)
+        else:
+            dropped.append(char)
+    if dropped:
+        log.warning("Dropped characters the font cannot draw: %s", " ".join(dropped))
+    return "".join(out)
+
+
+def _strip_accents(char: str) -> str:
+    return "".join(
+        part
+        for part in unicodedata.normalize("NFKD", char)
+        if not unicodedata.combining(part)
+    )
+
+
 def render_meme(
     brief: MediaBrief,
     manifest: TemplateManifest,
@@ -79,7 +157,8 @@ def _draw_slot(
 ) -> None:
     left, top, right, bottom = slot.box
     width, height = right - left, bottom - top
-    text = text.strip()
+    # Glyph coverage does not depend on size, so one probe serves the fit.
+    text = _drawable(text, resolve_font(font_path, MAX_FONT_SIZE)).strip()
     if not text:
         return
 
