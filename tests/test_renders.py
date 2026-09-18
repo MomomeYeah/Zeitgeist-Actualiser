@@ -1,8 +1,16 @@
+import logging
+
+import pytest
 from PIL import Image
 
 from tests.run_factory import make_render_record, make_run_config
 from zeitgeist.records import ManualOrigin
-from zeitgeist.renders import clear_auto_renders, delete_render, render_paths
+from zeitgeist.renders import (
+    clear_auto_renders,
+    delete_render,
+    delete_run_files,
+    render_paths,
+)
 from zeitgeist.store import Store
 
 
@@ -124,3 +132,75 @@ def test_clear_auto_renders_leaves_the_same_topic_in_another_run_alone(tmp_path)
     clear_auto_renders(store, tmp_path / "output", "run-1", "cat")
 
     assert [r.id for r in store.renders_for_topic("run-0", "cat")] == ["old"]
+
+
+def test_delete_run_files_removes_the_runs_directory_and_nothing_else(tmp_path):
+    output = tmp_path / "output"
+    _write_files(output, "run-1", "rnd1")
+    _write_files(output, "run-2", "rnd2")
+
+    delete_run_files(output, "run-1")
+
+    assert not (output / "run-1").exists()
+    assert render_paths(output, "run-2", "rnd2").full.is_file()
+
+
+def test_delete_run_files_says_nothing_when_the_run_never_wrote_a_file(
+    tmp_path, caplog
+):
+    """A run that died in ingest never created its directory. That is not
+    a failure to remove anything, so it must not read as one in the log —
+    which is what `rmtree` on a missing path, caught as an `OSError`,
+    would write."""
+    output = tmp_path / "output"
+    output.mkdir()
+
+    with caplog.at_level(logging.WARNING, logger="zeitgeist.renders"):
+        delete_run_files(output, "run-1")
+
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    ["..", "../victim", "", ".", "run-2/renders", "ABSOLUTE"],
+)
+def test_delete_run_files_refuses_an_id_that_is_not_one_run_directory(tmp_path, run_id):
+    """The id arrives in a URL. Anything that does not resolve to exactly
+    one directory inside `output_dir` — its parent, a sibling, the output
+    directory itself, something nested in a run, an absolute path — is
+    refused before anything is removed."""
+    output = tmp_path / "output"
+    _write_files(output, "run-2", "rnd2")
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("keep", encoding="utf-8")
+    if run_id == "ABSOLUTE":
+        run_id = str(victim)
+
+    with pytest.raises(ValueError):
+        delete_run_files(output, run_id)
+
+    assert (victim / "keep.txt").is_file()
+    assert render_paths(output, "run-2", "rnd2").full.is_file()
+
+
+def test_delete_run_files_logs_a_directory_it_cannot_remove(
+    tmp_path, monkeypatch, caplog
+):
+    """The row is already gone by the time this runs, so the deletion has
+    happened. A file held open on Windows is a warning, not a 500 for a
+    request that succeeded. `rmtree` is replaced because a locked file
+    cannot be produced portably from a test."""
+    output = tmp_path / "output"
+    _write_files(output, "run-1", "rnd1")
+
+    def refuse(path, *args, **kwargs):
+        raise PermissionError(f"in use: {path}")
+
+    monkeypatch.setattr("zeitgeist.renders.shutil.rmtree", refuse)
+
+    with caplog.at_level(logging.WARNING, logger="zeitgeist.renders"):
+        delete_run_files(output, "run-1")
+
+    assert "in use" in caplog.text
