@@ -1,7 +1,8 @@
+/* The same spacing as the ranking above it: the page gap over the label,
+   and `SectionLabel`'s own margin under it. A flex gap here had stacked on
+   that margin, and nothing had separated the section from its neighbour. */
 .section {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
+  margin-top: var(--gap-page);
 }
 
 .block {

@@ -27,7 +27,7 @@ export function SettingRow({
 }) {
   const numeric = typeof field.value === "number";
   return (
-    <div className={styles.row}>
+    <div className={numeric ? styles.row : `${styles.row} ${styles.text}`}>
       <div className={styles.head}>
         <label className={styles.key} htmlFor={`setting-${field.key}`}>
           {field.key}
