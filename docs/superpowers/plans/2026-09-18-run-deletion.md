@@ -631,6 +631,28 @@ def test_a_run_can_be_excluded_once_its_jobs_have_finished(tmp_path):
     store.close()
 
 
+def test_excluding_releases_the_run_when_the_guarded_delete_fails(tmp_path):
+    """The delete `excluding` guards can itself be refused — the run turned
+    out to be live. That refusal must not leave the run excluded from
+    generation for the life of the process. `match` keeps a `RunBusy` from
+    `excluding` itself (also a `RuntimeError`) from satisfying the raise."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    with (
+        pytest.raises(RuntimeError, match="the guarded delete failed"),
+        service.excluding("run-1"),
+    ):
+        raise RuntimeError("the guarded delete failed")
+
+    records = service.submit("run-1", "airport-cat", MANUAL)
+
+    assert [r.run_id for r in records] == ["run-1"]
+    service.shutdown()
+    store.close()
+
+
 def test_a_refused_submit_does_not_leave_its_run_busy(tmp_path):
     """`submit` claims the run before it validates anything, so every path
     out of it that does not hand a job to the pool must let go again."""
@@ -707,7 +729,8 @@ def test_generating_for_a_run_that_is_being_deleted_is_a_404(tmp_path):
         )
 
     assert response.status_code == 404
-    assert response.json()["detail"] == f"No such run: {RUN}"
+    # Names the run, which is what tells this 404 apart from the topic's.
+    assert RUN in response.json()["detail"]
 ```
 
 - [ ] **Step 4: Run to verify they fail**
@@ -968,7 +991,7 @@ def test_deleting_an_unknown_run_is_a_404(tmp_path):
     response = client.delete("/api/runs/nope")
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "No such run: nope"
+    assert "nope" in response.json()["detail"]
 
 
 def test_a_run_in_flight_cannot_be_deleted_until_it_is_over(tmp_path):
@@ -982,9 +1005,10 @@ def test_a_run_in_flight_cannot_be_deleted_until_it_is_over(tmp_path):
         refused = client.delete(f"/api/runs/{run_id}")
 
         assert refused.status_code == 409
-        assert refused.json()["detail"] == (
-            f"Run {run_id} is queued or executing; abort it before deleting it."
-        )
+        # The page shows this sentence; it must say which run and why, not
+        # read as the generation refusal below.
+        assert run_id in refused.json()["detail"]
+        assert "generating" not in refused.json()["detail"]
         assert client.get(f"/api/runs/{run_id}").status_code == 200
     finally:
         gate.release.set()
@@ -1011,10 +1035,10 @@ def test_a_run_cannot_be_deleted_while_its_memes_are_generating(tmp_path):
         refused = client.delete(f"/api/runs/{RUN}")
 
         assert refused.status_code == 409
-        assert refused.json()["detail"] == (
-            f"Memes are still generating for run {RUN}; wait for them to "
-            "finish before deleting it."
-        )
+        # Distinguishable from the live-run 409, which says to abort: here
+        # there is nothing to abort, only something to wait for.
+        assert RUN in refused.json()["detail"]
+        assert "generating" in refused.json()["detail"]
         assert client.get(f"/api/runs/{RUN}").status_code == 200
     finally:
         gate.release.set()
@@ -1222,9 +1246,10 @@ describe("useDeleteRun", () => {
     const { client } = result.current;
     expect(client.getQueryState(queryKeys.run(RUN))?.fetchStatus).toBe("idle");
     expect(client.getQueryState(queryKeys.ranking(RUN))?.fetchStatus).toBe("idle");
-    // ...but stale, so arriving back at the run asks the server again
-    // rather than drawing a deleted run from cache.
+    // ...but stale, so arriving back at the run — or its ranking — asks
+    // the server again rather than drawing a deleted run from cache.
     expect(client.getQueryState(queryKeys.run(RUN))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(queryKeys.ranking(RUN))?.isInvalidated).toBe(true);
   });
 
   it("refreshes the runs list and the topics index, which both just lost a run", async () => {
