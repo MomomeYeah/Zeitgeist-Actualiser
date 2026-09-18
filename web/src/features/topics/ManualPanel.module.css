@@ -38,18 +38,24 @@
   padding: 9px 11px;
   border: 1px solid var(--border-strong);
   border-radius: 7px;
+  anchor-name: --template-picker;
 }
 
 .picker:has(:focus-visible) {
   border-color: var(--accent-border);
 }
 
+/* An opaque fill, and the page's own colour. Chromium paints the native
+   popup with the select's computed background, so a transparent one left
+   the popup white under the options' light text, `color-scheme: dark`
+   notwithstanding. Nothing between the page and the picker has a fill, so
+   closed, it looks exactly as `none` did. */
 .select {
   flex: 1;
   appearance: none;
   padding: 0;
   border: none;
-  background: none;
+  background: var(--bg);
   font-family: var(--font-mono);
   font-size: 10.5px;
   font-weight: 600;
@@ -60,6 +66,57 @@
 
 .select:focus {
   outline: none;
+}
+
+/* The popup, in the app's own colours. A native popup takes only its fill,
+   text and font from the page; its border and its highlighted row are the
+   operating system's, which on Windows is a blue that belongs to nothing
+   here. The customizable select draws the popup in the page instead, and
+   it is still a real <select>, so the keyboard and the listbox semantics
+   are the browser's as before.
+   Each selector in a rule of its own: a browser without `::picker()`
+   drops the whole rule it appears in, and should keep the native popup —
+   dark, per the fill above — rather than lose `.select` along with it. */
+.select {
+  appearance: base-select;
+  min-block-size: 0;
+}
+
+.select::picker-icon {
+  display: none;
+}
+
+/* Anchored to the whole picker row, which is what the design draws as the
+   control, rather than to the bare select inside its padding. Below it
+   unless it will not fit: the default opens toward whichever side has
+   more room, which put it over the row it belongs to. */
+.select::picker(select) {
+  appearance: base-select;
+  position-anchor: --template-picker;
+  position-try-order: normal;
+  margin-block: 6px;
+  padding: 4px;
+  border: 1px solid var(--accent-border);
+  border-radius: 7px;
+  background: var(--surface);
+}
+
+.select option {
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-70);
+}
+
+.select option:checked {
+  color: var(--accent);
+}
+
+.select option:hover,
+.select option:focus-visible {
+  outline: none;
+  background: var(--accent-tint);
+  color: var(--accent);
 }
 
 .change {
