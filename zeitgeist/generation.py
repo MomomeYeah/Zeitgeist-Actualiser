@@ -14,8 +14,9 @@ exactly as `RunRequest` does.
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated, Literal
@@ -32,7 +33,7 @@ from zeitgeist.media.templates import TemplateManifest, load_templates
 from zeitgeist.models import STRICT, MediaBrief, Topic
 from zeitgeist.records import AutoOrigin, ManualOrigin, Origin, RenderRecord, Stage
 from zeitgeist.renders import render_paths
-from zeitgeist.store import Store
+from zeitgeist.store import Store, UnknownRun
 
 log = logging.getLogger(__name__)
 
@@ -235,6 +236,12 @@ class GenerationRefused(ValueError):
     """
 
 
+class RunBusy(RuntimeError):
+    """A generation job for the run is still in flight, so the run cannot
+    be deleted yet. The endpoint answers 409: nothing is wrong with the
+    request, it has only come too early."""
+
+
 class GenerationService:
     """The on-demand executor and everything it validates first.
 
@@ -265,6 +272,13 @@ class GenerationService:
         self._pool: ThreadPoolExecutor | None = None
         self._closed = False
         self._lock = threading.Lock()
+        # Jobs submitted and not yet finished, per run, and the runs being
+        # deleted right now — both under `_lock`. The stored `generating`
+        # status cannot stand in for the first: nothing reconciles those
+        # rows after a restart, so a run whose server died mid-job would
+        # hold them forever and could never be deleted.
+        self._in_flight: dict[str, int] = {}
+        self._deleting: set[str] = set()
 
     def _ensure_pool(self) -> ThreadPoolExecutor:
         """Build the pool on first use, or hand back the one already built.
@@ -304,6 +318,45 @@ class GenerationService:
         if pool is not None:
             pool.shutdown(wait=wait)
 
+    def _claim(self, run_id: str) -> None:
+        """Count a job against `run_id`, unless the run is being deleted."""
+        with self._lock:
+            if run_id in self._deleting:
+                raise UnknownRun(f"No such run: {run_id}")
+            self._in_flight[run_id] = self._in_flight.get(run_id, 0) + 1
+
+    def _release(self, run_id: str) -> None:
+        with self._lock:
+            remaining = self._in_flight.get(run_id, 0) - 1
+            if remaining > 0:
+                self._in_flight[run_id] = remaining
+            else:
+                self._in_flight.pop(run_id, None)
+
+    @contextmanager
+    def excluding(self, run_id: str) -> Iterator[None]:
+        """Hold off new jobs for `run_id` while it is deleted.
+
+        Refuses with `RunBusy` if a job is already in flight: it would
+        write PNGs under the run's directory after the delete removed it.
+        Otherwise `submit` refuses the run until this exits. With
+        `submit`'s claim-then-check, every interleaving is covered: its
+        claim lands first and this refuses; this lands first and the claim
+        is refused; or the delete finishes first and `submit` finds no row.
+        """
+        with self._lock:
+            if self._in_flight.get(run_id, 0):
+                raise RunBusy(
+                    f"Memes are still generating for run {run_id}; wait for "
+                    "them to finish before deleting it."
+                )
+            self._deleting.add(run_id)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._deleting.discard(run_id)
+
     def submit(
         self, run_id: str, topic_id: str, request: GenerationRequest
     ) -> list[RenderRecord]:
@@ -317,7 +370,8 @@ class GenerationService:
 
         `MissingCheckpoint` propagates: a run that never analysed has
         nothing to brief from, which is a different answer from "no such
-        topic".
+        topic". `UnknownRun` means the run is being deleted, or already
+        has been.
         """
         # Before anything else, including the checkpoint read below: a
         # closed service must refuse on the request thread before a single
@@ -327,86 +381,102 @@ class GenerationService:
         # method, but obtaining it early is what makes the refusal happen
         # early.
         pool = self._ensure_pool()
-
-        settings = resolve_settings(self._store, self._settings, {})
-
-        # The analyse checkpoint holds *every* topic, not just the kept
-        # ones, which is exactly what the below-the-cut `generate` link
-        # needs — evaluate's payload would 404 a topic that was ranked and
-        # not selected.
-        topics = self._store.read_checkpoint(run_id, Stage.ANALYSE, Topic)
-        topic = next((t for t in topics if t.id == topic_id), None)
-        if topic is None:
-            raise UnknownTopic(f"No such topic in {run_id}: {topic_id}")
-
-        templates = load_templates(settings.templates_dir)
-        # None is "let the model choose", which names nothing to check.
-        if request.template_id is not None and request.template_id not in templates:
-            raise GenerationRefused(
-                f"template_id {request.template_id!r} is not in the library; "
-                f"choose one of: {', '.join(sorted(templates))}"
-            )
-
-        provider: LLMProvider | None = None
-        if isinstance(request, ManualGeneration):
-            # The same rule the model's answer is held to. Refusing here
-            # turns a bad request into a 400 rather than a failed tile the
-            # user has to open to understand.
-            problem = check_slots(request.template_id, request.caption_slots, templates)
-            if problem is not None:
-                raise GenerationRefused(problem)
-        else:
-            # On the request thread so a missing ANTHROPIC_API_KEY is a
-            # 400 with a message, not a row that silently fails a second
-            # later. Both providers hold thread-safe clients — `distil.py`
-            # already shares one across a thread pool.
-            provider = build_provider(settings)
-
-        records = self._seed(run_id, topic_id, request)
-        job = GenerationJob(
-            settings=settings,
-            request=request,
-            topic=topic,
-            templates=templates,
-            records=records,
-            provider=provider,
-        )
-        log.info(
-            "Queued %d %s render(s) for %s/%s on template %s",
-            len(records),
-            request.mode,
-            run_id,
-            topic_id,
-            request.template_id or "(the model's choice)",
-        )
+        # Claimed before anything is read, so a delete arriving from here
+        # on is refused rather than removing the run under this request.
+        self._claim(run_id)
+        handed_off = False
         try:
-            pool.submit(self._run, job)
-        except RuntimeError as exc:
-            # The closed-flag check in `_ensure_pool`, above, now catches
-            # the common case: a request arriving after `shutdown()` has
-            # already run. This handler is not dead code even so — it
-            # remains for the genuine interleaving this comment originally
-            # described: `_ensure_pool` releases `self._lock` before
-            # handing back the pool reference, so another thread's
-            # `shutdown()` can swap `self._pool` to `None` and shut the
-            # very pool we just got, in the gap between that return and
-            # this `.submit()`. The executor then refuses with
-            # `RuntimeError: cannot schedule new futures after shutdown` —
-            # but `_seed` has already committed the rows above, so without
-            # this handler they would sit in `"generating"` forever,
-            # indistinguishable from real in-flight work. Routing them
-            # through the same `_fail_unfinished` a raised job uses gives
-            # them the honest outcome. `self._store` is correct here, not a
-            # fresh `Store`: `submit` runs on the request thread, and
-            # `self._store` is that thread's connection — the same one
-            # `_seed` just wrote the rows through. Re-raising is still
-            # correct — a 202 for work that will never run would be a lie —
-            # but as `GenerationUnavailable`, so this comes out of the
-            # endpoint as the 503 it is rather than a 500 that reads as a
-            # broken server.
-            self._fail_unfinished(self._store, job, exc)
-            raise GenerationUnavailable(str(exc)) from exc
-        return records
+            if self._store.get_run(run_id) is None:
+                raise UnknownRun(f"No such run: {run_id}")
+
+            settings = resolve_settings(self._store, self._settings, {})
+
+            # The analyse checkpoint holds *every* topic, not just the kept
+            # ones, which is exactly what the below-the-cut `generate` link
+            # needs — evaluate's payload would 404 a topic that was ranked
+            # and not selected.
+            topics = self._store.read_checkpoint(run_id, Stage.ANALYSE, Topic)
+            topic = next((t for t in topics if t.id == topic_id), None)
+            if topic is None:
+                raise UnknownTopic(f"No such topic in {run_id}: {topic_id}")
+
+            templates = load_templates(settings.templates_dir)
+            # None is "let the model choose", which names nothing to check.
+            if request.template_id is not None and request.template_id not in templates:
+                raise GenerationRefused(
+                    f"template_id {request.template_id!r} is not in the library; "
+                    f"choose one of: {', '.join(sorted(templates))}"
+                )
+
+            provider: LLMProvider | None = None
+            if isinstance(request, ManualGeneration):
+                # The same rule the model's answer is held to. Refusing here
+                # turns a bad request into a 400 rather than a failed tile
+                # the user has to open to understand.
+                problem = check_slots(
+                    request.template_id, request.caption_slots, templates
+                )
+                if problem is not None:
+                    raise GenerationRefused(problem)
+            else:
+                # On the request thread so a missing ANTHROPIC_API_KEY is a
+                # 400 with a message, not a row that silently fails a second
+                # later. Both providers hold thread-safe clients —
+                # `distil.py` already shares one across a thread pool.
+                provider = build_provider(settings)
+
+            records = self._seed(run_id, topic_id, request)
+            job = GenerationJob(
+                settings=settings,
+                request=request,
+                topic=topic,
+                templates=templates,
+                records=records,
+                provider=provider,
+            )
+            log.info(
+                "Queued %d %s render(s) for %s/%s on template %s",
+                len(records),
+                request.mode,
+                run_id,
+                topic_id,
+                request.template_id or "(the model's choice)",
+            )
+            try:
+                pool.submit(self._run, run_id, job)
+            except RuntimeError as exc:
+                # The closed-flag check in `_ensure_pool`, above, now
+                # catches the common case: a request arriving after
+                # `shutdown()` has already run. This handler is not dead
+                # code even so — it remains for the genuine interleaving
+                # this comment originally described: `_ensure_pool`
+                # releases `self._lock` before handing back the pool
+                # reference, so another thread's `shutdown()` can swap
+                # `self._pool` to `None` and shut the very pool we just
+                # got, in the gap between that return and this `.submit()`.
+                # The executor then refuses with `RuntimeError: cannot
+                # schedule new futures after shutdown` — but `_seed` has
+                # already committed the rows above, so without this
+                # handler they would sit in `"generating"` forever,
+                # indistinguishable from real in-flight work. Routing them
+                # through the same `_fail_unfinished` a raised job uses
+                # gives them the honest outcome. `self._store` is correct
+                # here, not a fresh `Store`: `submit` runs on the request
+                # thread, and `self._store` is that thread's connection —
+                # the same one `_seed` just wrote the rows through.
+                # Re-raising is still correct — a 202 for work that will
+                # never run would be a lie — but as `GenerationUnavailable`,
+                # so this comes out of the endpoint as the 503 it is rather
+                # than a 500 that reads as a broken server.
+                self._fail_unfinished(self._store, job, exc)
+                raise GenerationUnavailable(str(exc)) from exc
+            handed_off = True
+            return records
+        finally:
+            # Once the pool has the job, `_run` releases it when the job
+            # ends. Every other way out of here must release it now.
+            if not handed_off:
+                self._release(run_id)
 
     def _seed(
         self, run_id: str, topic_id: str, request: GenerationRequest
@@ -470,7 +540,7 @@ class GenerationService:
         self._store.add_renders(records)
         return records
 
-    def _run(self, job: GenerationJob) -> None:
+    def _run(self, run_id: str, job: GenerationJob) -> None:
         """The worker side. Opens and closes its own `Store`.
 
         A connection per job rather than one per pool thread: `sqlite3`
@@ -484,7 +554,8 @@ class GenerationService:
         what `resolve_settings` resolved it for — but the database is the
         same file for every job in this service, so its location comes from
         `self._store` rather than from `job.settings`, which no longer
-        carries one.
+        carries one. Releases the run's claim when the job ends, however it
+        ends, so `excluding` stops refusing its deletion.
         """
         store = Store(self._store.path)
         try:
@@ -494,6 +565,7 @@ class GenerationService:
             self._fail_unfinished(store, job, exc)
         finally:
             store.close()
+            self._release(run_id)
 
     def _fail_unfinished(
         self, store: Store, job: GenerationJob, exc: Exception

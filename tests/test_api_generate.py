@@ -316,3 +316,16 @@ def test_a_closed_service_writes_no_render_row(tmp_path):
 
     detail = client.get(f"/api/runs/{RUN}/topics/airport-cat").json()
     assert detail["renders"] == []
+
+
+def test_generating_for_a_run_that_is_being_deleted_is_a_404(tmp_path):
+    client = _client(tmp_path)
+
+    with app_of(client).state.generator.excluding(RUN):
+        response = client.post(
+            _url(),
+            json={"mode": "manual", "template_id": TEMPLATE, "caption_slots": SLOTS},
+        )
+
+    assert response.status_code == 404
+    assert client.get(f"/api/runs/{RUN}/topics/airport-cat").json()["renders"] == []
