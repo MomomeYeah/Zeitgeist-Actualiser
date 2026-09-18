@@ -16,7 +16,7 @@ from zeitgeist.runner import (
     RunRequest,
     RunService,
 )
-from zeitgeist.store import Store
+from zeitgeist.store import Store, UnknownRun
 
 
 def _settings(tmp_path) -> Settings:
@@ -1057,3 +1057,87 @@ def test_enqueue_opens_the_row_and_registers_the_run_together(tmp_path):
     finally:
         gate.release.set()
         service.shutdown()
+
+
+def test_deleting_a_finished_run_removes_its_row(tmp_path):
+    store = _open_store(tmp_path)
+    store.start_run("finished", make_run_config())
+    store.abort_run("finished")
+    service = RunService(_settings(tmp_path), store)
+
+    service.delete("finished")
+
+    assert store.get_run("finished") is None
+    store.close()
+
+
+def test_deleting_an_unknown_run_is_refused(tmp_path):
+    store = _open_store(tmp_path)
+    service = RunService(_settings(tmp_path), store)
+
+    with pytest.raises(UnknownRun):
+        service.delete("nope")
+    store.close()
+
+
+def test_deleting_the_executing_run_is_refused_and_leaves_it(tmp_path):
+    """Its worker is still writing checkpoints and stage rows; deleting
+    the row under it would fail every one of those writes on the foreign
+    key."""
+    gate = _Gate()
+    store = _open_store(tmp_path)
+    service = RunService(_settings(tmp_path), store, execute=gate)
+    service.start()
+    try:
+        run_id = service.enqueue(RunRequest()).run_id
+        assert gate.entered.wait(timeout=5)
+
+        with pytest.raises(RunAlreadyActive):
+            service.delete(run_id)
+
+        assert store.get_run(run_id) is not None
+    finally:
+        gate.release.set()
+        service.shutdown()
+    store.close()
+
+
+def test_deleting_a_waiting_run_is_refused_and_leaves_it(tmp_path):
+    """A queued run's row exists before the worker reaches it, and the
+    worker will start writing to it the moment it does."""
+    gate = _Gate()
+    store = _open_store(tmp_path)
+    service = RunService(_settings(tmp_path), store, execute=gate)
+    service.start()
+    try:
+        service.enqueue(RunRequest())
+        assert gate.entered.wait(timeout=5)
+        waiting = service.enqueue(RunRequest()).run_id
+
+        with pytest.raises(RunAlreadyActive):
+            service.delete(waiting)
+
+        assert store.get_run(waiting) is not None
+    finally:
+        gate.release.set()
+        service.shutdown()
+    store.close()
+
+
+def test_resuming_a_deleted_run_is_refused_rather_than_recreating_it(tmp_path):
+    """`start_run` is an upsert. Without the check, a resume that lost the
+    race to a delete opens a fresh row with no checkpoints behind it — the
+    deleted run back as an empty shell."""
+    store = _open_store(tmp_path)
+    store.start_run("gone", make_run_config())
+    service = RunService(_settings(tmp_path), store)
+    service.delete("gone")
+
+    with pytest.raises(UnknownRun):
+        service.enqueue(
+            RunRequest(run_id="gone", start_at=Stage.EVALUATE), resuming=True
+        )
+
+    assert store.get_run("gone") is None
+    assert service.active() == ActiveRuns(current=None, queued=[])
+    store.close()
