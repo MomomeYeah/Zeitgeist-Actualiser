@@ -909,6 +909,39 @@ def test_a_run_is_not_left_excluded_forever_if_the_workers_store_fails_to_open(
     store.close()
 
 
+def test_a_job_whose_store_fails_to_open_leaves_its_renders_failed(
+    tmp_path, monkeypatch
+):
+    """Left `generating`, the seeded rows spin on topic detail forever —
+    it polls while any render is generating — with nothing to tell them
+    apart from work still in progress. They are failed through the
+    service's own store, which is already open; only the worker's
+    construction is replaced, for the reason the test above gives.
+
+    The service's store is opened with `check_same_thread=False`, as
+    `create_app` opens the app's: the rows are failed from the worker
+    thread, and a thread-bound connection would refuse that write."""
+    store = Store(tmp_path / "z.db", check_same_thread=False)
+    store.init_schema()
+    store.start_run("run-1", make_run_config())
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    def explode(path):
+        raise RuntimeError("the worker's database could not be opened")
+
+    monkeypatch.setattr("zeitgeist.generation.Store", explode)
+
+    [record] = service.submit("run-1", "airport-cat", MANUAL)
+    service.shutdown()  # Waits for the job, however it ends.
+
+    failed = store.get_render(record.id)
+    assert failed is not None
+    assert failed.status == "failed"
+    assert failed.error == "RuntimeError: the worker's database could not be opened"
+    store.close()
+
+
 def test_excluding_releases_the_run_when_the_guarded_delete_fails(tmp_path):
     """The delete `excluding` guards can itself be refused — the run turned
     out to be live. That refusal must not leave the run excluded from
@@ -924,6 +957,29 @@ def test_excluding_releases_the_run_when_the_guarded_delete_fails(tmp_path):
     ):
         raise RuntimeError("the guarded delete failed")
 
+    records = service.submit("run-1", "airport-cat", MANUAL)
+
+    assert [r.run_id for r in records] == ["run-1"]
+    service.shutdown()
+    store.close()
+
+
+def test_overlapping_exclusions_of_one_run_hold_until_the_last_exits(tmp_path):
+    """Two deletes of the same run at once — two tabs. The first to finish
+    must not reopen the run to generation while the second is still inside
+    its guard: the exclusion is counted, not a flag either one can clear."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    with service.excluding("run-1"):
+        with service.excluding("run-1"):
+            pass
+
+        with pytest.raises(UnknownRun):
+            service.submit("run-1", "airport-cat", MANUAL)
+
+    # Both have exited, so the run is open to generation again.
     records = service.submit("run-1", "airport-cat", MANUAL)
 
     assert [r.run_id for r in records] == ["run-1"]

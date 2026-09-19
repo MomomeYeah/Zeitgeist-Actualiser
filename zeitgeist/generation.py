@@ -242,6 +242,17 @@ class RunBusy(RuntimeError):
     request, it has only come too early."""
 
 
+def _uncount(counts: dict[str, int], run_id: str) -> None:
+    """Take one off `run_id`'s count, dropping the key at zero so a run with
+    nothing left counted reads the same as one never counted at all.
+    Callers hold `GenerationService._lock`."""
+    remaining = counts.get(run_id, 0) - 1
+    if remaining > 0:
+        counts[run_id] = remaining
+    else:
+        counts.pop(run_id, None)
+
+
 class GenerationService:
     """The on-demand executor and everything it validates first.
 
@@ -272,13 +283,16 @@ class GenerationService:
         self._pool: ThreadPoolExecutor | None = None
         self._closed = False
         self._lock = threading.Lock()
-        # Jobs submitted and not yet finished, per run, and the runs being
-        # deleted right now — both under `_lock`. The stored `generating`
-        # status cannot stand in for the first: nothing reconciles those
-        # rows after a restart, so a run whose server died mid-job would
-        # hold them forever and could never be deleted.
+        # Jobs submitted and not yet finished, per run, and deletes of each
+        # run in progress right now — both counts, both under `_lock`. The
+        # stored `generating` status cannot stand in for the first: nothing
+        # reconciles those rows after a restart, so a run whose server died
+        # mid-job would hold them forever and could never be deleted. The
+        # second is a count rather than a set because two tabs can delete
+        # the same run at once, and the first to finish must not reopen it
+        # to generation while the second is still inside `excluding`.
         self._in_flight: dict[str, int] = {}
-        self._deleting: set[str] = set()
+        self._deleting: dict[str, int] = {}
 
     def _ensure_pool(self) -> ThreadPoolExecutor:
         """Build the pool on first use, or hand back the one already built.
@@ -326,12 +340,9 @@ class GenerationService:
             self._in_flight[run_id] = self._in_flight.get(run_id, 0) + 1
 
     def _release(self, run_id: str) -> None:
+        """Uncount a finished job, so `excluding` stops refusing the run."""
         with self._lock:
-            remaining = self._in_flight.get(run_id, 0) - 1
-            if remaining > 0:
-                self._in_flight[run_id] = remaining
-            else:
-                self._in_flight.pop(run_id, None)
+            _uncount(self._in_flight, run_id)
 
     @contextmanager
     def excluding(self, run_id: str) -> Iterator[None]:
@@ -350,12 +361,12 @@ class GenerationService:
                     f"Memes are still generating for run {run_id}; wait for "
                     "them to finish before deleting it."
                 )
-            self._deleting.add(run_id)
+            self._deleting[run_id] = self._deleting.get(run_id, 0) + 1
         try:
             yield
         finally:
             with self._lock:
-                self._deleting.discard(run_id)
+                _uncount(self._deleting, run_id)
 
     def submit(
         self, run_id: str, topic_id: str, request: GenerationRequest
@@ -561,19 +572,21 @@ class GenerationService:
         call, so no failure here can leave a run permanently excluded.
 
         Nothing reads the `Future` this runs in, so a `Store(...)` failure
-        that isn't logged here vanishes with no trace anywhere. There is no
-        `store` to fail the seeded rows through when this happens, so
-        unlike the `_generate` failure below, that is left for whoever
-        opens the run next — logging is the whole of this handler.
+        that isn't logged here vanishes with no trace anywhere. The seeded
+        rows are then failed through the service's own `self._store`, which
+        is already open and safe to share across threads — the same store
+        `submit` fails them through when the pool refuses a job. Left
+        `generating`, they would spin on topic detail forever.
         """
         try:
             try:
                 store = Store(self._store.path)
-            except Exception:  # noqa: BLE001 - logged; no store to fail the rows with
+            except Exception as exc:  # noqa: BLE001 - one job's failure is a row
                 log.exception(
                     "Generation job for topic %s failed to open its Store",
                     job.topic.id,
                 )
+                self._fail_unfinished(self._store, job, exc)
                 return
             try:
                 self._generate(job, store)

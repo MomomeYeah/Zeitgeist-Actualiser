@@ -145,17 +145,25 @@ reconciles those rows after a restart, so a run whose server died mid-job
 would hold `generating` rows forever and could never be deleted. The
 service's own in-memory state is the truth, so it tracks it:
 
-- `_in_flight: dict[str, int]` — jobs per run, and `_deleting: set[str]`,
-  both guarded by the existing `_lock`.
+- `_in_flight: dict[str, int]` — jobs per run — and
+  `_deleting: dict[str, int]` — deletes of each run in progress — both
+  guarded by the existing `_lock`. `_deleting` is a count rather than a set
+  because two tabs can delete the same run at once, and the first to finish
+  must not reopen it to generation while the second is still inside
+  `excluding`.
 - `submit` increments `_in_flight[run_id]` after `_ensure_pool` and before
   anything else, refusing with `UnknownRun` (→ 404) if `run_id` is in
   `_deleting`. Having claimed the run, it confirms `store.get_run(run_id)`
   is not `None`, raising `UnknownRun` if it is. Every path out of `submit`
   that does not hand the job to the pool decrements it again.
-- `_run` decrements in its `finally`, removing the key at zero.
+- `_run` decrements in an outer `finally` that also covers opening the
+  worker's own `Store`, removing the key at zero. If that `Store` fails to
+  open, the job's seeded rows are failed through the service's already-open
+  store, so they do not sit `generating` on topic detail forever.
 - `excluding(run_id)` is a context manager: under `_lock`, raise
-  `RunBusy` (→ 409) if `_in_flight.get(run_id)` is non-zero, otherwise add
-  `run_id` to `_deleting`; on exit, discard it.
+  `RunBusy` (→ 409) if `_in_flight.get(run_id)` is non-zero, otherwise
+  increment `_deleting[run_id]`; on exit, decrement it, removing the key at
+  zero.
 
 Claim first, then check, is what makes this airtight. Either `submit`'s
 claim lands first, and `excluding` refuses the delete; or `excluding` lands
