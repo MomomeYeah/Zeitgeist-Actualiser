@@ -62,7 +62,7 @@ def _settings(tmp_path) -> Settings:
     )
 
 
-def _store(tmp_path) -> Store:
+def _store(tmp_path, *, shared: bool = False) -> Store:
     """A fresh store with `run-1` — the run every test in this file
     generates against — already opened.
 
@@ -70,8 +70,14 @@ def _store(tmp_path) -> Store:
     enforced, so a `generating` row for a run nobody opened is refused.
     Production only ever generates against a run that exists: the endpoint
     404s an unknown one before `submit` is reached.
+
+    `shared` opens it with `check_same_thread=False`, as `create_app` opens
+    the app's. A test whose worker writes through the service's own store —
+    the path taken when the worker cannot open one of its own — needs it,
+    or that write is refused on the wrong thread and lost in a `Future`
+    nobody reads.
     """
-    store = Store(tmp_path / "z.db")
+    store = Store(tmp_path / "z.db", check_same_thread=not shared)
     store.init_schema()
     store.start_run("run-1", make_run_config())
     return store
@@ -886,7 +892,7 @@ def test_a_run_is_not_left_excluded_forever_if_the_workers_store_fails_to_open(
     runs in, so a silent return here would make the job vanish without a
     trace.
     """
-    store = _store(tmp_path)
+    store = _store(tmp_path, shared=True)
     _seed_topics(store, make_topic("airport-cat"))
     service = _service(tmp_path, store, generate=RecordingGenerate())
 
@@ -916,14 +922,8 @@ def test_a_job_whose_store_fails_to_open_leaves_its_renders_failed(
     it polls while any render is generating — with nothing to tell them
     apart from work still in progress. They are failed through the
     service's own store, which is already open; only the worker's
-    construction is replaced, for the reason the test above gives.
-
-    The service's store is opened with `check_same_thread=False`, as
-    `create_app` opens the app's: the rows are failed from the worker
-    thread, and a thread-bound connection would refuse that write."""
-    store = Store(tmp_path / "z.db", check_same_thread=False)
-    store.init_schema()
-    store.start_run("run-1", make_run_config())
+    construction is replaced, for the reason the test above gives."""
+    store = _store(tmp_path, shared=True)
     _seed_topics(store, make_topic("airport-cat"))
     service = _service(tmp_path, store, generate=RecordingGenerate())
 

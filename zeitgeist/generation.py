@@ -574,9 +574,11 @@ class GenerationService:
         Nothing reads the `Future` this runs in, so a `Store(...)` failure
         that isn't logged here vanishes with no trace anywhere. The seeded
         rows are then failed through the service's own `self._store`, which
-        is already open and safe to share across threads — the same store
-        `submit` fails them through when the pool refuses a job. Left
-        `generating`, they would spin on topic detail forever.
+        is already open — the same store `submit` fails them through when
+        the pool refuses a job. Left `generating`, they would spin on topic
+        detail forever. This is a write from the worker thread, so it
+        relies on `self._store` being shareable across threads, which
+        `create_app` guarantees by opening it with `check_same_thread=False`.
         """
         try:
             try:
