@@ -40,6 +40,11 @@ Deleting the one `run_records` row therefore removes the run's checkpoints,
 stage rows, ranked topics, renders, log lines and per-platform scores in
 the same statement. Nothing needs a hand-written cascade.
 
+The per-platform scores are `topic_scores`, which `Store.previous_sub_scores`
+reads to score the next run's momentum. Deleting the most recent run
+therefore changes what the next run scores against, not just what this run's
+own history shows.
+
 On disk a run is `output/<run_id>/`, which holds only `renders/` — each
 render's full PNG and thumbnail, laid out by
 `zeitgeist.renders.render_paths`. Removing the whole directory rather than
@@ -190,9 +195,10 @@ In `web/src/api/queries.ts`, beside `useDeleteRender` and shaped like it:
   navigation.** Its own run query is still mounted when the mutation
   succeeds; refetching it would 404 and render the missing state for a
   frame. Excluding the run's own keys from the refetch is what prevents
-  it, and marking them stale is what makes pressing Back afterwards ask
-  the server again — and get "No such run." — rather than draw the deleted
-  run from cache.
+  it. Marking them stale doesn't stop Back from drawing the deleted run
+  from cache — it still does, for one round trip — but it is what makes
+  the page ask the server again on that round trip, which answers 404 and
+  replaces the cached run with "No such run."
 
 ### The Delete action
 

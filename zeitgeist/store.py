@@ -369,6 +369,12 @@ class Store:
         `ON DELETE CASCADE`, and `__init__` turns enforcement on. The run's
         files are not this method's business — see
         `zeitgeist.renders.delete_run_files`.
+
+        The cascade takes `topic_scores` with it, which `previous_sub_scores`
+        reads to score the next run's momentum. Deleting the most recent run
+        therefore changes what the next run scores against — its topics fall
+        back to whatever run is now most recent, or to no prior sub-score at
+        all.
         """
         cursor = self._conn.execute(
             "DELETE FROM run_records WHERE run_id = ?", (run_id,)

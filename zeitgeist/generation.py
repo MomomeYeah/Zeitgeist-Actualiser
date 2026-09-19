@@ -559,9 +559,22 @@ class GenerationService:
         opening `store` itself raises, or if `store.close()` does: the
         outer `finally` covers the whole body, not just the generation
         call, so no failure here can leave a run permanently excluded.
+
+        Nothing reads the `Future` this runs in, so a `Store(...)` failure
+        that isn't logged here vanishes with no trace anywhere. There is no
+        `store` to fail the seeded rows through when this happens, so
+        unlike the `_generate` failure below, that is left for whoever
+        opens the run next — logging is the whole of this handler.
         """
         try:
-            store = Store(self._store.path)
+            try:
+                store = Store(self._store.path)
+            except Exception:  # noqa: BLE001 - logged; no store to fail the rows with
+                log.exception(
+                    "Generation job for topic %s failed to open its Store",
+                    job.topic.id,
+                )
+                return
             try:
                 self._generate(job, store)
             except Exception as exc:  # noqa: BLE001 - one job's failure is a row

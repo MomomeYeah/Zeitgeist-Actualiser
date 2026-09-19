@@ -412,8 +412,12 @@ export function useDeleteRender() {
  * page is still mounted when this succeeds — it navigates away in the
  * caller's `onSuccess`, which runs after this one — and a refetch of a run
  * that no longer exists answers 404, which drew "No such run." for a frame
- * on the way out. Stale is still needed: without it, pressing Back within
- * the stale time drew the deleted run from cache, Delete button and all.
+ * on the way out. Marking stale doesn't stop Back from drawing the deleted
+ * run from cache — it still does, for one round trip. What it buys is that
+ * round trip: Back re-asks the server instead of serving the cached run
+ * indefinitely, the server answers 404, and "No such run." replaces it (a
+ * Delete clicked in that moment gets the same 404, which counts as
+ * success).
  *
  * Everything else under `["runs"]` — the list and `active` — is refreshed,
  * with a predicate that leaves this run's keys alone, and so is the topics

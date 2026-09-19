@@ -1,3 +1,4 @@
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -868,7 +869,7 @@ def test_a_run_can_be_excluded_once_its_jobs_have_finished(tmp_path):
 
 
 def test_a_run_is_not_left_excluded_forever_if_the_workers_store_fails_to_open(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, caplog
 ):
     """`_run` claims the run in `submit` and must release it "however it
     ends" — including a failure before there is even a job to run.
@@ -880,6 +881,10 @@ def test_a_run_is_not_left_excluded_forever_if_the_workers_store_fails_to_open(
     `self._store` — so only the worker's construction inside `_run` is
     affected; `submit` still runs to completion and hands the job to the
     pool.
+
+    The failure must also be logged: nothing else reads the `Future` this
+    runs in, so a silent return here would make the job vanish without a
+    trace.
     """
     store = _store(tmp_path)
     _seed_topics(store, make_topic("airport-cat"))
@@ -890,8 +895,14 @@ def test_a_run_is_not_left_excluded_forever_if_the_workers_store_fails_to_open(
 
     monkeypatch.setattr("zeitgeist.generation.Store", explode)
 
-    service.submit("run-1", "airport-cat", MANUAL)
-    service.shutdown()  # Waits for the job, however it ends.
+    with caplog.at_level(logging.ERROR, logger="zeitgeist.generation"):
+        service.submit("run-1", "airport-cat", MANUAL)
+        service.shutdown()  # Waits for the job, however it ends.
+
+    assert any(
+        record.levelno == logging.ERROR and "airport-cat" in record.getMessage()
+        for record in caplog.records
+    )
 
     with service.excluding("run-1"):
         pass
