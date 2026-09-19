@@ -140,10 +140,13 @@ flight fills in its `generating` rows and writes PNGs under
 run directory after `delete_run_files` removed it, and nothing would ever
 reclaim it.
 
-The stored `generating` status cannot answer "is a job running": nothing
-reconciles those rows after a restart, so a run whose server died mid-job
-would hold `generating` rows forever and could never be deleted. The
-service's own in-memory state is the truth, so it tracks it:
+The stored `generating` status cannot answer "is a job running": it is a
+row's state, not a job's. Startup reconciliation
+(`Store.reconcile_generating_renders`, beside `reconcile_interrupted`)
+fails every `generating` row, since nothing survives a restart to finish
+it — but a row whose job died within the running process stays
+`generating` until then, and would block the run's deletion. The service's
+own in-memory state is the truth, so it tracks it:
 
 - `_in_flight: dict[str, int]` — jobs per run — and
   `_deleting: dict[str, int]` — deletes of each run in progress — both

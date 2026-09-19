@@ -340,6 +340,33 @@ class Store:
             )
         return [row[0] for row in rows]
 
+    def reconcile_generating_renders(self) -> list[str]:
+        """Mark every render still `generating` as `failed`, returning the
+        ids.
+
+        Runs on server startup, beside `reconcile_interrupted` and for the
+        same reason: the generation pool and the run queue are both
+        in-memory and die with the process, so a row left `generating` has
+        no job behind it. Topic detail polls while any render is
+        generating, so left alone it would poll forever, drawing a tile
+        indistinguishable from work still in progress.
+
+        The error says what happened rather than leaving the failed tile
+        blank; a failed row always carries one.
+        """
+        with self._conn:
+            rows = self._conn.execute(
+                "SELECT id FROM renders WHERE status = 'generating'"
+            ).fetchall()
+            if not rows:
+                return []
+            self._conn.execute(
+                "UPDATE renders SET status = 'failed', error = ? "
+                "WHERE status = 'generating'",
+                ("The server stopped before this render finished.",),
+            )
+        return [row[0] for row in rows]
+
     def abort_run(self, run_id: str) -> None:
         """Record that a run was stopped or aborted by the user.
 

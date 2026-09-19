@@ -84,6 +84,11 @@ def create_app(
             len(interrupted),
             ", ".join(interrupted),
         )
+    # Before the generation service exists, so nothing can seed a new
+    # `generating` row that this would wrongly fail.
+    orphaned = store.reconcile_generating_renders()
+    if orphaned:
+        log.info("Marked %d render(s) failed after an unclean shutdown", len(orphaned))
 
     # The same Store as app.state.store, not a second connection: enqueue
     # opens a run's row on the request thread, through this Store, before

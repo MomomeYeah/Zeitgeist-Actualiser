@@ -285,12 +285,13 @@ class GenerationService:
         self._lock = threading.Lock()
         # Jobs submitted and not yet finished, per run, and deletes of each
         # run in progress right now — both counts, both under `_lock`. The
-        # stored `generating` status cannot stand in for the first: nothing
-        # reconciles those rows after a restart, so a run whose server died
-        # mid-job would hold them forever and could never be deleted. The
-        # second is a count rather than a set because two tabs can delete
-        # the same run at once, and the first to finish must not reopen it
-        # to generation while the second is still inside `excluding`.
+        # stored `generating` status does not stand in for the first: it is
+        # a row's state, not a job's, and is only reconciled when the
+        # server restarts — a row whose job died in this process would
+        # block the run's deletion until then. The second is a count rather
+        # than a set because two tabs can delete the same run at once, and
+        # the first to finish must not reopen it to generation while the
+        # second is still inside `excluding`.
         self._in_flight: dict[str, int] = {}
         self._deleting: dict[str, int] = {}
 
@@ -576,9 +577,11 @@ class GenerationService:
         rows are then failed through the service's own `self._store`, which
         is already open — the same store `submit` fails them through when
         the pool refuses a job. Left `generating`, they would spin on topic
-        detail forever. This is a write from the worker thread, so it
-        relies on `self._store` being shareable across threads, which
-        `create_app` guarantees by opening it with `check_same_thread=False`.
+        detail until the server next restarts and
+        `Store.reconcile_generating_renders` fails them. This is a write
+        from the worker thread, so it relies on `self._store` being
+        shareable across threads, which `create_app` guarantees by opening
+        it with `check_same_thread=False`.
         """
         try:
             try:

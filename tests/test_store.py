@@ -414,6 +414,46 @@ def test_reconciling_preserves_the_checkpoints_a_resume_needs(tmp_path):
     assert store.run_topics("20260905T120000Z")
 
 
+def test_reconciling_fails_every_render_left_generating(tmp_path):
+    """Nothing survives a restart to finish them — the generation pool and
+    the run queue are both in-memory — so a `generating` row found on
+    startup is an orphan. Left alone, topic detail polls it forever, with
+    nothing to tell it apart from work still in progress."""
+    store = _store(tmp_path, "run-1", "run-2")
+    store.add_render(make_render_record("a", run_id="run-1", status="generating"))
+    store.add_render(make_render_record("b", run_id="run-2", status="generating"))
+
+    changed = store.reconcile_generating_renders()
+
+    assert sorted(changed) == ["a", "b"]
+    for render_id in ("a", "b"):
+        record = store.get_render(render_id)
+        assert record is not None
+        assert record.status == "failed"
+        # A failed tile shows its error; a blank one reads as a bug.
+        assert record.error
+
+
+def test_reconciling_renders_leaves_finished_ones_alone(tmp_path):
+    """This runs on every startup, over the whole table. A predicate
+    matching more than `status = 'generating'` would fail every meme the
+    user has ever made, or overwrite the reason an earlier one failed."""
+    store = _store(tmp_path, "run-1")
+    store.add_render(make_render_record("ready", run_id="run-1", status="ready"))
+    store.add_render(
+        make_render_record("failed", run_id="run-1", status="failed", error="no fit")
+    )
+
+    assert store.reconcile_generating_renders() == []
+
+    ready = store.get_render("ready")
+    failed = store.get_render("failed")
+    assert ready is not None
+    assert (ready.status, ready.error) == ("ready", None)
+    assert failed is not None
+    assert (failed.status, failed.error) == ("failed", "no fit")
+
+
 def test_get_run_returns_none_for_a_run_that_does_not_exist(tmp_path):
     assert _store(tmp_path).get_run("nope") is None
 
