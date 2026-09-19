@@ -620,10 +620,12 @@ def test_resuming_a_run_twice_is_a_409_the_second_time(tmp_path):
 
 
 def test_a_resume_that_loses_the_race_to_a_delete_is_a_404(tmp_path, monkeypatch):
-    """The interleaving the lock exists for, reproduced exactly: the
+    """The interleaving `enqueue`'s `resuming` re-check exists for: the
     delete lands after `resume_run`'s own `_run_or_404` has passed and
     before `enqueue` opens the row. Real `delete`, real `enqueue` — only
-    the moment is chosen."""
+    the moment is chosen. The two run one after the other here, so this
+    does not exercise the lock they share; see
+    `test_a_delete_cannot_land_inside_a_resumes_row_write` for that."""
     client = seeded_client(
         tmp_path,
         runs=[

@@ -938,7 +938,10 @@ def test_a_job_whose_store_fails_to_open_leaves_its_renders_failed(
     failed = store.get_render(record.id)
     assert failed is not None
     assert failed.status == "failed"
-    assert failed.error == "RuntimeError: the worker's database could not be opened"
+    # The store-open failure, not a later one — without pinning how
+    # `_fail_unfinished` formats an error, which is not this test's subject.
+    assert failed.error is not None
+    assert "the worker's database could not be opened" in failed.error
     store.close()
 
 

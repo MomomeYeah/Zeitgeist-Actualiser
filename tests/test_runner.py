@@ -1141,3 +1141,61 @@ def test_resuming_a_deleted_run_is_refused_rather_than_recreating_it(tmp_path):
     assert store.get_run("gone") is None
     assert service.active() == ActiveRuns(current=None, queued=[])
     store.close()
+
+
+def test_a_delete_cannot_land_inside_a_resumes_row_write(tmp_path):
+    """`delete` takes the lock `enqueue` holds across its row write. Without
+    it, a delete arriving while a resume is inside that lock — row
+    re-opened, run not yet registered — finds a run that is not live and
+    deletes the row out from under it, and the resume then queues a run
+    with no row at all.
+
+    Asserted as `test_enqueue_opens_the_row_and_registers_the_run_together`
+    asserts `active()`: a thread calling `delete` from inside `start_run`
+    must still be blocked when the write returns, and once `enqueue` lets
+    go it must find the run live and refuse.
+    """
+    seed = Store(tmp_path / "z.db")
+    seed.init_schema()
+    seed.start_run("old", make_run_config())
+    seed.close()
+
+    gate = _Gate()
+    outcome: list[str] = []
+    deleters: list[threading.Thread] = []
+
+    def try_delete() -> None:
+        try:
+            service.delete("old")
+        except RunAlreadyActive:
+            outcome.append("refused")
+        else:
+            outcome.append("deleted")
+
+    def peek() -> None:
+        deleter = threading.Thread(target=try_delete)
+        deleters.append(deleter)
+        deleter.start()
+        # Long enough for an unlocked `delete` — one indexed DELETE — to
+        # have finished. The assertion is on the thread, not the wait: it
+        # is blocked on `RunService._lock`, which `enqueue` still holds.
+        deleter.join(timeout=0.5)
+        assert deleter.is_alive()
+
+    store = _PeekingStore(tmp_path / "z.db", peek)
+    store.init_schema()
+    service = RunService(_settings(tmp_path), store, execute=gate)
+    service.start()
+    try:
+        service.enqueue(
+            RunRequest(run_id="old", start_at=Stage.EVALUATE), resuming=True
+        )
+        for deleter in deleters:
+            deleter.join(timeout=5)
+
+        assert outcome == ["refused"]
+        assert store.get_run("old") is not None
+    finally:
+        gate.release.set()
+        service.shutdown()
+    store.close()

@@ -1140,4 +1140,38 @@ describe("useDeleteRun", () => {
     await waitFor(() => expect(result.current.error?.status).toBe(409));
     expect(result.current.error?.detail).toBe("Memes are still generating");
   });
+
+  it("marks the run's render records stale without refetching them", async () => {
+    // A meme opened from this run went with it. Left fresh, the app's 30s
+    // staleTime lets Back draw it from cache; refetched now, it 404s for a
+    // page nobody is looking at. Every later GET is held open, so an
+    // unwanted refetch stays visible as `fetchStatus: "fetching"`.
+    let renderCalls = 0;
+    server.use(
+      http.get("/api/renders/:renderId", async () => {
+        renderCalls += 1;
+        if (renderCalls > 1) await new Promise(() => undefined);
+        return HttpResponse.json(makeRenderRecord({ id: "gone", runId: RUN }));
+      }),
+      http.delete("/api/runs/:runId", () => new HttpResponse(null, { status: 204 })),
+    );
+
+    const { result } = renderHook(
+      () => ({
+        render: useRender("gone"),
+        remove: useDeleteRun(RUN),
+        client: useQueryClient(),
+      }),
+      { wrapper: renderWithProviders.Wrapper },
+    );
+    await waitFor(() => expect(result.current.render.isSuccess).toBe(true));
+
+    await act(async () => {
+      await result.current.remove.mutateAsync();
+    });
+
+    const state = result.current.client.getQueryState(queryKeys.render("gone"));
+    expect(state?.fetchStatus).toBe("idle");
+    expect(state?.isInvalidated).toBe(true);
+  });
 });
