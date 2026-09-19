@@ -402,6 +402,48 @@ export function useDeleteRender() {
 }
 
 /**
+ * Delete a run — its rows, its memes and its directory, server-side.
+ *
+ * A 404 counts as done, as it does for a render: deleted in another tab is
+ * the end state asked for, and the page must still leave rather than sit
+ * there with an error nobody can act on.
+ *
+ * The run's own queries are marked stale but not refetched. The detail
+ * page is still mounted when this succeeds — it navigates away in the
+ * caller's `onSuccess`, which runs after this one — and a refetch of a run
+ * that no longer exists answers 404, which drew "No such run." for a frame
+ * on the way out. Stale is still needed: without it, pressing Back within
+ * the stale time drew the deleted run from cache, Delete button and all.
+ *
+ * Everything else under `["runs"]` — the list and `active` — is refreshed,
+ * with a predicate that leaves this run's keys alone, and so is the topics
+ * index, which drew this run's topics. Render records are marked stale the
+ * way `useDeleteRender` marks its own.
+ */
+export function useDeleteRun(runId: string) {
+  const client = useQueryClient();
+  return useMutation<void, ApiError, void>({
+    mutationFn: async () => {
+      try {
+        await apiDelete(`/api/runs/${encodeURIComponent(runId)}`);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return;
+        throw error;
+      }
+    },
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.run(runId), refetchType: "none" });
+      void client.invalidateQueries({
+        queryKey: ["runs"],
+        predicate: (query) => query.queryKey[1] !== runId,
+      });
+      void client.invalidateQueries({ queryKey: ["topics"] });
+      void client.invalidateQueries({ queryKey: ["renders"], refetchType: "none" });
+    },
+  });
+}
+
+/**
  * The run's live log, and the nudge that keeps the rest of the screen
  * current.
  *
