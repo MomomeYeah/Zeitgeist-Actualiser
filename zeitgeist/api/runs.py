@@ -1,10 +1,10 @@
 """Everything scoped to one run: the list, the detail, the ranking, one
-topic's dossier, and the log.
+topic's dossier, the log — and deleting it.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
-from zeitgeist.api.app import get_store
+from zeitgeist.api.app import get_generator, get_runner, get_settings, get_store
 from zeitgeist.api.schemas import (
     RankedTopic,
     ReplyOut,
@@ -14,9 +14,13 @@ from zeitgeist.api.schemas import (
     TopicDetail,
     TopicRecurrence,
 )
+from zeitgeist.config import Settings
+from zeitgeist.generation import GenerationService, RunBusy
 from zeitgeist.models import Topic, TrendEvidence
 from zeitgeist.records import ORDER, LogLine, RunRecordRow, Stage
-from zeitgeist.store import MissingCheckpoint, Store, run_cursor
+from zeitgeist.renders import delete_run_files
+from zeitgeist.runner import RunAlreadyActive, RunService
+from zeitgeist.store import MissingCheckpoint, Store, UnknownRun, run_cursor
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -89,7 +93,37 @@ def read_run(run_id: str, store: Store = Depends(get_store)) -> RunDetail:
         run=run,
         stages=store.stages_for_run(run_id),
         resume_stage=resume_stage(store, run_id),
+        render_count=sum(store.render_counts(run_id).values()),
     )
+
+
+@router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_run(
+    run_id: str,
+    runner: RunService = Depends(get_runner),
+    generator: GenerationService = Depends(get_generator),
+    settings: Settings = Depends(get_settings),
+) -> Response:
+    """204 and no body. The row goes first, cascading to everything that
+    hangs off it, then the run's directory.
+
+    Refused with a 409 while anything is still writing to the run: the run
+    worker, if it is executing or queued, or an on-demand generation job.
+    `excluding` holds new generation jobs off for as long as the row delete
+    takes; `RunService.delete` does the liveness check and the delete under
+    the lock `enqueue` takes, so a resume cannot interleave. The directory
+    is removed after both are released — the run no longer exists by then,
+    so nothing can write to it again.
+    """
+    try:
+        with generator.excluding(run_id):
+            runner.delete(run_id)
+    except UnknownRun as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (RunAlreadyActive, RunBusy) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    delete_run_files(settings.output_dir, run_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{run_id}/topics", response_model=list[RankedTopic])

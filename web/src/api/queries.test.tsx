@@ -13,6 +13,7 @@ import {
   useActiveRun,
   useConfigOptions,
   useDeleteRender,
+  useDeleteRun,
   useGenerateRenders,
   useRanking,
   useRender,
@@ -1010,5 +1011,167 @@ describe("useDeleteRender", () => {
         result.current.client.getQueryState(queryKeys.render("gone"))?.isInvalidated,
       ).toBe(true),
     );
+  });
+});
+
+describe("useDeleteRun", () => {
+  const RUN = "20260829T090000Z";
+
+  /**
+   * Answers each of the run's own reads once and holds every later one
+   * open. A refetch then sits at `fetchStatus: "fetching"` for good, so a
+   * check made after the mutation cannot miss one that came and went.
+   */
+  function serveRunOnce() {
+    let runCalls = 0;
+    let rankingCalls = 0;
+    server.use(
+      http.get("/api/runs/:runId", async () => {
+        runCalls += 1;
+        if (runCalls > 1) await new Promise(() => undefined);
+        return HttpResponse.json(makeRunDetail({ runId: RUN }));
+      }),
+      http.get("/api/runs/:runId/topics", async () => {
+        rankingCalls += 1;
+        if (rankingCalls > 1) await new Promise(() => undefined);
+        return HttpResponse.json([makeRankedTopic()]);
+      }),
+    );
+  }
+
+  it("does not refetch the run's own queries, which the page is still showing", async () => {
+    // Refetched, the detail 404s and the page draws "No such run." for a
+    // frame before it navigates away.
+    serveRunOnce();
+    server.use(
+      http.delete("/api/runs/:runId", () => new HttpResponse(null, { status: 204 })),
+    );
+
+    const { result } = renderHook(
+      () => ({
+        run: useRun(RUN),
+        ranking: useRanking(RUN),
+        remove: useDeleteRun(RUN),
+        client: useQueryClient(),
+      }),
+      { wrapper: renderWithProviders.Wrapper },
+    );
+    await waitFor(() => expect(result.current.run.isSuccess).toBe(true));
+    await waitFor(() => expect(result.current.ranking.isSuccess).toBe(true));
+
+    await act(async () => {
+      await result.current.remove.mutateAsync();
+    });
+
+    const { client } = result.current;
+    expect(client.getQueryState(queryKeys.run(RUN))?.fetchStatus).toBe("idle");
+    expect(client.getQueryState(queryKeys.ranking(RUN))?.fetchStatus).toBe("idle");
+    // ...but stale, so arriving back at the run — or its ranking — asks
+    // the server again rather than drawing a deleted run from cache.
+    expect(client.getQueryState(queryKeys.run(RUN))?.isInvalidated).toBe(true);
+    expect(client.getQueryState(queryKeys.ranking(RUN))?.isInvalidated).toBe(true);
+  });
+
+  it("refreshes the runs list and the topics index, which both just lost a run", async () => {
+    let listCalls = 0;
+    let indexCalls = 0;
+    server.use(
+      http.get("/api/runs", () => {
+        listCalls += 1;
+        return HttpResponse.json(makeRunPage());
+      }),
+      http.get("/api/topics", () => {
+        indexCalls += 1;
+        return HttpResponse.json(makeTopicIndex());
+      }),
+      http.delete("/api/runs/:runId", () => new HttpResponse(null, { status: 204 })),
+    );
+
+    const { result } = renderHook(
+      () => ({ runs: useRuns(), topics: useTopicIndex(), remove: useDeleteRun(RUN) }),
+      { wrapper: renderWithProviders.Wrapper },
+    );
+    await waitFor(() => expect(result.current.runs.isSuccess).toBe(true));
+    await waitFor(() => expect(result.current.topics.isSuccess).toBe(true));
+
+    await act(async () => {
+      await result.current.remove.mutateAsync();
+    });
+
+    await waitFor(() => expect(listCalls).toBe(2));
+    await waitFor(() => expect(indexCalls).toBe(2));
+  });
+
+  it("counts a run that is already gone as deleted", async () => {
+    // Deleted in another tab. The end state asked for is the one the
+    // server reports.
+    server.use(
+      http.delete("/api/runs/:runId", () =>
+        HttpResponse.json({ detail: `No such run: ${RUN}` }, { status: 404 }),
+      ),
+    );
+
+    const { result } = renderHook(() => useDeleteRun(RUN), {
+      wrapper: renderWithProviders.Wrapper,
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync();
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+  });
+
+  it("passes any other refusal through for the page to show", async () => {
+    server.use(
+      http.delete("/api/runs/:runId", () =>
+        HttpResponse.json({ detail: "Memes are still generating" }, { status: 409 }),
+      ),
+    );
+
+    const { result } = renderHook(() => useDeleteRun(RUN), {
+      wrapper: renderWithProviders.Wrapper,
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync().catch(() => undefined);
+    });
+
+    await waitFor(() => expect(result.current.error?.status).toBe(409));
+    expect(result.current.error?.detail).toBe("Memes are still generating");
+  });
+
+  it("marks the run's render records stale without refetching them", async () => {
+    // A meme opened from this run went with it. Left fresh, the app's 30s
+    // staleTime lets Back draw it from cache; refetched now, it 404s for a
+    // page nobody is looking at. Every later GET is held open, so an
+    // unwanted refetch stays visible as `fetchStatus: "fetching"`.
+    let renderCalls = 0;
+    server.use(
+      http.get("/api/renders/:renderId", async () => {
+        renderCalls += 1;
+        if (renderCalls > 1) await new Promise(() => undefined);
+        return HttpResponse.json(makeRenderRecord({ id: "gone", runId: RUN }));
+      }),
+      http.delete("/api/runs/:runId", () => new HttpResponse(null, { status: 204 })),
+    );
+
+    const { result } = renderHook(
+      () => ({
+        render: useRender("gone"),
+        remove: useDeleteRun(RUN),
+        client: useQueryClient(),
+      }),
+      { wrapper: renderWithProviders.Wrapper },
+    );
+    await waitFor(() => expect(result.current.render.isSuccess).toBe(true));
+
+    await act(async () => {
+      await result.current.remove.mutateAsync();
+    });
+
+    const state = result.current.client.getQueryState(queryKeys.render("gone"));
+    expect(state?.fetchStatus).toBe("idle");
+    expect(state?.isInvalidated).toBe(true);
   });
 });

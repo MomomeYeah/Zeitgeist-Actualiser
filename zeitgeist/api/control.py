@@ -27,7 +27,7 @@ from zeitgeist.runner import (
     RunRequest,
     RunService,
 )
-from zeitgeist.store import Store
+from zeitgeist.store import Store, UnknownRun
 
 router = APIRouter(prefix="/api/runs", tags=["control"])
 
@@ -154,7 +154,8 @@ def resume_run(
                 # that — a run started with top_count 3 could resume reading
                 # top_count 5.
                 overrides=run.config.as_overrides(),
-            )
+            ),
+            resuming=True,
         )
     except RunnerUnavailable as exc:
         # The worker thread is gone; nothing can be executed until this
@@ -164,6 +165,10 @@ def resume_run(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
+    except UnknownRun as exc:
+        # Deleted from another tab after `_run_or_404` above passed. Caught
+        # ahead of `ValueError` for clarity only — it is a `LookupError`.
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RunAlreadyActive as exc:
         # Distinct from the 409s above: those mean the run has nothing to
         # resume from, this means it does not need resuming at all right

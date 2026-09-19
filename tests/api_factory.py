@@ -127,6 +127,21 @@ class GatedExecute:
 
 
 @dataclass
+class GatedGenerate:
+    """A generation job that blocks until released, so a test can hold a
+    job in flight without sleeping. The on-demand counterpart of
+    `GatedExecute`, here for the same reason: the generation unit tests and
+    the deletion API tests both need it."""
+
+    entered: threading.Event = field(default_factory=threading.Event)
+    release: threading.Event = field(default_factory=threading.Event)
+
+    def __call__(self, job, store) -> None:
+        self.entered.set()
+        assert self.release.wait(timeout=5), "release was never set"
+
+
+@dataclass
 class LoggingGate:
     """A run that opens its row, logs one line, then blocks until released.
 

@@ -23,7 +23,7 @@ from zeitgeist.generation import (
     UnknownTopic,
 )
 from zeitgeist.records import RenderRecord
-from zeitgeist.store import MissingCheckpoint, Store
+from zeitgeist.store import MissingCheckpoint, Store, UnknownRun
 
 router = APIRouter(prefix="/api/runs", tags=["generation"])
 
@@ -81,6 +81,9 @@ def create_renders(
             "to brief from.",
         ) from exc
     except UnknownTopic as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except UnknownRun as exc:
+        # Deleted — or being deleted — since `_run_or_404` above passed.
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValidationError as exc:
         # `resolve_settings`, above, can raise this for a stored value that

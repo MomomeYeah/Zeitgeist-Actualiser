@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from tests.api_factory import (
+    GatedGenerate,
     SeededRun,
     api_db_path,
     api_settings,
@@ -16,6 +17,7 @@ from tests.run_factory import make_render_record, make_topic
 from tests.template_factory import make_manifest, make_slot, write_library
 from zeitgeist.api import create_app
 from zeitgeist.generation import GenerationJob
+from zeitgeist.renders import render_paths
 from zeitgeist.store import Store
 
 TEMPLATE = "shape_alpha"
@@ -316,3 +318,44 @@ def test_a_closed_service_writes_no_render_row(tmp_path):
 
     detail = client.get(f"/api/runs/{RUN}/topics/airport-cat").json()
     assert detail["renders"] == []
+
+
+def test_generating_for_a_run_that_is_being_deleted_is_a_404(tmp_path):
+    client = _client(tmp_path)
+
+    with app_of(client).state.generator.excluding(RUN):
+        response = client.post(
+            _url(),
+            json={"mode": "manual", "template_id": TEMPLATE, "caption_slots": SLOTS},
+        )
+
+    assert response.status_code == 404
+    assert client.get(f"/api/runs/{RUN}/topics/airport-cat").json()["renders"] == []
+
+
+def test_a_run_cannot_be_deleted_while_its_memes_are_generating(tmp_path):
+    gate = GatedGenerate()
+    client = _client(tmp_path, generate=gate)
+    # A meme the run already has. A refused delete must leave the run
+    # whole — its files as well as its row.
+    existing = render_paths(tmp_path / "output", RUN, "earlier").full
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b"not really a png")
+    try:
+        posted = client.post(
+            _url(),
+            json={"mode": "manual", "template_id": TEMPLATE, "caption_slots": SLOTS},
+        )
+        assert posted.status_code == 202
+        assert gate.entered.wait(timeout=5)
+
+        refused = client.delete(f"/api/runs/{RUN}")
+
+        assert refused.status_code == 409
+        assert client.get(f"/api/runs/{RUN}").status_code == 200
+        assert existing.is_file()
+    finally:
+        gate.release.set()
+        app_of(client).state.generator.shutdown()
+
+    assert client.delete(f"/api/runs/{RUN}").status_code == 204

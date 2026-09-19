@@ -1,6 +1,12 @@
 from datetime import UTC, datetime
 
-from tests.api_factory import SeededRun, api_db_path, app_of, seeded_client
+from tests.api_factory import (
+    GatedExecute,
+    SeededRun,
+    api_db_path,
+    app_of,
+    seeded_client,
+)
 from tests.run_factory import (
     make_dossier,
     make_render_record,
@@ -19,6 +25,7 @@ from zeitgeist.models import (
     TrendInfo,
 )
 from zeitgeist.records import Stage
+from zeitgeist.renders import render_paths
 from zeitgeist.store import Store
 
 
@@ -764,3 +771,79 @@ def test_the_next_cursor_pages_the_runs_list(tmp_path):
     ]
     assert [entry["run"]["run_id"] for entry in second["runs"]] == ["20260901T100000Z"]
     assert second["next_cursor"] is None
+
+
+def test_run_detail_counts_the_memes_that_exist(tmp_path):
+    """What the Delete confirm tells the user they will lose. A generating
+    or failed row is not a meme anyone can see."""
+    run_id = "20260901T120000Z"
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id=run_id,
+                renders=[
+                    make_render_record("a", run_id=run_id, status="ready"),
+                    make_render_record("b", run_id=run_id, status="ready"),
+                    make_render_record("c", run_id=run_id, status="generating"),
+                    make_render_record(
+                        "d", run_id=run_id, status="failed", error="no fit"
+                    ),
+                ],
+            )
+        ],
+    )
+
+    assert client.get(f"/api/runs/{run_id}").json()["render_count"] == 2
+
+
+def test_deleting_a_run_removes_it_everywhere(tmp_path):
+    run_id = "20260901T120000Z"
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id=run_id,
+                renders=[make_render_record("rnd1", run_id=run_id)],
+            )
+        ],
+    )
+    png = render_paths(tmp_path / "output", run_id, "rnd1").full
+    png.parent.mkdir(parents=True)
+    png.write_bytes(b"not really a png")
+
+    response = client.delete(f"/api/runs/{run_id}")
+
+    assert response.status_code == 204
+    assert client.get(f"/api/runs/{run_id}").status_code == 404
+    assert client.get("/api/renders/rnd1").status_code == 404
+    assert client.get("/api/runs").json()["runs"] == []
+    assert not (tmp_path / "output" / run_id).exists()
+
+
+def test_deleting_an_unknown_run_is_a_404(tmp_path):
+    client = seeded_client(tmp_path)
+
+    response = client.delete("/api/runs/nope")
+
+    assert response.status_code == 404
+
+
+def test_a_run_in_flight_cannot_be_deleted_until_it_is_over(tmp_path):
+    gate = GatedExecute()
+    client = seeded_client(tmp_path, execute=gate)
+    runner = app_of(client).state.runner
+    try:
+        run_id = client.post("/api/runs", json={}).json()["run_id"]
+        assert gate.entered.wait(timeout=5)
+
+        refused = client.delete(f"/api/runs/{run_id}")
+
+        assert refused.status_code == 409
+        assert client.get(f"/api/runs/{run_id}").status_code == 200
+    finally:
+        gate.release.set()
+        runner.shutdown(timeout=10)
+
+    # The refusal was about the run being live, not about the run.
+    assert client.delete(f"/api/runs/{run_id}").status_code == 204

@@ -23,7 +23,7 @@ from zeitgeist.pipeline import new_run_id, run_pipeline
 from zeitgeist.progress import Aborted, CancelToken, NullObserver, RunObserver
 from zeitgeist.records import RunConfig, RunError, Stage, StageRecord
 from zeitgeist.sources import build_trend_source
-from zeitgeist.store import Store
+from zeitgeist.store import Store, UnknownRun
 
 log = logging.getLogger(__name__)
 
@@ -274,7 +274,17 @@ class RunService:
             run_id == self._current or run_id in self._waiting or run_id in self._tokens
         )
 
-    def enqueue(self, request: RunRequest) -> QueuedRun:
+    def enqueue(self, request: RunRequest, *, resuming: bool = False) -> QueuedRun:
+        """Validate, open the run's row, and queue it.
+
+        `resuming` is `resume_run`'s: the run must still exist. The endpoint
+        checked it, but a delete from another tab can land between that
+        check and the row write below, and `start_run` is an upsert that
+        would open a fresh, checkpoint-less row for a run the user just
+        deleted. The check sits inside `_lock`, which `delete` holds too,
+        so the two cannot interleave. A flag rather than inferring a resume
+        from `request.run_id`, which a new run may also carry.
+        """
         # Anything outside RUN_KEYS cannot be set per run: a request able to
         # write `output_dir` or `anthropic_api_key` would point a run at
         # another directory or hand it a key, neither of which is a run
@@ -335,6 +345,8 @@ class RunService:
                 )
             if self._is_live(run_id):
                 raise RunAlreadyActive(f"Run {run_id} is already queued or executing")
+            if resuming and self._store.get_run(run_id) is None:
+                raise UnknownRun(f"No such run: {run_id}")
             # Opened here, on the request thread, rather than left for
             # _run_one to open on the worker thread: a client holding this
             # id must be able to GET /api/runs/{run_id} and open its event
@@ -378,6 +390,24 @@ class RunService:
 
     def abort(self, run_id: str) -> bool:
         return self._signal(run_id, lambda token: token.abort())
+
+    def delete(self, run_id: str) -> None:
+        """Delete a run that is neither executing nor queued.
+
+        Under `_lock`, which `enqueue` holds while it opens or re-opens a
+        row, so a resume from another tab cannot slip between the liveness
+        check and the delete. Only the row goes here — one indexed DELETE,
+        so `active()`, `stop()` and `abort()` wait no longer than they do
+        for `enqueue` — and the files are removed by the caller after the
+        lock is released.
+        """
+        with self._lock:
+            if self._is_live(run_id):
+                raise RunAlreadyActive(
+                    f"Run {run_id} is queued or executing; abort it before deleting it."
+                )
+            if not self._store.delete_run(run_id):
+                raise UnknownRun(f"No such run: {run_id}")
 
     def buffer(self, run_id: str) -> RunLogBuffer | None:
         with self._lock:

@@ -1,3 +1,4 @@
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -6,6 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from tests.api_factory import GatedGenerate
 from tests.run_factory import make_render_record, make_run_config, make_topic
 from tests.template_factory import make_manifest, make_slot, write_library
 from zeitgeist.config import Settings
@@ -16,6 +18,7 @@ from zeitgeist.generation import (
     GenerationService,
     LLMGeneration,
     ManualGeneration,
+    RunBusy,
     UnknownTopic,
     generate_renders,
 )
@@ -24,7 +27,7 @@ from zeitgeist.media.brief import BriefChoice
 from zeitgeist.media.templates import load_templates
 from zeitgeist.records import AutoOrigin, ManualOrigin, RenderRecord
 from zeitgeist.renders import render_paths
-from zeitgeist.store import MissingCheckpoint, Store
+from zeitgeist.store import MissingCheckpoint, Store, UnknownRun
 
 TEMPLATE = "shape_alpha"
 SLOTS = {"rejected": "queueing forever", "preferred": "the airport cat"}
@@ -59,7 +62,7 @@ def _settings(tmp_path) -> Settings:
     )
 
 
-def _store(tmp_path) -> Store:
+def _store(tmp_path, *, shared: bool = False) -> Store:
     """A fresh store with `run-1` — the run every test in this file
     generates against — already opened.
 
@@ -67,8 +70,14 @@ def _store(tmp_path) -> Store:
     enforced, so a `generating` row for a run nobody opened is refused.
     Production only ever generates against a run that exists: the endpoint
     404s an unknown one before `submit` is reached.
+
+    `shared` opens it with `check_same_thread=False`, as `create_app` opens
+    the app's. A test whose worker writes through the service's own store —
+    the path taken when the worker cannot open one of its own — needs it,
+    or that write is refused on the wrong thread and lost in a `Future`
+    nobody reads.
     """
-    store = Store(tmp_path / "z.db")
+    store = Store(tmp_path / "z.db", check_same_thread=not shared)
     store.init_schema()
     store.start_run("run-1", make_run_config())
     return store
@@ -805,3 +814,238 @@ def test_submit_fails_seeded_rows_when_the_pool_refuses_after_shutdown(tmp_path)
     assert len(rows) == 1
     assert rows[0].status == "failed"
     assert rows[0].error is not None
+
+
+MANUAL = ManualGeneration(template_id=TEMPLATE, caption_slots=SLOTS)
+
+
+def test_a_run_cannot_be_excluded_while_a_job_for_it_is_in_flight(tmp_path):
+    """The job would write PNGs under the run's directory after the delete
+    removed it, recreating a directory nothing would ever reclaim."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    gate = GatedGenerate()
+    service = _service(tmp_path, store, generate=gate)
+    try:
+        service.submit("run-1", "airport-cat", MANUAL)
+        assert gate.entered.wait(timeout=5)
+
+        with pytest.raises(RunBusy), service.excluding("run-1"):
+            pass
+    finally:
+        gate.release.set()
+        service.shutdown()
+    store.close()
+
+
+def test_a_job_in_flight_for_one_run_does_not_hold_another(tmp_path):
+    """Busy is per run. Keyed on "any job at all", one topic generating
+    anywhere would make every run undeletable."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    store.start_run("run-2", make_run_config())
+    store.write_analyse_checkpoint("run-2", [make_topic("airport-cat")], 0.3)
+    gate = GatedGenerate()
+    service = _service(tmp_path, store, generate=gate)
+    try:
+        service.submit("run-2", "airport-cat", MANUAL)
+        assert gate.entered.wait(timeout=5)
+
+        with service.excluding("run-1"):
+            pass
+    finally:
+        gate.release.set()
+        service.shutdown()
+    store.close()
+
+
+def test_a_run_can_be_excluded_once_its_jobs_have_finished(tmp_path):
+    """The count comes back down when a job ends. Without that, the first
+    meme ever generated for a run would make it undeletable for the life
+    of the process."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+    service.submit("run-1", "airport-cat", MANUAL)
+    service.shutdown()  # Waits for the job.
+
+    with service.excluding("run-1"):
+        pass
+    store.close()
+
+
+def test_a_run_is_not_left_excluded_forever_if_the_workers_store_fails_to_open(
+    tmp_path, monkeypatch, caplog
+):
+    """`_run` claims the run in `submit` and must release it "however it
+    ends" — including a failure before there is even a job to run.
+    `Store(self._store.path)` can raise (a locked database mid `PRAGMA
+    journal_mode = WAL`, say), and a locked database is not producible
+    portably in a test, so this replaces `zeitgeist.generation.Store` with
+    a callable that raises instead, standing in for that failure. `submit`
+    itself never constructs a `Store` — it reuses the service's own
+    `self._store` — so only the worker's construction inside `_run` is
+    affected; `submit` still runs to completion and hands the job to the
+    pool.
+
+    The failure must also be logged: nothing else reads the `Future` this
+    runs in, so a silent return here would make the job vanish without a
+    trace.
+    """
+    store = _store(tmp_path, shared=True)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    def explode(path):
+        raise RuntimeError("the worker's database could not be opened")
+
+    monkeypatch.setattr("zeitgeist.generation.Store", explode)
+
+    with caplog.at_level(logging.ERROR, logger="zeitgeist.generation"):
+        service.submit("run-1", "airport-cat", MANUAL)
+        service.shutdown()  # Waits for the job, however it ends.
+
+    assert any(
+        record.levelno == logging.ERROR and "airport-cat" in record.getMessage()
+        for record in caplog.records
+    )
+
+    with service.excluding("run-1"):
+        pass
+    store.close()
+
+
+def test_a_job_whose_store_fails_to_open_leaves_its_renders_failed(
+    tmp_path, monkeypatch
+):
+    """Left `generating`, the seeded rows spin on topic detail forever —
+    it polls while any render is generating — with nothing to tell them
+    apart from work still in progress. They are failed through the
+    service's own store, which is already open; only the worker's
+    construction is replaced, for the reason the test above gives."""
+    store = _store(tmp_path, shared=True)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    def explode(path):
+        raise RuntimeError("the worker's database could not be opened")
+
+    monkeypatch.setattr("zeitgeist.generation.Store", explode)
+
+    [record] = service.submit("run-1", "airport-cat", MANUAL)
+    service.shutdown()  # Waits for the job, however it ends.
+
+    failed = store.get_render(record.id)
+    assert failed is not None
+    assert failed.status == "failed"
+    # The store-open failure, not a later one — without pinning how
+    # `_fail_unfinished` formats an error, which is not this test's subject.
+    assert failed.error is not None
+    assert "the worker's database could not be opened" in failed.error
+    store.close()
+
+
+def test_excluding_releases_the_run_when_the_guarded_delete_fails(tmp_path):
+    """The delete `excluding` guards can itself be refused — the run turned
+    out to be live. That refusal must not leave the run excluded from
+    generation for the life of the process. `match` keeps a `RunBusy` from
+    `excluding` itself (also a `RuntimeError`) from satisfying the raise."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    with (
+        pytest.raises(RuntimeError, match="the guarded delete failed"),
+        service.excluding("run-1"),
+    ):
+        raise RuntimeError("the guarded delete failed")
+
+    records = service.submit("run-1", "airport-cat", MANUAL)
+
+    assert [r.run_id for r in records] == ["run-1"]
+    service.shutdown()
+    store.close()
+
+
+def test_overlapping_exclusions_of_one_run_hold_until_the_last_exits(tmp_path):
+    """Two deletes of the same run at once — two tabs. The first to finish
+    must not reopen the run to generation while the second is still inside
+    its guard: the exclusion is counted, not a flag either one can clear."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    with service.excluding("run-1"):
+        with service.excluding("run-1"):
+            pass
+
+        with pytest.raises(UnknownRun):
+            service.submit("run-1", "airport-cat", MANUAL)
+
+    # Both have exited, so the run is open to generation again.
+    records = service.submit("run-1", "airport-cat", MANUAL)
+
+    assert [r.run_id for r in records] == ["run-1"]
+    service.shutdown()
+    store.close()
+
+
+def test_a_refused_submit_does_not_leave_its_run_busy(tmp_path):
+    """`submit` claims the run before it validates anything, so every path
+    out of it that does not hand a job to the pool must let go again."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    with pytest.raises(UnknownTopic):
+        service.submit("run-1", "no-such-topic", MANUAL)
+
+    with service.excluding("run-1"):
+        pass
+    service.shutdown()
+    store.close()
+
+
+def test_submit_is_refused_for_a_run_that_is_being_deleted(tmp_path):
+    """Otherwise its seed lands after the row is gone and fails on the
+    foreign key as a 500."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    with service.excluding("run-1"), pytest.raises(UnknownRun):
+        service.submit("run-1", "airport-cat", MANUAL)
+
+    assert store.renders_for_topic("run-1", "airport-cat") == []
+    service.shutdown()
+    store.close()
+
+
+def test_excluding_one_run_leaves_another_free(tmp_path):
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    store.start_run("run-2", make_run_config())
+    store.write_analyse_checkpoint("run-2", [make_topic("airport-cat")], 0.3)
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    with service.excluding("run-1"):
+        records = service.submit("run-2", "airport-cat", MANUAL)
+
+    assert [r.run_id for r in records] == ["run-2"]
+    service.shutdown()
+    store.close()
+
+
+def test_submit_names_a_run_that_no_longer_exists(tmp_path):
+    """A delete that finished between the endpoint's own existence check
+    and this call. Without the check, `read_checkpoint` answers first with
+    `MissingCheckpoint` — a 409 claiming the run never analysed."""
+    store = _store(tmp_path)
+    _seed_topics(store, make_topic("airport-cat"))
+    store.delete_run("run-1")
+    service = _service(tmp_path, store, generate=RecordingGenerate())
+
+    with pytest.raises(UnknownRun):
+        service.submit("run-1", "airport-cat", MANUAL)
+    service.shutdown()
+    store.close()

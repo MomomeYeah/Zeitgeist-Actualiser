@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.api_factory import api_db_path, app_of, seeded_client
-from tests.run_factory import make_run_config
+from tests.run_factory import make_render_record, make_run_config
 from zeitgeist.api import create_app
 from zeitgeist.config import Settings, StoredSettingError
 from zeitgeist.schema import SCHEMA_VERSION
@@ -208,3 +208,20 @@ def test_a_run_left_running_by_a_crash_is_interrupted_on_startup(tmp_path):
 
     body = client.get("/api/runs/20260905T120000Z").json()
     assert body["run"]["status"] == "interrupted"
+
+
+def test_a_render_left_generating_by_a_crash_is_failed_on_startup(tmp_path):
+    """End to end for the same reason as the run test above: a
+    `reconcile_generating_renders` nothing calls would pass every store
+    test and leave topic detail polling a tile no worker will finish."""
+    store = Store(api_db_path(tmp_path))
+    store.init_schema()
+    store.start_run("20260905T120000Z", make_run_config())
+    store.add_render(
+        make_render_record("rnd1", run_id="20260905T120000Z", status="generating")
+    )
+    store.close()
+
+    client = seeded_client(tmp_path)
+
+    assert client.get("/api/renders/rnd1").json()["status"] == "failed"

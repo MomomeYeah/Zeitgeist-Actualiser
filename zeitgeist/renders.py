@@ -1,10 +1,12 @@
-"""Where a render's two files live, and how a render is removed.
+"""Where a render's two files live, and how a render — or a whole run's
+output — is removed.
 
 The database is authoritative for whether a render exists — but a render is
 a row *and* a pair of PNGs, and two callers need all three gone together:
 `DELETE /api/renders/{id}`, and the re-run that clears a topic's previous
 model-written attempts. One function rather than two copies of
-`unlink(missing_ok=True)`.
+`unlink(missing_ok=True)`. Deleting a run removes its directory whole,
+which also reclaims the orphans the render paths knowingly leave.
 
 Separate from `store.py`, which knows rows and deliberately nothing about
 the filesystem, and from `api/renders.py`, which is the HTTP layer over
@@ -12,6 +14,7 @@ this. Nothing here imports `zeitgeist.api`.
 """
 
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,6 +65,35 @@ def delete_render(store: Store, output_dir: Path, record: RenderRecord) -> bool:
     paths.full.unlink(missing_ok=True)
     paths.thumb.unlink(missing_ok=True)
     return removed
+
+
+def delete_run_files(output_dir: Path, run_id: str) -> None:
+    """Remove `output/<run_id>/` and everything in it.
+
+    Called after the run's row is gone, so the run no longer exists
+    whatever happens here: a directory that cannot be removed is logged
+    and left, invisible to every screen, rather than turned into an error
+    for a deletion that already succeeded. A run that never wrote a file
+    has no directory, which is not an error either.
+
+    `run_id` arrives in a URL, so the target must resolve to a direct
+    child of `output_dir` — not the directory itself, not its parent, not
+    something nested inside a run — or nothing is removed. The endpoint
+    only gets here for an id that named a real row, so this should never
+    fire; it is what makes that a guarantee rather than an inference.
+    """
+    root = Path(output_dir).resolve()
+    target = (root / run_id).resolve()
+    if target.parent != root:
+        raise ValueError(
+            f"Run id {run_id!r} does not name a directory directly inside {root}"
+        )
+    if not target.exists():
+        return
+    try:
+        shutil.rmtree(target)
+    except OSError as exc:
+        log.warning("Could not remove %s: %s", target, exc)
 
 
 def clear_auto_renders(

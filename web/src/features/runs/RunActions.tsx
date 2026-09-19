@@ -1,11 +1,18 @@
 import { useRef } from "react";
+import { useNavigate } from "react-router-dom";
 
 import type { RunDetail } from "@/api/types";
-import { useAbortRun, useResumeRun, useStopRun } from "@/api/queries";
+import { useAbortRun, useDeleteRun, useResumeRun, useStopRun } from "@/api/queries";
 import { InlineConfirm } from "@/components/InlineConfirm";
 import { NewRunButton } from "@/features/newrun/NewRunButton";
 
 import styles from "./RunActions.module.css";
+
+/** The confirm's question: what goes with the run, counted. */
+function deleteQuestion(memes: number): string {
+  if (memes === 0) return "Delete run?";
+  return `Delete run and its ${memes} ${memes === 1 ? "meme" : "memes"}?`;
+}
 
 /**
  * The header's button pair, in both of the run's lives.
@@ -71,6 +78,19 @@ import styles from "./RunActions.module.css";
  * indication that anything had happened. Abort already had `onSuccess`
  * and works either way; it is on `onSettled` now so all three read the
  * same and none of them can regress on the refusal path alone.
+ *
+ * Over, a third control: **Delete**, the same swap-in-place confirm in
+ * Abort's contrast tone, because it destroys what a run cost minutes and
+ * real model calls to make. Its question counts the memes that go with the
+ * run — `detail.render_count`, ready renders only — since the hand-written
+ * ones are the one part of a run nothing can reproduce. It is absent while
+ * the run is live, like Resume: abort first. It carries Resume's pending
+ * guard, so a second confirm cannot draw a 409 in the moment before the
+ * page leaves. On success it navigates to the Runs list rather than handing
+ * focus to the header, which is going too; a refused delete hands focus
+ * home like the others, and its sentence joins the failure line — still at
+ * most one error per mount, since Delete lives only in the "over" mount
+ * beside Resume.
  */
 export function RunActions({
   detail,
@@ -85,9 +105,11 @@ export function RunActions({
   const stop = useStopRun(runId);
   const abort = useAbortRun(runId);
   const resume = useResumeRun(runId);
+  const remove = useDeleteRun(runId);
+  const navigate = useNavigate();
   const actions = useRef<HTMLDivElement | null>(null);
 
-  const failure = stop.error ?? abort.error ?? resume.error ?? null;
+  const failure = stop.error ?? abort.error ?? resume.error ?? remove.error ?? null;
 
   function keepFocus() {
     const focused = document.activeElement;
@@ -139,6 +161,17 @@ export function RunActions({
               onConfirm={() => resume.mutate({}, { onSettled: keepFocus })}
             />
           )}
+          <InlineConfirm
+            label="Delete"
+            question={deleteQuestion(detail.render_count)}
+            disabled={remove.isPending || remove.isSuccess}
+            onConfirm={() =>
+              remove.mutate(undefined, {
+                onSuccess: () => void navigate("/runs"),
+                onError: keepFocus,
+              })
+            }
+          />
         </>
       )}
       {failure !== null && <p className={styles.failure}>{failure.detail}</p>}

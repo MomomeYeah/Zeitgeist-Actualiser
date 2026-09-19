@@ -619,6 +619,42 @@ def test_resuming_a_run_twice_is_a_409_the_second_time(tmp_path):
     assert client.get("/api/runs/active").json()["current"] is None
 
 
+def test_a_resume_that_loses_the_race_to_a_delete_is_a_404(tmp_path, monkeypatch):
+    """The interleaving `enqueue`'s `resuming` re-check exists for: the
+    delete lands after `resume_run`'s own `_run_or_404` has passed and
+    before `enqueue` opens the row. Real `delete`, real `enqueue` — only
+    the moment is chosen. The two run one after the other here, so this
+    does not exercise the lock they share; see
+    `test_a_delete_cannot_land_inside_a_resumes_row_write` for that."""
+    client = seeded_client(
+        tmp_path,
+        runs=[
+            SeededRun(
+                run_id="20260901T120000Z",
+                evidence=[make_evidence(["p1"])],
+            )
+        ],
+        execute=lambda settings, request, store, observer, token: None,
+    )
+    runner = app_of(client).state.runner
+    enqueue = runner.enqueue
+
+    def delete_first(request, **kwargs):
+        assert request.run_id is not None  # A resume always names its run.
+        runner.delete(request.run_id)
+        return enqueue(request, **kwargs)
+
+    monkeypatch.setattr(runner, "enqueue", delete_first)
+
+    response = client.post(
+        "/api/runs/20260901T120000Z/resume", json={"stage": "evaluate"}
+    )
+    runner.shutdown(timeout=10)
+
+    assert response.status_code == 404
+    assert client.get("/api/runs/20260901T120000Z").status_code == 404
+
+
 def test_stop_trips_stopping_and_abort_trips_aborted(tmp_path):
     """Two buttons, two meanings, and 202 from both. A stop wired to
     `runner.abort` would answer 202 exactly as it does now while unwinding

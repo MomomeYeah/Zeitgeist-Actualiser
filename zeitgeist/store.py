@@ -32,6 +32,7 @@ __all__ = [
     "DB_PATH",
     "SCHEMA_VERSION",
     "MissingCheckpoint",
+    "UnknownRun",
     "Store",
     "StoreSchemaError",
 ]
@@ -72,6 +73,19 @@ class MissingCheckpoint(Exception):
 
     Distinct from an empty checkpoint, which is a result: a generate stage
     that briefed nothing wrote `[]`, and resuming past it is legitimate.
+    """
+
+
+class UnknownRun(LookupError):
+    """No `run_records` row for that id.
+
+    Raised where a run vanished between a caller's check and its write —
+    deleted from another tab — so the API can answer 404 rather than let
+    the write recreate the row or trip a foreign key. A `LookupError`, like
+    `UnknownTopic`, so it cannot be mistaken for a malformed request.
+
+    Here rather than in `runner.py` or `generation.py` because both raise
+    it, and both already import this module.
     """
 
 
@@ -326,6 +340,33 @@ class Store:
             )
         return [row[0] for row in rows]
 
+    def reconcile_generating_renders(self) -> list[str]:
+        """Mark every render still `generating` as `failed`, returning the
+        ids.
+
+        Runs on server startup, beside `reconcile_interrupted` and for the
+        same reason: the generation pool and the run queue are both
+        in-memory and die with the process, so a row left `generating` has
+        no job behind it. Topic detail polls while any render is
+        generating, so left alone it would poll forever, drawing a tile
+        indistinguishable from work still in progress.
+
+        The error says what happened rather than leaving the failed tile
+        blank; a failed row always carries one.
+        """
+        with self._conn:
+            rows = self._conn.execute(
+                "SELECT id FROM renders WHERE status = 'generating'"
+            ).fetchall()
+            if not rows:
+                return []
+            self._conn.execute(
+                "UPDATE renders SET status = 'failed', error = ? "
+                "WHERE status = 'generating'",
+                ("The server stopped before this render finished.",),
+            )
+        return [row[0] for row in rows]
+
     def abort_run(self, run_id: str) -> None:
         """Record that a run was stopped or aborted by the user.
 
@@ -346,6 +387,27 @@ class Store:
             (_now(), run_id),
         )
         self._conn.commit()
+
+    def delete_run(self, run_id: str) -> bool:
+        """Remove the run and, by cascade, every row that hangs off it.
+        False means there was no such run.
+
+        One statement: every child table references `run_records` with
+        `ON DELETE CASCADE`, and `__init__` turns enforcement on. The run's
+        files are not this method's business — see
+        `zeitgeist.renders.delete_run_files`.
+
+        The cascade takes `topic_scores` with it, which `previous_sub_scores`
+        reads to score the next run's momentum. Deleting the most recent run
+        therefore changes what the next run scores against — its topics fall
+        back to whatever run is now most recent, or to no prior sub-score at
+        all.
+        """
+        cursor = self._conn.execute(
+            "DELETE FROM run_records WHERE run_id = ?", (run_id,)
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
 
     def get_run(self, run_id: str) -> RunRecordRow | None:
         row = self._conn.execute(

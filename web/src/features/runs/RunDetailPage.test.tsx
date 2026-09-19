@@ -1398,6 +1398,171 @@ describe("RunDetailPage", () => {
     ).toBeInTheDocument();
   });
 
+  describe("deleting a finished run", () => {
+    function serveOver(renderCount = 0) {
+      server.use(
+        http.get("/api/runs/active", () => HttpResponse.json(makeActiveRuns())),
+        http.get("/api/runs/:runId", () =>
+          HttpResponse.json(makeRunDetail({ runId: RUN_ID, renderCount })),
+        ),
+        http.get("/api/runs/:runId/topics", () => HttpResponse.json([])),
+        http.get("/api/runs/:runId/log", () => HttpResponse.json([])),
+      );
+    }
+
+    function renderRoutes() {
+      return renderWithProviders(
+        <Routes>
+          <Route path="/runs/:runId" element={<RunDetailPage />} />
+          <Route path="*" element={<Landed />} />
+        </Routes>,
+        { route: `/runs/${RUN_ID}` },
+      );
+    }
+
+    it("offers Delete once a run is over", async () => {
+      serveOver();
+      renderRoutes();
+
+      expect(await screen.findByRole("button", { name: "Delete" })).toBeEnabled();
+    });
+
+    it("offers no Delete while the run is live", async () => {
+      // Abort first. The worker is still writing to a live run, and the
+      // server would refuse anyway.
+      server.use(...liveRun());
+      renderDetail();
+
+      await screen.findByRole("button", { name: "Abort" });
+      expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    });
+
+    // Asserts the count and its agreement, not the sentence around it: the
+    // wording is free to change, but "1 memes", or a count taken from
+    // anywhere but `render_count`, is a bug. `\b` after the noun is what
+    // rejects "1 memes".
+    it.each([
+      [1, /\b1 meme\b/],
+      [3, /\b3 memes\b/],
+    ])("with %i memes, says how many go with the run before deleting anything", async (count, says) => {
+      const user = userEvent.setup();
+      let deletes = 0;
+      serveOver(count);
+      server.use(
+        http.delete("/api/runs/:runId", () => {
+          deletes += 1;
+          return new HttpResponse(null, { status: 204 });
+        }),
+      );
+      renderRoutes();
+
+      await user.click(await screen.findByRole("button", { name: "Delete" }));
+
+      expect(screen.getByText(says)).toBeInTheDocument();
+      expect(deletes).toBe(0);
+    });
+
+    it("with no memes, asks without mentioning any", async () => {
+      const user = userEvent.setup();
+      serveOver(0);
+      renderRoutes();
+
+      await user.click(await screen.findByRole("button", { name: "Delete" }));
+
+      // The question is up — "yes" exists only while it is asked.
+      expect(screen.getByRole("button", { name: "yes" })).toBeInTheDocument();
+      expect(screen.queryByText(/meme/)).not.toBeInTheDocument();
+    });
+
+    it("sends one delete, however often it is asked while the first is on its way", async () => {
+      const user = userEvent.setup();
+      let deletes = 0;
+      serveOver();
+      server.use(
+        http.delete("/api/runs/:runId", async () => {
+          deletes += 1;
+          await new Promise(() => undefined); // Held open: still pending.
+          return new HttpResponse(null, { status: 204 });
+        }),
+      );
+      renderRoutes();
+
+      await user.click(await screen.findByRole("button", { name: "Delete" }));
+      await user.click(screen.getByRole("button", { name: "yes" }));
+      await waitFor(() => expect(deletes).toBe(1));
+
+      await user.click(screen.getByRole("button", { name: "Delete" }));
+
+      expect(screen.queryByRole("button", { name: "yes" })).not.toBeInTheDocument();
+      expect(deletes).toBe(1);
+    });
+
+    it("keeps focus on the run's header when a delete is refused", async () => {
+      // Between the click and the 409 the trigger is disabled by its own
+      // pending guard — long enough for the browser to drop focus to
+      // <body> — and nothing else would bring it back.
+      const user = userEvent.setup();
+      serveOver();
+      server.use(
+        http.delete("/api/runs/:runId", () =>
+          HttpResponse.json({ detail: "Memes are still generating" }, { status: 409 }),
+        ),
+      );
+      renderRoutes();
+
+      await user.click(await screen.findByRole("button", { name: "Delete" }));
+      await user.click(screen.getByRole("button", { name: "yes" }));
+      await screen.findByText("Memes are still generating");
+
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toContainElement(screen.getByText(RUN_ID));
+    });
+
+    it.each([204, 404])(
+      "deletes this run on yes and lands on the runs list when the server answers %i",
+      async (status) => {
+        // 404: deleted in another tab, which is the outcome asked for.
+        const user = userEvent.setup();
+        let deleted = "";
+        serveOver();
+        server.use(
+          http.delete("/api/runs/:runId", ({ params }) => {
+            deleted = String(params.runId);
+            return status === 204
+              ? new HttpResponse(null, { status })
+              : HttpResponse.json({ detail: `No such run: ${deleted}` }, { status });
+          }),
+        );
+        renderRoutes();
+
+        await user.click(await screen.findByRole("button", { name: "Delete" }));
+        await user.click(screen.getByRole("button", { name: "yes" }));
+
+        expect(await screen.findByText("landed on /runs")).toBeInTheDocument();
+        expect(deleted).toBe(RUN_ID);
+      },
+    );
+
+    it("says why when the server will not delete, and stays on the run", async () => {
+      const user = userEvent.setup();
+      const detail = `Memes are still generating for run ${RUN_ID}; wait for them to finish before deleting it.`;
+      serveOver();
+      server.use(
+        http.delete("/api/runs/:runId", () =>
+          HttpResponse.json({ detail }, { status: 409 }),
+        ),
+      );
+      renderRoutes();
+
+      await user.click(await screen.findByRole("button", { name: "Delete" }));
+      await user.click(screen.getByRole("button", { name: "yes" }));
+
+      expect(await screen.findByText(detail)).toBeInTheDocument();
+      expect(screen.queryByText(/^landed on/)).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Delete" })).toBeEnabled();
+    });
+  });
+
   it("offers generate on a kept topic whose own brief failed", async () => {
     // Partial failure: the stage ran, one topic rendered, the other did
     // not. Generate used to be offered here only when *every* brief

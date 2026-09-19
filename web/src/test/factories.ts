@@ -154,6 +154,8 @@ export function makeRunDetail(
     stages?: StageRecord[];
     resumeStage?: Stage | null;
     config?: Partial<RunConfig>;
+    /** Ready memes, which the Delete confirm counts. Most screens ignore it. */
+    renderCount?: number;
   } = {},
 ): RunDetail {
   return {
@@ -165,6 +167,7 @@ export function makeRunDetail(
       makeStageRecord({ stage: "generate", summary: "5 of 5 rendered" }),
     ],
     resume_stage: options.resumeStage === undefined ? "generate" : options.resumeStage,
+    render_count: options.renderCount ?? 0,
   };
 }
 
