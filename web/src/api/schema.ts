@@ -202,7 +202,20 @@ export interface paths {
         get: operations["read_run_api_runs__run_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Remove Run
+         * @description 204 and no body. The row goes first, cascading to everything that
+         *     hangs off it, then the run's directory.
+         *
+         *     Refused with a 409 while anything is still writing to the run: the run
+         *     worker, if it is executing or queued, or an on-demand generation job.
+         *     `excluding` holds new generation jobs off for as long as the row delete
+         *     takes; `RunService.delete` does the liveness check and the delete under
+         *     the lock `enqueue` takes, so a resume cannot interleave. The directory
+         *     is removed after both are released — the run no longer exists by then,
+         *     so nothing can write to it again.
+         */
+        delete: operations["remove_run_api_runs__run_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -727,6 +740,8 @@ export interface components {
             /** Stages */
             stages: components["schemas"]["StageRecord"][];
             resume_stage: components["schemas"]["Stage"] | null;
+            /** Render Count */
+            render_count: number;
         };
         /**
          * RunError
@@ -1355,6 +1370,35 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["RunDetail"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_run_api_runs__run_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

@@ -134,6 +134,10 @@ class RunDetail(BaseModel):
     # None when nothing was written at all, which is what a source outage
     # looks like. The UI must not offer a resume it cannot honour.
     resume_stage: Stage | None
+    # Ready renders only, as every count here is: what the Delete confirm
+    # tells the user goes with the run. A generating or failed row is not a
+    # meme anyone can see.
+    render_count: int
 
 
 class RankedTopic(BaseModel):

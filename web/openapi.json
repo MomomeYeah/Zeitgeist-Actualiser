@@ -497,6 +497,40 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Remove Run",
+        "description": "204 and no body. The row goes first, cascading to everything that\nhangs off it, then the run's directory.\n\nRefused with a 409 while anything is still writing to the run: the run\nworker, if it is executing or queued, or an on-demand generation job.\n`excluding` holds new generation jobs off for as long as the row delete\ntakes; `RunService.delete` does the liveness check and the delete under\nthe lock `enqueue` takes, so a resume cannot interleave. The directory\nis removed after both are released \u2014 the run no longer exists by then,\nso nothing can write to it again.",
+        "operationId": "remove_run_api_runs__run_id__delete",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/runs/{run_id}/topics": {
@@ -1564,6 +1598,10 @@
                 "type": "null"
               }
             ]
+          },
+          "render_count": {
+            "type": "integer",
+            "title": "Render Count"
           }
         },
         "additionalProperties": false,
@@ -1571,7 +1609,8 @@
         "required": [
           "run",
           "stages",
-          "resume_stage"
+          "resume_stage",
+          "render_count"
         ],
         "title": "RunDetail",
         "description": "One run's header: what it was configured with, how its stages went,\nand where a resume would start."
