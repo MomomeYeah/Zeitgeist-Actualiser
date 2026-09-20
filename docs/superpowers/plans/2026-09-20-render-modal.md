@@ -1808,10 +1808,18 @@ And mount the modal at the end of the `<section>`, after the ternary that draws 
         <RenderModal
           record={open}
           onClose={() => setOpenId(null)}
-          // The tile the dialog would hand focus back to has unmounted with
-          // the row, so focus goes where a tile-level delete already sends
-          // it: the section label, a tab away from the tiles that remain.
-          onDeleted={() => anchor.current?.focus()}
+          onDeleted={() => {
+            // `RenderModal` does not close itself on a delete — it reports,
+            // and the decision is the grid's, which is what lets a refused
+            // delete leave the modal up with its error showing. A delete
+            // that went through has no modal left to show, so close it.
+            setOpenId(null);
+            // The tile `Modal` would hand focus back to has unmounted with
+            // the row, and a detached node cannot take focus. It goes where
+            // a tile-level delete already sends it: the section label, a
+            // tab away from whatever tiles remain.
+            anchor.current?.focus();
+          }}
         />
       )}
 ```
