@@ -677,14 +677,20 @@ export function RenderDetail({
         <CopyLinkButton path={renderPath(record)} />
         {/* Offered whether or not the image loaded: a render whose PNG is
             gone is the likeliest to want deleting. Pushed away from the two
-            safe actions rather than sitting beside them. */}
-        <InlineConfirm
-          className={styles.delete}
-          label="Delete"
-          question="Delete this render?"
-          disabled={remove.isPending}
-          onConfirm={() => remove.mutate(record, { onSuccess: onDeleted })}
-        />
+            safe actions rather than sitting beside them.
+
+            The margin is on a wrapper, not on `InlineConfirm`'s `className`:
+            that prop reaches only the resting trigger, so the question that
+            replaces it would lose the margin and jump left across the
+            footer at the moment of being read. */}
+        <div className={styles.delete}>
+          <InlineConfirm
+            label="Delete"
+            question="Delete this render?"
+            disabled={remove.isPending}
+            onConfirm={() => remove.mutate(record, { onSuccess: onDeleted })}
+          />
+        </div>
       </div>
       {remove.isError && (
         <p role="alert" className={styles.deleteError}>
@@ -772,7 +778,9 @@ Create `web/src/features/renders/RenderDetail.module.css`:
 }
 
 /* Destructive, so it sits apart from Download and Copy link rather than
-   one click away from them. */
+   one click away from them. On the wrapper rather than the control: the
+   control swaps itself for a question when armed, and the margin has to
+   survive that swap. */
 .delete {
   margin-left: auto;
 }
