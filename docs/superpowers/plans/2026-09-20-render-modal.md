@@ -6,7 +6,7 @@
 
 **Architecture:** `RenderDetailPage` splits into a fetching route, a body (`RenderDetail`) that takes a `RenderRecord` it does not fetch, and a native `<dialog>` wrapper (`RenderModal`). `RenderGrid` holds the open render's id and passes the record it already has, so the modal makes no request. The address bar does not change when the modal opens.
 
-**Tech Stack:** React 19, react-router-dom 7, TanStack Query 5, CSS modules, Vitest + Testing Library + MSW, jsdom.
+**Tech Stack:** React 19, react-router-dom 7, TanStack Query 5, CSS modules, Vitest + Testing Library + MSW, jsdom, `dialog-polyfill` (test stand-in for `<dialog>`).
 
 Design spec: `docs/superpowers/specs/2026-09-20-render-modal-design.md`.
 
@@ -19,48 +19,52 @@ Design spec: `docs/superpowers/specs/2026-09-20-render-modal-design.md`.
 - No backend change in this plan. Do not touch `web/openapi.json`, `web/src/api/schema.ts`, or anything under `zeitgeist/`.
 - Definition of Done (from `CLAUDE.md`) — all seven must pass before the work is reported finished:
   `uv run ruff check .`, `uv run ruff format --check .`, `uv run ty check`, `uv run pytest`, `npm --prefix web run lint`, `npm --prefix web run typecheck`, `npm --prefix web test`.
+- `<dialog>` is opened through `openModally` (Task 1), never `showModal()` directly. No Node DOM implements the element — verified across jsdom 25.0.1, 26.1.0 and 30.1.0, and happy-dom 20 — so the polyfill stands in under test.
 - Commit after every task.
 
 ---
 
-### Task 1: Bump jsdom so `<dialog>` is real under test
+### Task 1: Make `<dialog>` openable under test
 
-jsdom 25 does not implement `HTMLDialogElement.prototype.showModal` and throws on the call. Everything after this task depends on it working, including Escape closing a modal, so the assumption is proved before any component is written.
+`<dialog>` is the right production element — it brings Escape, the focus trap, `::backdrop`, top-layer stacking and background inerting that no hand-rolled overlay gets for free. But **no Node test environment implements it.** This was verified directly, not assumed:
+
+- jsdom exposes `HTMLDialogElement` whose prototype carries only `constructor, open` — no `showModal`, no `close` — in 25.0.1 (this repo's pin), 26.1.0 and 30.1.0 (latest). There is no version to bump to.
+- happy-dom does implement `showModal` and `close`, but does not close on Escape, so the close request is missing there too.
+
+So the platform element ships, and `dialog-polyfill` stands in for it under test. This task wires that up behind one function, so no component has to know about it.
 
 **Files:**
-- Modify: `web/package.json` (the `jsdom` devDependency)
+- Modify: `web/package.json` (add the `dialog-polyfill` dependency)
 - Modify: `web/package-lock.json` (regenerated)
-- Create: `web/src/test/dialog-support.test.tsx`
+- Modify: `web/src/test/setup.ts` (drop jsdom's hollow `HTMLDialogElement`)
+- Create: `web/src/components/modal.ts`
+- Test: `web/src/components/modal.test.tsx`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: a test environment where `showModal()` and Escape-to-close behave as browsers do. Tasks 5 and 6 rely on both. Whether a cancelled keydown also suppresses the close request is left to Task 5 to discover against the real components, and Task 5 Step 7 carries the fallback for the answer being no.
+- Produces: `openModally(dialog: HTMLDialogElement): void`. Task 5 calls it in place of `dialog.showModal()`. Everything else — `close()`, the `close` and `cancel` events — is the element's own API in production and the polyfill's faithful stand-in under test, so no wrapper is needed for those.
 
-- [ ] **Step 1: Write the environment guard test**
+**Two facts established by probe that later tasks depend on:**
 
-Create `web/src/test/dialog-support.test.tsx`:
+1. With the polyfill registered, Escape fires `cancel` then `close`, and `open` goes false. Reopening and explicit `close()` both work.
+2. The polyfill **ignores `preventDefault()` on the Escape keydown** but **honours `preventDefault()` on the `cancel` event**. Task 5's Escape-and-armed-confirm handling is built on `cancel` for that reason, and it is not conditional.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `web/src/components/modal.test.tsx`:
 
 ```tsx
-/**
- * The render modal is a native `<dialog>`, which buys Escape, the focus
- * trap, the backdrop and background inerting for nothing. All of that is
- * only testable because the environment implements `showModal`: jsdom 25
- * threw on the call, and `RenderModal` was written against jsdom 26.
- *
- * This guards that floor. If someone downgrades jsdom, or a future release
- * regresses the close request, this fails with a sentence naming the cause
- * rather than leaving `RenderModal.test.tsx` failing for reasons that look
- * like a bug in the modal.
- */
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useRef } from "react";
 import { describe, expect, it, vi } from "vitest";
 
+import { openModally } from "@/components/modal";
+
 function Probe({ onClose }: { onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement | null>(null);
   useEffect(() => {
-    dialog.current?.showModal();
+    if (dialog.current !== null) openModally(dialog.current);
   }, []);
   return (
     <dialog ref={dialog} onClose={onClose} aria-label="probe">
@@ -69,8 +73,16 @@ function Probe({ onClose }: { onClose: () => void }) {
   );
 }
 
-describe("the test environment's <dialog>", () => {
-  it("opens on showModal and closes on Escape", async () => {
+describe("openModally", () => {
+  it("opens a dialog modally, and leaves it closing on Escape", async () => {
+    // One case, because it names one assumption: that a `<dialog>` can be
+    // driven at all here. jsdom implements neither `showModal` nor `close`
+    // in any released version, so without the registration this function
+    // does, the call throws and the dialog never opens — which is the
+    // break this catches. Escape is asserted in the same breath because
+    // `RenderModal` gets Escape, the focus trap and the backdrop from the
+    // element rather than from code of its own; if the stand-in does not
+    // deliver that, the modal's own tests are measuring nothing.
     const onClose = vi.fn();
     const user = userEvent.setup();
     render(<Probe onClose={onClose} />);
@@ -84,39 +96,108 @@ describe("the test environment's <dialog>", () => {
 });
 ```
 
-One test, not two. This is a characterization test of an upstream assumption, and the rubric allows exactly one of those per assumption — the assumption here is "the environment implements modal dialogs", and splitting it into a case per symptom would start testing jsdom's feature list rather than naming the thing `RenderModal` was written against.
+- [ ] **Step 2: Run it to verify it fails**
 
-There is deliberately no third case here asserting that a handler inside can cancel the Escape. Whether jsdom honours a cancelled keydown as a suppressed close request is answered by Task 5's own `"lets an armed delete confirm have the first Escape"`, against the real components — and that case is what decides whether Task 5 Step 7's fallback is needed. A probe here could only be committed red on the branch where the answer is no, and a test whose failure is authorised in advance is not a gate.
+Run: `npm --prefix web test -- src/components/modal.test.tsx`
+Expected: FAIL — `Failed to resolve import "@/components/modal"`.
 
-- [ ] **Step 2: Run it against the current jsdom to watch it fail**
+- [ ] **Step 3: Add the dependency**
 
-Run: `npm --prefix web test -- src/test/dialog-support.test.tsx`
-Expected: FAIL. jsdom 25 throws `Not implemented: HTMLDialogElement.prototype.showModal`, so the dialog is never found.
+Run: `npm --prefix web install dialog-polyfill`
 
-- [ ] **Step 3: Bump the dependency**
+A `dependency`, not a devDependency: `modal.ts` is imported by shipped code. The polyfill never *runs* in a browser — every target supports `<dialog>` natively, so the guard below is false there — but the import is part of the bundle, which is the honest cost of testing the platform element rather than a substitute for it.
 
-Run: `npm --prefix web install --save-dev jsdom@^26`
+- [ ] **Step 4: Drop jsdom's hollow constructor**
 
-This rewrites both `web/package.json` and `web/package-lock.json`. CI runs `npm --prefix web ci`, so the lockfile must be committed with the manifest.
+`dialog-polyfill` warns `This browser already supports <dialog>, the polyfill may not work correctly` whenever `window.HTMLDialogElement` exists. jsdom defines that constructor while implementing none of its methods, so the warning is false and would print on every modal test — the project's bar is pristine test output.
 
-- [ ] **Step 4: Run the guard test again**
+Add to the end of `web/src/test/setup.ts`:
 
-Run: `npm --prefix web test -- src/test/dialog-support.test.tsx`
-Expected: PASS.
+```ts
+// jsdom defines `HTMLDialogElement` but implements neither `showModal` nor
+// `close` on it — the prototype carries only `constructor` and `open`, in
+// every released version. `dialog-polyfill` treats the constructor's mere
+// presence as proof of support and warns that it may misbehave, which is
+// false here and would print on every test that opens the render modal.
+//
+// Removing the hollow constructor makes the polyfill's own feature
+// detection tell it the truth. Nothing reads `window.HTMLDialogElement`:
+// the role mapping that finds `getByRole("dialog")` goes by tag name, and
+// `openModally` tests for the method rather than the constructor.
+Reflect.deleteProperty(window, "HTMLDialogElement");
+```
 
-**If it passes the `showModal` assertion but fails on Escape** — jsdom 26 opens a modal dialog but does not treat Escape as a close request — stop and report. The spec's fallback applies: a hand-rolled `role="dialog" aria-modal="true"` portal owning its own Escape handler, focus-on-open, focus restore and Tab trap. That is a different plan from Task 5 onward.
+- [ ] **Step 5: Write the helper**
 
-- [ ] **Step 5: Run the whole web suite to prove the bump broke nothing**
+Create `web/src/components/modal.ts`:
+
+```ts
+import dialogPolyfill from "dialog-polyfill";
+
+/**
+ * Open a `<dialog>` as a modal, wherever the code is running.
+ *
+ * In a browser this is `showModal()` and nothing else — the platform
+ * brings Escape, the focus trap, `::backdrop`, top-layer stacking and
+ * inerting of the page behind, none of which is worth reimplementing.
+ *
+ * Under test it needs help. No Node DOM implements the element: jsdom
+ * exposes `HTMLDialogElement` with only `open` on its prototype — no
+ * `showModal`, no `close` — in 25.0.1, 26.1.0 and 30.1.0 alike, and
+ * happy-dom implements the methods but never closes on Escape. So the
+ * polyfill stands in, and the tests drive a faithful implementation of the
+ * element rather than a stub of it.
+ *
+ * The guard is the method, not the constructor: jsdom has the constructor
+ * and none of the behaviour, so `window.HTMLDialogElement` would report
+ * support that is not there. In a real browser `showModal` is a function
+ * and the polyfill is never touched.
+ */
+export function openModally(dialog: HTMLDialogElement): void {
+  if (typeof dialog.showModal !== "function") {
+    dialogPolyfill.registerDialog(dialog);
+  }
+  dialog.showModal();
+}
+```
+
+If `dialog-polyfill` ships no types and `tsc` complains, add `web/src/dialog-polyfill.d.ts`:
+
+```ts
+declare module "dialog-polyfill" {
+  const dialogPolyfill: {
+    registerDialog(dialog: HTMLDialogElement): void;
+  };
+  export default dialogPolyfill;
+}
+```
+
+Check first — do not add the file if the package's own types resolve.
+
+- [ ] **Step 6: Run the test to verify it passes**
+
+Run: `npm --prefix web test -- src/components/modal.test.tsx`
+Expected: PASS, and **no** `This browser already supports <dialog>` warning in the output. A warning here means Step 4 did not take.
+
+- [ ] **Step 7: Run the whole web suite**
 
 Run: `npm --prefix web test`
-Expected: PASS. Every existing test still green; jsdom 26 tightens some DOM behaviours, so this is the check that matters.
+Expected: PASS, with the same count as before this task plus one.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Lint and type-check**
+
+Run: `npm --prefix web run lint`
+Run: `npm --prefix web run typecheck`
+Expected: PASS both.
+
+- [ ] **Step 9: Commit**
 
 ```bash
-git add web/package.json web/package-lock.json web/src/test/dialog-support.test.tsx
-git commit -m "Bump jsdom to 26 so <dialog> works under test"
+git add web/package.json web/package-lock.json web/src/test/setup.ts web/src/components/modal.ts web/src/components/modal.test.tsx
+git commit -m "Let a <dialog> be opened modally under test"
 ```
+
+If you added the declaration file, include `web/src/dialog-polyfill.d.ts` in the `git add`.
 
 ---
 
@@ -364,123 +445,26 @@ git commit -m "Add a button that copies a link to the clipboard"
 
 ---
 
-### Task 3: An armed `InlineConfirm` consumes its Escape
+### Task 3: folded into Task 5 — do not dispatch
 
-`InlineConfirm` disarms on Escape but lets the keystroke carry on. Inside a `<dialog>` that means one press both cancels the confirm and closes the modal. Escape should be claimed innermost-first.
+This task was "An armed `InlineConfirm` consumes its Escape", making the
+component call `preventDefault()` and `stopPropagation()` on the Escape it
+handles.
 
-**Files:**
-- Modify: `web/src/components/InlineConfirm.tsx` (the `onKeyDown` handler)
-- Test: `web/src/components/InlineConfirm.test.tsx` (add one case)
+It is gone because the mechanism changed. `dialog-polyfill` ignores
+`preventDefault()` on an Escape keydown and honours it on the `cancel`
+event, so the modal keeps itself open through the dialog's own `cancel`
+handler rather than by the confirm swallowing the keystroke. That handler
+needs to know a confirm is armed, which is a one-line `data-asking`
+attribute on `InlineConfirm` — setup for Task 5's deliverable, and folded
+into Task 5 accordingly.
 
-**Interfaces:**
-- Consumes: nothing.
-- Produces: `InlineConfirm`'s Escape handling now calls `preventDefault()` and `stopPropagation()`. Task 5 relies on it.
+The attribute gets no test of its own there: it has no user-visible
+consequence, and the only break it can suffer is exactly what fails Task
+5's `"lets an armed delete confirm have the first Escape"`.
 
-- [ ] **Step 1: Write the failing test**
-
-Append inside the existing `describe("InlineConfirm", ...)` block in `web/src/components/InlineConfirm.test.tsx`:
-
-```tsx
-  it("consumes the Escape that disarms it rather than letting it travel on", async () => {
-    // An armed confirm is the innermost dismissible thing on the screen.
-    // Without this, one Escape inside the render modal disarms the confirm
-    // *and* closes the modal, losing the view as a side effect of
-    // cancelling something else.
-    //
-    // Both halves matter and are checked separately: `defaultPrevented` is
-    // what suppresses a `<dialog>`'s close request, and the outer handler
-    // is what an ordinary React ancestor would see.
-    const outer = vi.fn();
-    let preventedAtDocument: boolean | undefined;
-    const watch = (event: KeyboardEvent) => {
-      preventedAtDocument = event.defaultPrevented;
-    };
-    document.addEventListener("keydown", watch);
-    try {
-      const user = userEvent.setup();
-      render(
-        <div onKeyDown={outer}>
-          <InlineConfirm label="Abort" question="Abort run?" onConfirm={vi.fn()} />
-        </div>,
-      );
-
-      await user.click(screen.getByRole("button", { name: "Abort" }));
-      await user.keyboard("{Escape}");
-
-      expect(screen.getByRole("button", { name: "Abort" })).toBeInTheDocument();
-      expect(preventedAtDocument).toBe(true);
-      expect(outer).not.toHaveBeenCalled();
-    } finally {
-      document.removeEventListener("keydown", watch);
-    }
-  });
-
-  it("leaves an Escape alone when it is not armed", async () => {
-    // The pair to the case above: a resting trigger must not swallow a
-    // keystroke meant for whatever surrounds it, or Escape would never
-    // close the render modal while a tile's confirm sat idle inside it.
-    const outer = vi.fn();
-    const user = userEvent.setup();
-    render(
-      <div onKeyDown={outer}>
-        <InlineConfirm label="Abort" question="Abort run?" onConfirm={vi.fn()} />
-      </div>,
-    );
-
-    screen.getByRole("button", { name: "Abort" }).focus();
-    await user.keyboard("{Escape}");
-
-    expect(outer).toHaveBeenCalledTimes(1);
-  });
-```
-
-- [ ] **Step 2: Run the tests to verify the first fails**
-
-Run: `npm --prefix web test -- src/components/InlineConfirm.test.tsx`
-Expected: the armed case FAILS — `preventedAtDocument` is `false` and `outer` was called once. The unarmed case already passes.
-
-- [ ] **Step 3: Make the handler claim the key**
-
-In `web/src/components/InlineConfirm.tsx`, replace:
-
-```tsx
-  function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") answer();
-  }
-```
-
-with:
-
-```tsx
-  function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key !== "Escape") return;
-    // An armed confirm is the innermost dismissible thing on the screen, so
-    // it consumes the keystroke rather than also dismissing whatever
-    // surrounds it. `preventDefault` is what stops a `<dialog>` treating
-    // the press as a close request; `stopPropagation` stops an ordinary
-    // React ancestor seeing it. The render modal needs both.
-    event.preventDefault();
-    event.stopPropagation();
-    answer();
-  }
-```
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-Run: `npm --prefix web test -- src/components/InlineConfirm.test.tsx`
-Expected: PASS, the whole file — the existing cases cover disarming on Escape, on `no` and on blur, and none of them should move.
-
-- [ ] **Step 5: Run every suite that uses an inline confirm**
-
-Run: `npm --prefix web test`
-Expected: PASS. `RunActions`, `RenderTile`, `RenderGrid`, `RunDetailPage` and `RenderDetailPage` all mount one.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add web/src/components/InlineConfirm.tsx web/src/components/InlineConfirm.test.tsx
-git commit -m "Let an armed confirm swallow the Escape that disarms it"
-```
+Task numbering is unchanged so that briefs, the ledger and every
+cross-reference in this plan keep pointing at the same tasks.
 
 ---
 
@@ -930,10 +914,11 @@ A native `<dialog>` around `RenderDetail`.
 - Create: `web/src/features/renders/RenderModal.tsx`
 - Create: `web/src/features/renders/RenderModal.module.css`
 - Modify: `web/src/styles/tokens.css` (one token)
+- Modify: `web/src/components/InlineConfirm.tsx` (one attribute — Task 3, folded in here)
 - Test: `web/src/features/renders/RenderModal.test.tsx`
 
 **Interfaces:**
-- Consumes: `RenderDetail`, `templateLabel` from Task 4; the jsdom floor from Task 1; `InlineConfirm`'s Escape claim from Task 3.
+- Consumes: `RenderDetail`, `templateLabel` from Task 4; `openModally` from Task 1.
 - Produces: `RenderModal({ record, onClose, onDeleted }: { record: RenderRecord; onClose: () => void; onDeleted: () => void })`. Task 6 mounts it.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1114,6 +1099,7 @@ Create `web/src/features/renders/RenderModal.tsx`:
 import { useEffect, useRef } from "react";
 
 import type { RenderRecord } from "@/api/types";
+import { openModally } from "@/components/modal";
 import { RenderDetail, templateLabel } from "@/features/renders/RenderDetail";
 
 import styles from "./RenderModal.module.css";
@@ -1153,7 +1139,7 @@ export function RenderModal({
   const dialog = useRef<HTMLDialogElement | null>(null);
 
   useEffect(() => {
-    dialog.current?.showModal();
+    if (dialog.current !== null) openModally(dialog.current);
   }, []);
 
   return (
@@ -1165,6 +1151,21 @@ export function RenderModal({
       // caller is worse than naming the dialog here.
       aria-label={templateLabel(record)}
       onClose={onClose}
+      onCancel={(event) => {
+        // Escape arrives here as a close request. An armed delete confirm
+        // is the innermost dismissible thing on the screen and must have
+        // the keystroke to itself, so the first press only disarms and the
+        // second closes the modal.
+        //
+        // Read off the DOM rather than lifted into state: `InlineConfirm`
+        // owns whether it is asking, and mirroring that up through
+        // `RenderDetail` would give two places to disagree. Cancelling the
+        // keydown instead does not work — a dialog's close request
+        // survives it under `dialog-polyfill`, which the tests run on.
+        if (dialog.current?.querySelector('[data-asking="true"]') != null) {
+          event.preventDefault();
+        }
+      }}
       onClick={(event) => {
         // A modal `<dialog>` fills the viewport, so a click whose target is
         // the element itself landed on the backdrop or the dialog's own
@@ -1234,41 +1235,47 @@ Create `web/src/features/renders/RenderModal.module.css`:
 }
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 5: Mark an armed `InlineConfirm`, which Step 4's `onCancel` reads**
+
+This is the folded-in Task 3, and it is not optional — the `onCancel` handler above has nothing to read without it.
+
+In `web/src/components/InlineConfirm.tsx`, add `data-asking="true"` to the container `div` that carries `onKeyDown` (the one the asking branch renders, classed `styles.tileAsking` / `styles.asking`):
+
+```tsx
+    <div
+      className={tile ? styles.tileAsking : styles.asking}
+      // Read by an enclosing `<dialog>` — the render modal — so Escape
+      // reaches the innermost dismissible thing first: an armed confirm
+      // disarms on the first press, and the modal closes on the second.
+      // The confirm cannot do this by cancelling the keystroke, because a
+      // dialog's close request survives that.
+      data-asking="true"
+      onKeyDown={onKeyDown}
+      onBlur={onBlur}
+    >
+```
+
+No test of its own. The attribute has no user-visible consequence, and the only break it can suffer — the marker going missing — is exactly what fails `"lets an armed delete confirm have the first Escape"` in Step 1. A second test would pin the mechanism while duplicating the coverage.
+
+`InlineConfirm` is shared, so run the screens that mount it before committing.
+
+Run: `npm --prefix web test -- src/components/InlineConfirm.test.tsx src/features/runs src/features/topics src/features/renders`
+Expected: PASS.
+
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `npm --prefix web test -- src/features/renders/RenderModal.test.tsx`
 Expected: PASS, all nine.
 
-- [ ] **Step 6: Run the stylesheet gate**
+- [ ] **Step 7: Run the stylesheet gate**
 
 Run: `npm --prefix web test -- src/styles/no-raw-colours.test.ts`
 Expected: PASS. `--scrim` is the only new colour and it lives in `tokens.css`.
 
-- [ ] **Step 7: If the armed-confirm Escape case fails**
-
-Only if `"lets an armed delete confirm have the first Escape"` fails with `onClose` called once — meaning jsdom does not honour a cancelled keydown as a suppressed close request. Add a `cancel` handler to the dialog that refuses while a confirm is showing:
-
-```tsx
-      onCancel={(event) => {
-        // Escape reaches the dialog as a close request even when something
-        // inside has already cancelled the keystroke. Refuse it while an
-        // inline confirm is armed, so the first press only disarms.
-        if (dialog.current?.querySelector('[data-asking="true"]') !== null) {
-          event.preventDefault();
-        }
-      }}
-```
-
-That needs `InlineConfirm` to mark its armed state. In `web/src/components/InlineConfirm.tsx`, add `data-asking="true"` to the container `div` that carries `onKeyDown`, with a comment naming the modal as the reader.
-
-The attribute gets no test of its own. It has no user-visible consequence, and the only break it can suffer — the marker going missing — is exactly what fails `"lets an armed delete confirm have the first Escape"` above, since the handler you just added reads it. A second test would pin the mechanism while duplicating the coverage.
-
-If the case passed, skip this step entirely — do not add the handler or the attribute.
-
 - [ ] **Step 8: Commit**
 
 ```bash
-git add web/src/features/renders/RenderModal.tsx web/src/features/renders/RenderModal.module.css web/src/features/renders/RenderModal.test.tsx web/src/styles/tokens.css web/src/components/InlineConfirm.tsx web/src/components/InlineConfirm.test.tsx
+git add web/src/features/renders/RenderModal.tsx web/src/features/renders/RenderModal.module.css web/src/features/renders/RenderModal.test.tsx web/src/styles/tokens.css web/src/components/InlineConfirm.tsx
 git commit -m "Add a modal that shows one render over its topic"
 ```
 

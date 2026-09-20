@@ -17,8 +17,7 @@ In:
   decoded image dimensions from the render view.
 - Splitting `RenderDetailPage` into a fetching route and a body both it and
   the modal draw.
-- `jsdom` `^25.0.1` → `^26`, so `HTMLDialogElement.showModal` exists under
-  test.
+- `dialog-polyfill` as a dependency, standing in for `<dialog>` under test.
 
 Out:
 
@@ -112,10 +111,10 @@ modal is closed.
 
 ## Closing it
 
-Three ways out, and the native element gives two of them. `showModal()` is
-called from an effect on mount, which brings Escape, the focus trap, the
-`::backdrop` pseudo-element, top-layer stacking and inerting of everything
-behind it. The `✕` calls `close()`. A click on the backdrop is not handled
+Three ways out, and the element gives two of them. It is opened from an
+effect on mount through `openModally`, which brings Escape, the focus
+trap, the `::backdrop` pseudo-element, top-layer stacking and inerting of
+everything behind it. The `✕` calls `close()`. A click on the backdrop is not handled
 by the platform, so the dialog carries an `onClick` that closes when
 `event.target === dialogRef.current` — a click that landed on the dialog
 box itself rather than any of its children, which for a `<dialog>` in the
@@ -126,23 +125,21 @@ out — Escape, `✕`, backdrop, a completed delete — converges on one place.
 
 ### Escape and the delete confirm
 
-`InlineConfirm` handles Escape to disarm itself but does not stop the
-event. Inside a dialog that means one Escape would both disarm a
-`Delete this render?` and close the modal, losing the view as a
-side effect of cancelling something else.
+`InlineConfirm` handles Escape to disarm itself. Inside a dialog, one
+Escape would otherwise both disarm a `Delete this render?` and close the
+modal, losing the view as a side effect of cancelling something else.
 
-`InlineConfirm` will call `preventDefault()` on the Escape it handles.
-Escape is then claimed innermost-first: the first press disarms the
-confirm, a second closes the modal. This is correct on its own terms —
-an armed confirm is the innermost dismissible thing on the screen, and
-today it silently lets the keystroke carry on to whatever is outside it —
-so it gets its own test in `InlineConfirm.test.tsx` rather than being
-folded into the modal's.
+Escape is claimed innermost-first: the first press disarms the confirm, a
+second closes the modal. The mechanism is the dialog's own `cancel`
+handler, which calls `preventDefault()` while a confirm is armed — not the
+confirm cancelling the keystroke, because a close request survives that
+under the test stand-in.
 
-If `jsdom` 26 turns out not to honour a cancelled keydown as a suppressed
-close request, the fallback is a `cancel` handler on the dialog that
-`preventDefault()`s while a confirm is armed. The `InlineConfirm` change
-stands either way.
+The modal reads the armed state off the DOM, through a `data-asking`
+attribute on `InlineConfirm`'s asking container. Lifting it into React
+state would thread it up through `RenderDetail` and give two places to
+disagree about whether a confirm is showing; the component that owns the
+state stays the one that reports it.
 
 ## Deleting
 
@@ -196,18 +193,36 @@ will notice.
 
 ## Dependency
 
-`jsdom` moves from `^25.0.1` to `^26` in `web/package.json`, with
-`package-lock.json` regenerated. jsdom 25 does not implement
-`HTMLDialogElement.prototype.showModal` and throws on the call, so without
-this the modal could only be tested against a stub of the behaviour under
-test.
+`<dialog>` is the right production element, and no Node test environment
+implements it. This was measured rather than assumed:
 
-This is the first step of implementation, ahead of any component work, and
-the whole web suite has to stay green across it. If it does not, the
-fallback is a hand-rolled `role="dialog" aria-modal="true"` portal owning
-its own Escape handler, focus-on-open, focus restore and Tab trap — the
-same external behaviour, roughly sixty more lines of our own a11y code,
-and no dependency change.
+- jsdom exposes `HTMLDialogElement` whose prototype carries only
+  `constructor` and `open` — no `showModal`, no `close` — in 25.0.1 (this
+  repo's pin), 26.1.0 and 30.1.0. There is no version to upgrade to.
+- happy-dom 20 implements `showModal` and `close`, but Escape does not
+  close the dialog, so the close request is missing there too.
+
+So the element ships and `dialog-polyfill` stands in for it under test,
+behind one function — `openModally` — that registers the polyfill only
+when `showModal` is absent. In a browser that guard is false and the
+polyfill never runs; the import is still in the bundle, which is the cost
+of testing the platform element rather than a substitute for it.
+
+The tests therefore drive a faithful implementation of `<dialog>` rather
+than a hand-written stub, which was the objection that ruled stubbing out.
+They are still not driving the thing that ships, and that is the honest
+limit of this approach: the focus trap, top-layer stacking and background
+inerting are verified by hand in a browser, not by the suite.
+
+Two behaviours of the stand-in shape the design. Escape fires `cancel`
+then `close` and clears `open`, as the platform does. But it ignores
+`preventDefault()` on the Escape keydown while honouring it on the
+`cancel` event — which is why the modal holds itself open through a
+`cancel` handler rather than by the confirm swallowing the keystroke.
+
+`web/src/test/setup.ts` deletes jsdom's hollow `HTMLDialogElement`
+constructor, because the polyfill reads its presence as proof of support
+and warns otherwise — a false warning on every modal test.
 
 ## Accessibility
 
