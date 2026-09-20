@@ -662,11 +662,11 @@ git commit -m "Add a button that copies a link to the clipboard"
 
 **Files:**
 - Modify: `web/src/components/InlineConfirm.tsx` (the `onKeyDown` handler)
-- Test: `web/src/components/InlineConfirm.test.tsx` (add one case)
+- Test: `web/src/components/InlineConfirm.test.tsx` (add two cases)
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `InlineConfirm`'s Escape handling now calls `preventDefault()` and `stopPropagation()`. `stopPropagation` is what keeps the keystroke from reaching `Modal`'s handler, so Task 5 relies on it.
+- Produces: `InlineConfirm`'s Escape handling now calls `stopPropagation()`, which keeps the keystroke from reaching `Modal`'s handler. Task 5 relies on it.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -679,32 +679,24 @@ Append inside the existing `describe("InlineConfirm", ...)` block in `web/src/co
     // *and* closes the modal, losing the view as a side effect of
     // cancelling something else.
     //
-    // Both halves matter and are checked separately: `defaultPrevented` is
-    // what suppresses a `<dialog>`'s close request, and the outer handler
-    // is what an ordinary React ancestor would see.
+    // The enclosing `onKeyDown` stands in for `Modal`'s own handler, which
+    // is an ancestor of every confirm drawn inside one. That it is never
+    // called IS the requirement — there is no separate `defaultPrevented`
+    // assertion to make, because `stopPropagation()` halts the native
+    // event too, so no listener further up ever runs to observe it.
     const outer = vi.fn();
-    let preventedAtDocument: boolean | undefined;
-    const watch = (event: KeyboardEvent) => {
-      preventedAtDocument = event.defaultPrevented;
-    };
-    document.addEventListener("keydown", watch);
-    try {
-      const user = userEvent.setup();
-      render(
-        <div onKeyDown={outer}>
-          <InlineConfirm label="Abort" question="Abort run?" onConfirm={vi.fn()} />
-        </div>,
-      );
+    const user = userEvent.setup();
+    render(
+      <div onKeyDown={outer}>
+        <InlineConfirm label="Abort" question="Abort run?" onConfirm={vi.fn()} />
+      </div>,
+    );
 
-      await user.click(screen.getByRole("button", { name: "Abort" }));
-      await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Abort" }));
+    await user.keyboard("{Escape}");
 
-      expect(screen.getByRole("button", { name: "Abort" })).toBeInTheDocument();
-      expect(preventedAtDocument).toBe(true);
-      expect(outer).not.toHaveBeenCalled();
-    } finally {
-      document.removeEventListener("keydown", watch);
-    }
+    expect(screen.getByRole("button", { name: "Abort" })).toBeInTheDocument();
+    expect(outer).not.toHaveBeenCalled();
   });
 
   it("leaves an Escape alone when it is not armed", async () => {
@@ -729,7 +721,7 @@ Append inside the existing `describe("InlineConfirm", ...)` block in `web/src/co
 - [ ] **Step 2: Run the tests to verify the first fails**
 
 Run: `npm --prefix web test -- src/components/InlineConfirm.test.tsx`
-Expected: the armed case FAILS — `preventedAtDocument` is `false` and `outer` was called once. The unarmed case already passes.
+Expected: the armed case FAILS — `outer` was called once, because the keystroke travels past the confirm to the enclosing handler. The unarmed case already passes.
 
 - [ ] **Step 3: Make the handler claim the key**
 
@@ -748,11 +740,12 @@ with:
     if (event.key !== "Escape") return;
     // An armed confirm is the innermost dismissible thing on the screen, so
     // it consumes the keystroke rather than also dismissing whatever
-    // surrounds it. `stopPropagation` is what keeps it from reaching
-    // `Modal`'s own Escape handler, an ancestor of every confirm drawn
-    // inside one; `preventDefault` marks it handled for anything that
-    // inspects the event rather than receiving it.
-    event.preventDefault();
+    // surrounds it — `Modal`'s own Escape handler sits on an ancestor of
+    // every confirm drawn inside one.
+    //
+    // No `preventDefault` beside this: React's `stopPropagation` halts the
+    // native event as well, so nothing further up ever runs to inspect the
+    // flag, and a call nothing can observe is a call nothing can test.
     event.stopPropagation();
     answer();
   }
