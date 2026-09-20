@@ -1609,18 +1609,38 @@ Add to `web/src/features/topics/RenderGrid.test.tsx`, inside the existing `descr
     // either, and would still have made the tile's href a promise it does
     // not keep. All four are exercised because dropping any one of them
     // from `opensHere` must fail something.
+    //
+    // The document listener does two jobs. It reads the app's decision
+    // after the tile's own handler has run and before the anchor's default
+    // action — React delegates at the root container, which is inside
+    // `document.body`, so this runs second. Then it cancels the event
+    // itself: jsdom cannot navigate, and letting an unprevented click on an
+    // `<a href>` through makes it log `Not implemented: navigation`, which
+    // is noise in an otherwise clean run.
     renderGrid([makeRenderRecord({ id: "r1", templateId: "drake" })]);
     const tile = screen.getByAltText("drake meme");
 
-    const click = createEvent.click(tile, {
-      bubbles: true,
-      cancelable: true,
-      button: 0,
-      ...init,
-    });
-    fireEvent(tile, click);
+    let appPrevented: boolean | undefined;
+    const watch = (event: MouseEvent) => {
+      appPrevented = event.defaultPrevented;
+      event.preventDefault();
+    };
+    document.addEventListener("click", watch);
+    try {
+      fireEvent(
+        tile,
+        createEvent.click(tile, {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          ...init,
+        }),
+      );
+    } finally {
+      document.removeEventListener("click", watch);
+    }
 
-    expect(click.defaultPrevented).toBe(false);
+    expect(appPrevented).toBe(false);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
