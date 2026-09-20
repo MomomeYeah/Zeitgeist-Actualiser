@@ -775,6 +775,7 @@ git commit -m "Let an armed confirm swallow the Escape that disarms it"
 Pull the body out of `RenderDetailPage` so the modal can draw it, and trim it in the same move: no caption slots, no run id, no generated time, no image dimensions.
 
 **Files:**
+- Create: `web/src/features/renders/render.ts`
 - Create: `web/src/features/renders/RenderDetail.tsx`
 - Create: `web/src/features/renders/RenderDetail.module.css`
 - Modify: `web/src/features/renders/RenderDetailPage.tsx` (rewritten to fetch, head and delegate)
@@ -783,11 +784,18 @@ Pull the body out of `RenderDetailPage` so the modal can draw it, and trim it in
 
 **Interfaces:**
 - Consumes: `CopyLinkButton({ path })` from Task 2.
-- Produces:
+- Produces, from `web/src/features/renders/render.ts`:
   - `templateLabel(record: RenderRecord): string` — the template id or `"no template chosen"`.
   - `renderPath(record: RenderRecord): string` — `/runs/{run}/renders/{id}`, both segments URI-encoded.
+
+  and from `web/src/features/renders/RenderDetail.tsx`:
   - `RenderDetail({ record, onDeleted }: { record: RenderRecord; onDeleted: () => void })`.
-  Tasks 5 and 6 import all three.
+
+  The two helpers live in their own module rather than beside the
+  component because `react-refresh/only-export-components` warns on a file
+  that exports both, and this repo's lint output is otherwise clean. Task 5
+  imports `templateLabel` from `render.ts`; Task 6 imports `renderPath`
+  from it.
 
 - [ ] **Step 1: Rewrite the page's test for the trimmed body**
 
@@ -854,21 +862,10 @@ Expected: FAIL — `"offers a copy of its own permanent link"` finds no such but
 
 - [ ] **Step 3: Write `RenderDetail`**
 
-Create `web/src/features/renders/RenderDetail.tsx`:
+Create `web/src/features/renders/render.ts`:
 
-```tsx
-import { useState } from "react";
-
-import { imageUrl } from "@/api/client";
-import { useDeleteRender } from "@/api/queries";
+```ts
 import type { RenderRecord } from "@/api/types";
-import { Chip } from "@/components/Chip";
-import { CopyLinkButton } from "@/components/CopyLinkButton";
-import { InlineConfirm } from "@/components/InlineConfirm";
-import { SectionLabel } from "@/components/SectionLabel";
-import { shortRunId } from "@/format";
-
-import styles from "./RenderDetail.module.css";
 
 /**
  * What to call a render's template.
@@ -890,6 +887,29 @@ export function renderPath(record: RenderRecord): string {
     `/renders/${encodeURIComponent(record.id)}`
   );
 }
+```
+
+These get no test of their own: `templateLabel`'s fallback is asserted
+through the page's `"says no template was chosen"` case, and `renderPath`
+through the grid's `href` assertion. A separate test would pin two
+one-line functions at their use sites' expense.
+
+Create `web/src/features/renders/RenderDetail.tsx`:
+
+```tsx
+import { useState } from "react";
+
+import { imageUrl } from "@/api/client";
+import { useDeleteRender } from "@/api/queries";
+import type { RenderRecord } from "@/api/types";
+import { Chip } from "@/components/Chip";
+import { CopyLinkButton } from "@/components/CopyLinkButton";
+import { InlineConfirm } from "@/components/InlineConfirm";
+import { SectionLabel } from "@/components/SectionLabel";
+import { renderPath, templateLabel } from "@/features/renders/render";
+import { shortRunId } from "@/format";
+
+import styles from "./RenderDetail.module.css";
 
 /**
  * One render, at full size: the meme, what made it, and what can be done
@@ -1106,7 +1126,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useRender, useTopicDetail } from "@/api/queries";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { QueryBoundary } from "@/components/QueryBoundary";
-import { RenderDetail, templateLabel } from "@/features/renders/RenderDetail";
+import { RenderDetail } from "@/features/renders/RenderDetail";
+import { templateLabel } from "@/features/renders/render";
 
 import styles from "./RenderDetailPage.module.css";
 
@@ -1222,7 +1243,7 @@ git commit -m "Split the render body out of its page, and trim it"
 - Test: `web/src/features/renders/RenderModal.test.tsx`
 
 **Interfaces:**
-- Consumes: `Modal` from Task 1; `RenderDetail`, `templateLabel` from Task 4; `InlineConfirm`'s Escape claim from Task 3.
+- Consumes: `Modal` from Task 1; `RenderDetail` and `templateLabel` from Task 4 (the latter from `@/features/renders/render`); `InlineConfirm`'s Escape claim from Task 3.
 - Produces: `RenderModal({ record, onClose, onDeleted }: { record: RenderRecord; onClose: () => void; onDeleted: () => void })`. Task 6 mounts it.
 
 **What this task does not test.** Escape, the backdrop click, the focus trap and focus restore belong to `Modal` and are covered by `Modal.test.tsx` in Task 1. Re-asserting them here would pin the same behaviour twice. The one exception is the armed-confirm case: that is an interaction *between* `InlineConfirm` and `Modal` that neither component's own tests can see, and it is the subtlest thing on this screen.
@@ -1369,7 +1390,8 @@ Create `web/src/features/renders/RenderModal.tsx`:
 ```tsx
 import type { RenderRecord } from "@/api/types";
 import { Modal } from "@/components/Modal";
-import { RenderDetail, templateLabel } from "@/features/renders/RenderDetail";
+import { RenderDetail } from "@/features/renders/RenderDetail";
+import { templateLabel } from "@/features/renders/render";
 
 import styles from "./RenderModal.module.css";
 
@@ -1737,7 +1759,7 @@ Replace the local `to` construction with the shared one. Delete these lines:
 Add to the imports:
 
 ```tsx
-import { renderPath } from "@/features/renders/RenderDetail";
+import { renderPath } from "@/features/renders/render";
 ```
 
 And in the returned `MemeTile`:
