@@ -1,0 +1,31 @@
+/* The quiet sibling of RenderDetail's accent Download button: same pill
+   geometry, an outline instead of a fill, because one surface gets one
+   accent action. */
+.button {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 13px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: none;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color var(--transition);
+}
+
+.button:hover {
+  border-color: var(--border-hover);
+}
+
+.refused {
+  flex-basis: 100%;
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  color: var(--contrast-light);
+}
