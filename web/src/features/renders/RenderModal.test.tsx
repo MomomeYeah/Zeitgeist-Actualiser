@@ -10,18 +10,16 @@ import { server } from "@/test/server";
 
 function openModal(
   overrides: Parameters<typeof makeRenderRecord>[0] = {},
-  handlers: { onClose?: () => void; onDeleted?: () => void } = {},
+  handlers: { onClose?: () => void } = {},
 ) {
   const onClose = handlers.onClose ?? vi.fn();
-  const onDeleted = handlers.onDeleted ?? vi.fn();
   renderWithProviders(
     <RenderModal
       record={makeRenderRecord({ id: "r1", templateId: "drake", ...overrides })}
       onClose={onClose}
-      onDeleted={onDeleted}
     />,
   );
-  return { onClose, onDeleted, user: userEvent.setup() };
+  return { onClose, user: userEvent.setup() };
 }
 
 describe("RenderModal", () => {
@@ -83,23 +81,6 @@ describe("RenderModal", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("reports a confirmed delete once it has gone through", async () => {
-    let deleted = "";
-    server.use(
-      http.delete("/api/renders/:renderId", ({ params }) => {
-        deleted = String(params.renderId);
-        return new HttpResponse(null, { status: 204 });
-      }),
-    );
-    const { onDeleted, user } = openModal();
-
-    await user.click(screen.getByRole("button", { name: "Delete" }));
-    await user.click(screen.getByRole("button", { name: "yes" }));
-
-    await vi.waitFor(() => expect(onDeleted).toHaveBeenCalledTimes(1));
-    expect(deleted).toBe("r1");
-  });
-
   it("stays open, and says why, when the server will not delete", async () => {
     // The error is only readable while the modal is up, so closing on
     // failure would throw away the one thing the user needs to see.
@@ -108,7 +89,7 @@ describe("RenderModal", () => {
         HttpResponse.json({ detail: "Permission denied: renders/r1.png" }, { status: 500 }),
       ),
     );
-    const { onClose, onDeleted, user } = openModal();
+    const { onClose, user } = openModal();
 
     await user.click(screen.getByRole("button", { name: "Delete" }));
     await user.click(screen.getByRole("button", { name: "yes" }));
@@ -116,7 +97,6 @@ describe("RenderModal", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Permission denied: renders/r1.png",
     );
-    expect(onDeleted).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });

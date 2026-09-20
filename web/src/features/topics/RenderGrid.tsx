@@ -1,7 +1,9 @@
-import { useRef } from "react";
+import type { MouseEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { GenerationRequest, RenderRecord } from "@/api/types";
 import { SectionLabel } from "@/components/SectionLabel";
+import { RenderModal } from "@/features/renders/RenderModal";
 import { GeneratingTile, RenderTile } from "@/features/topics/RenderTile";
 import { shortRunId } from "@/format";
 
@@ -23,6 +25,24 @@ function hint(renders: RenderRecord[], placeholders: number, runId: string): str
   const failed = count("failed");
   if (failed > 0) parts.push(`${failed} failed`);
   return parts.join(" · ");
+}
+
+/**
+ * Whether a click meant "here" rather than "somewhere else".
+ *
+ * ⌘, ctrl and shift on a link mean a new tab or window, and alt means
+ * download; those belong to the browser, and swallowing them would make the
+ * tile's href a promise it does not keep. `button` is belt and braces — a
+ * middle click fires `auxclick` rather than `click` in current browsers.
+ */
+function opensHere(event: MouseEvent): boolean {
+  return (
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.shiftKey &&
+    !event.altKey &&
+    event.button === 0
+  );
 }
 
 /** One placeholder per meme a request still in flight asked for. */
@@ -66,6 +86,30 @@ export function RenderGrid({
   const placeholders = pending.flatMap(placeholdersFor);
   const empty = renders.length === 0 && placeholders.length === 0;
   const anchor = useRef<HTMLDivElement | null>(null);
+  // The id rather than the record: the row behind it can change — a
+  // generating render turning ready — and a copy taken at click time would
+  // show a frame that has already moved on.
+  const [openId, setOpenId] = useState<string | null>(null);
+  const open = renders.find((render) => render.id === openId) ?? null;
+
+  // The open render's row leaving the list is how a delete finishes: the
+  // mutation drops it from the cache, so `open` goes null and the modal
+  // unmounts on the very next render. That is also why the modal cannot
+  // report the delete through a callback — react-query does not run a
+  // `mutate()` callback whose component has already gone, and this one
+  // has.
+  //
+  // Focus is what needs rescuing. `Modal` hands it back to whatever opened
+  // it, but that tile went with the row, and a detached node cannot take
+  // focus, so it falls to the document. This effect runs after that
+  // cleanup and puts it on the section label instead — where a tile-level
+  // delete already sends it, a tab away from whatever tiles remain.
+  useEffect(() => {
+    if (openId !== null && open === null) {
+      setOpenId(null);
+      anchor.current?.focus();
+    }
+  }, [openId, open]);
 
   return (
     <section className={styles.section}>
@@ -80,7 +124,15 @@ export function RenderGrid({
         <ul className={styles.grid}>
           {renders.map((render) => (
             <li key={render.id}>
-              <RenderTile render={render} onRemoved={() => anchor.current?.focus()} />
+              <RenderTile
+                render={render}
+                onRemoved={() => anchor.current?.focus()}
+                onOpen={(event) => {
+                  if (!opensHere(event)) return;
+                  event.preventDefault();
+                  setOpenId(render.id);
+                }}
+              />
             </li>
           ))}
           {placeholders.map((tile, index) => (
@@ -92,6 +144,7 @@ export function RenderGrid({
           ))}
         </ul>
       )}
+      {open !== null && <RenderModal record={open} onClose={() => setOpenId(null)} />}
     </section>
   );
 }

@@ -1,7 +1,10 @@
+import type { MouseEvent } from "react";
+
 import { useDeleteRender } from "@/api/queries";
 import type { RenderRecord } from "@/api/types";
 import { InlineConfirm } from "@/components/InlineConfirm";
 import { MemeTile } from "@/components/MemeTile";
+import { renderPath } from "@/features/renders/render";
 
 import styles from "./RenderTile.module.css";
 
@@ -67,6 +70,7 @@ export function GeneratingTile({
 export function RenderTile({
   render,
   onRemoved,
+  onOpen,
 }: {
   render: RenderRecord;
   /**
@@ -74,6 +78,8 @@ export function RenderTile({
    * this tile is about to unmount with.
    */
   onRemoved?: () => void;
+  /** First refusal on a click of a ready tile's image — see `MemeTile`. */
+  onOpen?: (event: MouseEvent<HTMLAnchorElement>) => void;
 }) {
   const remove = useDeleteRender();
   const drop = () => remove.mutate(render, { onSuccess: onRemoved });
@@ -135,16 +141,14 @@ export function RenderTile({
     );
   }
 
-  const to =
-    `/runs/${encodeURIComponent(render.run_id)}` +
-    `/renders/${encodeURIComponent(render.id)}`;
   return (
     <div className={styles.tile}>
       <MemeTile
         renderId={render.id}
         size="grid"
-        to={to}
+        to={renderPath(render)}
         templateId={render.template_id ?? undefined}
+        onActivate={onOpen}
       />
       <InlineConfirm
         variant="tile"

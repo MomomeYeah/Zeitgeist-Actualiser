@@ -10,8 +10,16 @@ import styles from "./RenderModal.module.css";
  *
  * Everything about being a modal — Escape, the focus trap, focus restore,
  * the backdrop — belongs to `Modal`. What is added here is the close
- * button, which `Modal` leaves to its caller, and the decision about what
- * a finished delete means.
+ * button, which `Modal` leaves to its caller.
+ *
+ * There is no `onDeleted` prop. The grid that opens this modal derives
+ * which render is open from its own `renders`, so a successful delete
+ * drops the row and this modal unmounts on the very next render — before
+ * react-query would run a `mutate()` callback on a component that has
+ * already gone. `RenderGrid` watches the row leaving instead. `RenderDetail`
+ * still requires the prop, so a no-op is passed through here; it is the
+ * standalone page's own `onDeleted` — not forwarded from here — that
+ * navigates, because that page is still mounted when its delete resolves.
  *
  * The address bar does not change while this is open. The permanent route
  * is still there and `Copy link` hands it out, but browsing a grid of
@@ -20,17 +28,10 @@ import styles from "./RenderModal.module.css";
 export function RenderModal({
   record,
   onClose,
-  onDeleted,
 }: {
   record: RenderRecord;
   /** Escape, the backdrop, or the close button. */
   onClose: () => void;
-  /**
-   * The row has been deleted. Separate from `onClose` because the caller
-   * has more to do — the tile this modal was opened from has gone with the
-   * row, so focus needs somewhere to land.
-   */
-  onDeleted: () => void;
 }) {
   return (
     <Modal label={templateLabel(record)} onClose={onClose}>
@@ -42,7 +43,7 @@ export function RenderModal({
       >
         ✕
       </button>
-      <RenderDetail record={record} onDeleted={onDeleted} />
+      <RenderDetail record={record} onDeleted={() => undefined} />
     </Modal>
   );
 }
