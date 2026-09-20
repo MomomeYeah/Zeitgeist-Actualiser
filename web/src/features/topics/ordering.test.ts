@@ -153,6 +153,9 @@ describe("foldNarrowSegments", () => {
     // An eleven-way tie gives every sentiment 9%, and `heartwarming 3`
     // needs 14%. Folding every segment that fails would leave the bar a
     // single `+11 others`, which names nothing at all.
+    //
+    // Sorting equal counts is stable, so the leader is whichever sentiment
+    // is listed first here.
     const tied = Object.fromEntries(
       [
         "heartwarming",

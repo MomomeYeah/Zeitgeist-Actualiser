@@ -160,8 +160,13 @@ describe("TopicsPage", () => {
 
     const mood = await screen.findByTestId("mood");
     expect(within(mood).getByText("outrage 35")).toBeInTheDocument();
-    expect(within(mood).getByText("+6 others")).toBeInTheDocument();
     expect(within(mood).queryByText("cringe 5")).not.toBeInTheDocument();
+    // The fold takes six names off the bar, so the segment standing in for
+    // them has to hand them back on hover.
+    expect(within(mood).getByText("+6 others")).toHaveAttribute(
+      "title",
+      "cringe 5, funny 4, sad 3, cute 3, awe 2, gross 2",
+    );
   });
 
   it("says how the leading sentiment moved against the previous run", async () => {
