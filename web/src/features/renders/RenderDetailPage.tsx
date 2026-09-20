@@ -3,7 +3,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useRender, useTopicDetail } from "@/api/queries";
 import { Breadcrumb } from "@/components/Breadcrumb";
 import { QueryBoundary } from "@/components/QueryBoundary";
-import { RenderDetail, templateLabel } from "@/features/renders/RenderDetail";
+import { RenderDetail } from "@/features/renders/RenderDetail";
+import { templateLabel } from "@/features/renders/render";
 
 import styles from "./RenderDetailPage.module.css";
 
