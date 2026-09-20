@@ -1,3 +1,4 @@
+import type { MouseEvent } from "react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -27,11 +28,19 @@ export function MemeTile({
   size,
   to,
   templateId,
+  onActivate,
 }: {
   renderId: string;
   size: 34 | "grid";
   to?: string;
   templateId?: string;
+  /**
+   * First refusal on a click of the tile's link. The tile stays an anchor
+   * either way — the topic grid opens a modal on an ordinary click but
+   * leaves the href for hover and for a modified click — so this decides
+   * nothing itself and only hands the event on.
+   */
+  onActivate?: (event: MouseEvent<HTMLAnchorElement>) => void;
 }) {
   const [failed, setFailed] = useState(false);
 
@@ -65,7 +74,7 @@ export function MemeTile({
 
   return (
     <span className={grid ? `${styles.tile} ${styles.grid}` : styles.tile} style={box}>
-      {to === undefined ? image : <Link to={to}>{image}</Link>}
+      {to === undefined ? image : <Link to={to} onClick={onActivate}>{image}</Link>}
     </span>
   );
 }

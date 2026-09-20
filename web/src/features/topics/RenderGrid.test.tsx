@@ -1,6 +1,8 @@
 import userEvent from "@testing-library/user-event";
-import { screen, waitFor } from "@testing-library/react";
+import { act, createEvent, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
+import { useState } from "react";
+import { useLocation } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import type { GenerationRequest, RenderRecord } from "@/api/types";
@@ -28,6 +30,12 @@ function recordDeletes(): string[] {
     }),
   );
   return deleted;
+}
+
+/** Where the router is, for the test that asserts the modal did not move it. */
+function Where() {
+  const { pathname } = useLocation();
+  return <p>{`at ${pathname}`}</p>;
 }
 
 describe("RenderGrid", () => {
@@ -260,5 +268,188 @@ describe("RenderGrid", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Permission denied: renders/x1.png",
     );
+  });
+
+  it("opens a render in a modal rather than navigating away", async () => {
+    const user = userEvent.setup();
+    renderGrid([makeRenderRecord({ id: "r1", templateId: "drake" })]);
+
+    await user.click(screen.getByAltText("drake meme"));
+
+    expect(await screen.findByRole("dialog", { name: "drake" })).toBeInTheDocument();
+  });
+
+  it("leaves the address bar on the topic while the modal is open", async () => {
+    // The modal is component state, not a route: browsing a grid of memes
+    // should not write a history entry per glance, and Copy link is what
+    // hands out the permanent URL.
+    //
+    // The break this catches is not only that decision being reversed. The
+    // tile is a real `<Link>`, so an `onOpen` that opens the modal without
+    // cancelling the event leaves the router navigating underneath it —
+    // the modal appears over a screen that is already unmounting. Dropping
+    // `event.preventDefault()` fails here and nowhere else.
+    const user = userEvent.setup();
+    renderWithProviders(
+      <>
+        <RenderGrid
+          renders={[makeRenderRecord({ id: "r1", templateId: "drake" })]}
+          runId={RUN_ID}
+          pending={[]}
+        />
+        <Where />
+      </>,
+      { route: "/topics/20260829T090000Z/topic-1" },
+    );
+
+    await user.click(screen.getByAltText("drake meme"));
+
+    expect(await screen.findByRole("dialog", { name: "drake" })).toBeInTheDocument();
+    expect(
+      screen.getByText("at /topics/20260829T090000Z/topic-1"),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the record the grid already holds, without asking the server for it", async () => {
+    // The design turns on this: the topic screen is already holding every
+    // field the body needs, so a click opens on the current frame with no
+    // spinner and no second request. A `RenderDetail` that fetched by id
+    // would satisfy every other case in this file, because they all await.
+    const asked: string[] = [];
+    const watch = ({ request }: { request: Request }) => {
+      asked.push(request.url);
+    };
+    server.events.on("request:start", watch);
+    try {
+      const user = userEvent.setup();
+      renderGrid([makeRenderRecord({ id: "r1", templateId: "drake" })]);
+
+      await user.click(screen.getByAltText("drake meme"));
+
+      expect(screen.getByRole("dialog", { name: "drake" })).toBeInTheDocument();
+      expect(asked).toEqual([]);
+    } finally {
+      server.events.removeListener("request:start", watch);
+    }
+  });
+
+  it("shows the open render's current row, not the copy that was on screen at click time", async () => {
+    // The grid holds the open render's id rather than the record, because
+    // the row behind it changes — a refetch landing, a generating render
+    // turning ready — and a copy taken at click time would leave the modal
+    // on a frame the grid itself has already moved past.
+    let refresh: (rationale: string) => void = () => undefined;
+    function Harness() {
+      const [rationale, setRationale] = useState("Two panels, one reversal.");
+      refresh = setRationale;
+      return (
+        <RenderGrid
+          renders={[makeRenderRecord({ id: "r1", templateId: "drake", rationale })]}
+          runId={RUN_ID}
+          pending={[]}
+        />
+      );
+    }
+    const user = userEvent.setup();
+    renderWithProviders(<Harness />);
+
+    await user.click(screen.getByAltText("drake meme"));
+    expect(await screen.findByText("Two panels, one reversal.")).toBeInTheDocument();
+
+    act(() => refresh("Chose the reversal after all."));
+
+    expect(screen.getByText("Chose the reversal after all.")).toBeInTheDocument();
+    expect(screen.queryByText("Two panels, one reversal.")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { modifier: "⌘", init: { metaKey: true } },
+    { modifier: "ctrl", init: { ctrlKey: true } },
+    { modifier: "shift", init: { shiftKey: true } },
+    { modifier: "alt", init: { altKey: true } },
+  ])("leaves a $modifier-click to the browser rather than opening the modal", ({ init }) => {
+    // ⌘, ctrl and shift on a link mean "somewhere else" and alt means
+    // download. Cancelling the event is *how* those get swallowed, so that
+    // is asserted alongside the absent modal: a handler that called
+    // preventDefault before consulting the modifiers would open no modal
+    // either, and would still have made the tile's href a promise it does
+    // not keep. All four are exercised because dropping any one of them
+    // from `opensHere` must fail something.
+    //
+    // The document listener does two jobs. It reads the app's decision
+    // after the tile's own handler has run and before the anchor's default
+    // action — React delegates at the root container, which is inside
+    // `document.body`, so this runs second. Then it cancels the event
+    // itself: jsdom cannot navigate, and letting an unprevented click on an
+    // `<a href>` through makes it log `Not implemented: navigation`, which
+    // is noise in an otherwise clean run.
+    renderGrid([makeRenderRecord({ id: "r1", templateId: "drake" })]);
+    const tile = screen.getByAltText("drake meme");
+
+    let appPrevented: boolean | undefined;
+    const watch = (event: MouseEvent) => {
+      appPrevented = event.defaultPrevented;
+      event.preventDefault();
+    };
+    document.addEventListener("click", watch);
+    try {
+      fireEvent(
+        tile,
+        createEvent.click(tile, {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          ...init,
+        }),
+      );
+    } finally {
+      document.removeEventListener("click", watch);
+    }
+
+    expect(appPrevented).toBe(false);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("closes the modal without touching the grid behind it", async () => {
+    const user = userEvent.setup();
+    renderGrid([
+      makeRenderRecord({ id: "r1", templateId: "drake" }),
+      makeRenderRecord({ id: "r2", templateId: "two_buttons" }),
+    ]);
+
+    await user.click(screen.getByAltText("drake meme"));
+    expect(await screen.findByRole("dialog", { name: "drake" })).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByAltText("drake meme")).toBeInTheDocument();
+    expect(screen.getByAltText("two_buttons meme")).toBeInTheDocument();
+  });
+
+  it("deletes the render the modal was opened on, and no other", async () => {
+    // `renderGrid` mounts `RenderGrid` with a fixed `renders` prop, so the
+    // deleted row does not leave this harness, the modal does not close,
+    // and focus does not move — the cache write that removes the row, and
+    // the effect that follows it, belong to `RenderGrid` itself and are
+    // exercised where they can actually happen: `TopicDetailPage.test.tsx`.
+    // What this component owns, and what is honest to assert here, is that
+    // the DELETE went out for the render the modal was opened on and left
+    // the other tile alone.
+    const deleted = recordDeletes();
+    const user = userEvent.setup();
+    renderGrid([
+      makeRenderRecord({ id: "r1", templateId: "drake" }),
+      makeRenderRecord({ id: "r2", templateId: "two_buttons" }),
+    ]);
+
+    await user.click(screen.getByAltText("drake meme"));
+    await user.click(
+      within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete" }),
+    );
+    await user.click(screen.getByRole("button", { name: "yes" }));
+
+    await waitFor(() => expect(deleted).toEqual(["r1"]));
+    expect(screen.getByAltText("two_buttons meme")).toBeInTheDocument();
   });
 });

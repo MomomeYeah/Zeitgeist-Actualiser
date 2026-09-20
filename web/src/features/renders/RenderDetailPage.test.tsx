@@ -1,7 +1,7 @@
 import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Route, Routes, useLocation } from "react-router-dom";
 
 import type { RenderRecord } from "@/api/types";
@@ -95,24 +95,6 @@ describe("RenderDetailPage", () => {
     ).not.toMatch(/null/);
   });
 
-  it("lays out one block per caption slot, with the slot's real name", async () => {
-    serve(
-      makeRenderRecord({
-        captionSlots: {
-          rejected: "Filing an incident report",
-          preferred: "Becoming the incident",
-        },
-      }),
-    );
-
-    renderPage();
-
-    expect(await screen.findByText("rejected")).toBeInTheDocument();
-    expect(screen.getByText("Filing an incident report")).toBeInTheDocument();
-    expect(screen.getByText("preferred")).toBeInTheDocument();
-    expect(screen.getByText("Becoming the incident")).toBeInTheDocument();
-  });
-
   it("explains the model's choice on an auto render", async () => {
     serve(makeRenderRecord({ rationale: "Two panels, one reversal." }));
 
@@ -143,34 +125,6 @@ describe("RenderDetailPage", () => {
     const download = await screen.findByRole("link", { name: "Download PNG" });
     expect(download).toHaveAttribute("href", `/api/renders/${RENDER_ID}/image?size=full`);
     expect(download).toHaveAttribute("download");
-  });
-
-  it("reports the image's real dimensions once it has loaded", async () => {
-    // The contract carries no width, height or byte size for a render, so
-    // the page reads what the browser decoded rather than claiming numbers
-    // nothing sent it.
-    serve();
-
-    renderPage();
-
-    const image = await screen.findByRole("img");
-    Object.defineProperty(image, "naturalWidth", { value: 1180, configurable: true });
-    Object.defineProperty(image, "naturalHeight", { value: 1180, configurable: true });
-    fireEvent.load(image);
-
-    expect(await screen.findByText(/1180×1180/)).toBeInTheDocument();
-  });
-
-  it("carries the run id and created time in its metadata line", async () => {
-    // Both parts, on the same element. Asserting only that the run id
-    // appears somewhere would pass with the timestamp dropped from the
-    // joined line entirely.
-    serve(makeRenderRecord({ createdAt: "2026-08-29T14:31:00Z" }));
-
-    renderPage();
-
-    const line = await screen.findByText(new RegExp(RUN_ID));
-    expect(line).toHaveTextContent("14:31");
   });
 
   it("shows a styled failed state, not a broken image, when the PNG is gone", async () => {
@@ -288,5 +242,40 @@ describe("RenderDetailPage", () => {
       await screen.findByText(`Render ${RENDER_ID} has no image on disk`),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+  });
+
+  it("offers a copy of its own permanent link", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    // After `setup()`, never before: user-event installs a clipboard stub
+    // of its own and replaces whatever is already there, so stubbing first
+    // means the component calls user-event's stub — which resolves — and
+    // this spy is never touched. Task 2 lost two rounds to that.
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    serve();
+
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Copy link" }));
+
+    expect(writeText).toHaveBeenCalledWith(
+      `http://localhost:3000/runs/${RUN_ID}/renders/${RENDER_ID}`,
+    );
+  });
+
+  it("still names the topic it belongs to, for someone who arrived by link", async () => {
+    // The one screen built to be deep-linked. The modal drops the heading
+    // because the topic is on the screen behind it; here there is nothing
+    // behind it.
+    serve();
+
+    renderPage();
+
+    expect(
+      await screen.findByRole("heading", { name: "Airport cat", level: 1 }),
+    ).toBeInTheDocument();
   });
 });

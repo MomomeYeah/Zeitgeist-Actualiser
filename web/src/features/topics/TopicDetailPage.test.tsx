@@ -282,6 +282,43 @@ describe("TopicDetailPage", () => {
     expect(anchor).toHaveFocus();
   });
 
+  it("puts focus back on the grid when a render is deleted from its modal", async () => {
+    // `Modal` hands focus back to whatever opened it, but the tile that did
+    // has unmounted with the row, and a detached node cannot take focus —
+    // so the grid's anchor is where it has to land instead.
+    //
+    // This lives here rather than in `RenderGrid.test.tsx` because only
+    // this screen can show it: the grid's own harness holds a fixed list of
+    // renders, so there the tile never actually goes and `Modal` correctly
+    // restores focus to it.
+    let renders = [makeRenderRecord({ id: "r1", templateId: "drake" })];
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(makeTopicDetail({ renders })),
+      ),
+      http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+      http.get("/api/config/options", () => HttpResponse.json(makeConfigOptions())),
+      http.delete("/api/renders/:renderId", ({ params }) => {
+        renders = renders.filter((render) => render.id !== params.renderId);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByAltText("drake meme"));
+    const dialog = await screen.findByRole("dialog", { name: "drake" });
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "yes" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.queryByAltText("drake meme")).not.toBeInTheDocument();
+    const anchor = screen
+      .getByText("Rendered from this topic")
+      .closest('div[tabindex="-1"]');
+    expect(anchor).toHaveFocus();
+  });
+
   it("says which topic is missing rather than showing an empty page", async () => {
     server.use(
       http.get("/api/runs/:runId/topics/:topicId", () =>

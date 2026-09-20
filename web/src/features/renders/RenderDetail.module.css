@@ -1,0 +1,99 @@
+/* Stacked rather than split. The right-hand column held the slot captions;
+   with those gone it would be two chips and a paragraph beside a large
+   picture, so both surfaces take the full width and the meme leads. */
+.detail {
+  display: flex;
+  flex-direction: column;
+}
+
+.chips {
+  display: flex;
+  gap: var(--gap-tight);
+  margin-bottom: 10px;
+}
+
+.frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 0 var(--gap-section);
+  padding: 18px;
+  background: var(--surface-log);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+
+/* Never upscaled past its natural size: these are 1180px templates, and a
+   stretched meme looks broken. */
+.image {
+  max-width: 100%;
+  max-height: 60vh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+.failed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 320px;
+  padding: 24px;
+  border: 1px dashed var(--contrast-border);
+  border-radius: var(--radius-card);
+  color: var(--contrast-light);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: center;
+}
+
+.rationale {
+  margin: 6px 0 0;
+  max-width: 60ch;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-70);
+}
+
+.byHand {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-35);
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap-tight);
+  margin-top: 16px;
+}
+
+/* Destructive, so it sits apart from Download and Copy link rather than
+   one click away from them. On the wrapper rather than the control: the
+   control swaps itself for a question when armed, and the margin has to
+   survive that swap. */
+.delete {
+  margin-left: auto;
+}
+
+.download {
+  display: inline-flex;
+  align-items: center;
+  padding: 9px 14px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.deleteError {
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--contrast-light);
+}
