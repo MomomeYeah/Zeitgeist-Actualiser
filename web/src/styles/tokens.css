@@ -27,6 +27,9 @@
  *   --contrast-border-strong rgba(61,99,230,.45) — the Abort button's own
  *                      border, one step up from --contrast-border so a
  *                      destructive action reads as one before it is asked.
+ *   --scrim            rgba(10,8,5,.72) — the wash behind a modal.
+ *                      Darker and browner than plain black, so the page
+ *                      reads as dimmed rather than covered.
  *
  * Ranged tokens in the handoff (radius-panel 11-12px, gap-page 20-22px)
  * take the value the mockups use most; a range describes the design and is
@@ -71,6 +74,7 @@
   --chip-fill-strong: rgba(255, 255, 255, 0.15);
   --mood-tail: rgba(255, 255, 255, 0.16);
   --mood-rest: rgba(255, 255, 255, 0.08);
+  --scrim: rgba(10, 8, 5, 0.72);
 
   --stripe-a: #211d14;
   --stripe-b: #272216;

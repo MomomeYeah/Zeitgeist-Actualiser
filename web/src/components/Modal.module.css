@@ -1,0 +1,31 @@
+/* Fixed to the viewport and portalled to `document.body`, so no ancestor's
+   `overflow` or stacking context can clip it. */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--gap-page);
+  background: var(--scrim);
+}
+
+.panel {
+  position: relative;
+  width: min(560px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-card);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+/* The panel takes focus on open, which would otherwise draw the browser's
+   focus ring around the whole modal. Its own contents keep theirs. */
+.panel:focus {
+  outline: none;
+}
