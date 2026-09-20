@@ -1,41 +1,34 @@
-import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
-import { imageUrl } from "@/api/client";
-import { useDeleteRender, useRender, useTopicDetail } from "@/api/queries";
+import { useRender, useTopicDetail } from "@/api/queries";
 import { Breadcrumb } from "@/components/Breadcrumb";
-import { Chip } from "@/components/Chip";
-import { InlineConfirm } from "@/components/InlineConfirm";
-import { MetaLine } from "@/components/MetaLine";
 import { QueryBoundary } from "@/components/QueryBoundary";
-import { SectionLabel } from "@/components/SectionLabel";
-import { formatClock, shortRunId } from "@/format";
+import { RenderDetail, templateLabel } from "@/features/renders/RenderDetail";
 
 import styles from "./RenderDetailPage.module.css";
 
+/**
+ * A render at its permanent address — what Copy link hands out, and the
+ * only way in for someone who did not arrive from a tile.
+ *
+ * It fetches; the modal does not. Arriving here there are two ids and
+ * nothing else, so the record and the topic's title both have to be asked
+ * for. The body below the heading is the same component the modal draws.
+ */
 export function RenderDetailPage() {
   const { renderId } = useParams();
   const render = useRender(renderId);
-  // The breadcrumb wants the topic's title, which `RenderRecord` does not
-  // carry — it carries the ids that address it.
+  // The breadcrumb and the heading want the topic's title, which
+  // `RenderRecord` does not carry — it carries the ids that address it.
   const topic = useTopicDetail(render.data?.run_id, render.data?.topic_id);
-  const [size, setSize] = useState<string>("");
-  const [failed, setFailed] = useState(false);
-
   const navigate = useNavigate();
-  const remove = useDeleteRender();
 
   return (
     <QueryBoundary query={render} missing="No such render.">
       {(record) => {
-        // Used for both the page title and its own breadcrumb entry, so the
+        // Used for both the heading and its own breadcrumb entry, so the
         // two can never drift apart.
         const topicLabel = topic.data?.topic.label ?? record.topic_id;
-        // None on a render whose model has not chosen a template yet: a
-        // `generating` row whose request left the choice to the model, or
-        // a `failed` row whose brief failed before the model chose. The
-        // breadcrumb, the chip and the file name still need a word.
-        const templateLabel = record.template_id ?? "no template chosen";
 
         return (
           <div className={styles.page}>
@@ -46,110 +39,23 @@ export function RenderDetailPage() {
                   label: topicLabel,
                   to: `/topics/${encodeURIComponent(record.run_id)}/${encodeURIComponent(record.topic_id)}`,
                 },
-                { label: templateLabel },
+                { label: templateLabel(record) },
               ]}
             />
 
             <header className={styles.header}>
               <h1 className={styles.title}>{topicLabel}</h1>
-              <div className={styles.chips} data-testid="chips">
-                <Chip tone="accent">{templateLabel}</Chip>
-                <Chip>{record.origin.provenance}</Chip>
-              </div>
-              <MetaLine>
-                {[record.run_id, formatClock(record.created_at), size]
-                  .filter((part) => part !== "")
-                  .join(" · ")}
-              </MetaLine>
             </header>
 
-            <div className={styles.body}>
-              <figure className={styles.frame}>
-                {failed ? (
-                  // The database is authoritative for whether a render
-                  // exists, so a PNG deleted out from under this row is a
-                  // styled failed state, not a broken-image icon — the same
-                  // rule `MemeTile` already follows for the tiles that link
-                  // here. The id is shortened because this is the one
-                  // screen built to be deep-linked, and so the most likely
-                  // to be read by someone who did not arrive from a tile.
-                  <span className={styles.failed}>
-                    {`Render ${shortRunId(record.id)} has no image on disk`}
-                  </span>
-                ) : (
-                  <img
-                    className={styles.image}
-                    src={imageUrl(record.id, "full")}
-                    alt={`${templateLabel} meme`}
-                    // The contract carries no dimensions or byte size for a
-                    // render, so this reports what the browser decoded rather
-                    // than numbers nothing sent it.
-                    onLoad={(event) =>
-                      setSize(
-                        `${event.currentTarget.naturalWidth}×${event.currentTarget.naturalHeight}`,
-                      )
-                    }
-                    onError={() => setFailed(true)}
-                  />
-                )}
-              </figure>
-
-              <aside className={styles.brief}>
-                <SectionLabel>The brief</SectionLabel>
-                <dl className={styles.slots}>
-                  {Object.entries(record.caption_slots).map(([slot, caption]) => (
-                    <div key={slot} className={styles.slot}>
-                      <dt className={styles.slotName}>{slot}</dt>
-                      <dd className={styles.caption}>{caption}</dd>
-                    </div>
-                  ))}
-                </dl>
-
-                {record.origin.provenance === "auto" ? (
-                  <>
-                    <SectionLabel>Why this template</SectionLabel>
-                    <p className={styles.rationale}>{record.origin.rationale}</p>
-                  </>
-                ) : (
-                  <p className={styles.byHand}>written by hand</p>
-                )}
-
-                <div className={styles.footer}>
-                  {!failed && (
-                    <a
-                      className={styles.download}
-                      href={imageUrl(record.id, "full")}
-                      download={`${templateLabel}-${record.id}.png`}
-                    >
-                      Download PNG
-                    </a>
-                  )}
-                  {/* Offered whether or not the image loaded: a render whose
-                      PNG is gone is the likeliest to want deleting. On yes,
-                      back to the topic it came from, where its tile has
-                      already left the cache. */}
-                  <InlineConfirm
-                    label="Delete"
-                    question="Delete this render?"
-                    disabled={remove.isPending}
-                    onConfirm={() =>
-                      remove.mutate(record, {
-                        onSuccess: () =>
-                          void navigate(
-                            `/topics/${encodeURIComponent(record.run_id)}` +
-                              `/${encodeURIComponent(record.topic_id)}`,
-                          ),
-                      })
-                    }
-                  />
-                </div>
-                {remove.isError && (
-                  <p role="alert" className={styles.deleteError}>
-                    {remove.error.detail}
-                  </p>
-                )}
-              </aside>
-            </div>
+            <RenderDetail
+              record={record}
+              onDeleted={() =>
+                void navigate(
+                  `/topics/${encodeURIComponent(record.run_id)}` +
+                    `/${encodeURIComponent(record.topic_id)}`,
+                )
+              }
+            />
           </div>
         );
       }}
