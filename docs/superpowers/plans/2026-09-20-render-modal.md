@@ -415,7 +415,7 @@ A button that puts a render's absolute permanent URL on the clipboard. Self-cont
 Create `web/src/components/CopyLinkButton.test.tsx`:
 
 ```tsx
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -469,16 +469,25 @@ describe("CopyLinkButton", () => {
     // it. How long the word stays is a decision someone is entitled to
     // change; that it goes away is the behaviour, and pinning 2000 here
     // would fail on the former while catching nothing extra of the latter.
+    //
+    // `fireEvent` rather than `user.click`, and `act` rather than
+    // `findBy*`, for the same underlying reason: this is the one case that
+    // needs fake timers, and both of those helpers wait on timers that
+    // never fire under them. user-event's click machinery hangs outright,
+    // and Testing Library detects fake timers by looking for a `jest`
+    // global that vitest does not define, so `waitFor` polls forever. The
+    // realistic click path is covered by the three cases around this one;
+    // what this case is about is the revert.
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.useFakeTimers();
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     stubClipboard(writeText);
     render(<CopyLinkButton path={PATH} />);
 
-    await user.click(screen.getByRole("button", { name: "Copy link" }));
-    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
+    await act(async () => undefined);
+    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
 
-    await vi.advanceTimersByTimeAsync(10_000);
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
 
     expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Copied" })).not.toBeInTheDocument();
