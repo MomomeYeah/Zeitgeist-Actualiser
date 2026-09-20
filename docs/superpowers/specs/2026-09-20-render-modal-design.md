@@ -211,11 +211,13 @@ and no dependency change.
 
 ## Accessibility
 
-The modal's accessible name is the template chip, via `aria-labelledby`
-pointing at it. The dialog needs a name and the template is what
-distinguishes one render of a topic from another; the topic itself is
-named by the page behind the modal and by the `<h1>` on the standalone
-route.
+The modal's accessible name is the template, carried by `aria-label` on the
+dialog. The dialog needs a name and the template is what distinguishes one
+render of a topic from another; the topic itself is named by the page
+behind the modal and by the `<h1>` on the standalone route. Pointing
+`aria-labelledby` at the template chip would say the same thing, but `Chip`
+renders a bare `<span>` with no id, and growing a shared component an `id`
+prop for one caller is worse than naming the dialog directly.
 
 The `✕` carries `aria-label="Close"`. Everything else — the focus trap,
 returning focus to the tile on close in the ordinary case, keeping the
