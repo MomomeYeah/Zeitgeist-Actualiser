@@ -1,0 +1,19 @@
+/* Sits over the chips row rather than taking a header of its own. `Modal`'s
+   panel is the positioned ancestor. */
+.close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  padding: 2px 6px;
+  border: none;
+  background: none;
+  color: var(--text-40);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--transition);
+}
+
+.close:hover {
+  color: var(--text);
+}
