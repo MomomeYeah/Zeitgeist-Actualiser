@@ -4,12 +4,18 @@
   height: 28px;
 }
 
+/* `0 1` rather than `0 0`: the shares already sum to 100%, so a fixed basis
+   left the gaps to overflow the column by `(segments - 1) * 3px` — thirty
+   pixels across the full taxonomy, which ran the bar under the runs list.
+   Shrink is weighted by basis, so the segments absorb it in proportion and
+   their relative widths are unchanged. */
 .segment {
-  flex: 0 0 var(--share);
+  flex: 0 1 var(--share);
   min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 0 6px;
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 9.5px;
@@ -26,11 +32,6 @@
 .second {
   background: var(--accent-half);
   color: var(--on-accent);
-}
-
-.schadenfreude {
-  background: var(--contrast);
-  color: var(--text);
 }
 
 .tail {

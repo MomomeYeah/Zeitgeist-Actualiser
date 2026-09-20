@@ -1,4 +1,4 @@
-import { moodLine, moodSegments } from "@/features/topics/ordering";
+import { foldNarrowSegments, moodLine, moodSegments } from "@/features/topics/ordering";
 
 import styles from "./MoodBar.module.css";
 
@@ -10,7 +10,9 @@ export function MoodBar({
   totals: Record<string, number>;
   previous: Record<string, number>;
 }) {
-  const segments = moodSegments(totals);
+  // The line describes the whole window; the bar draws only what it can
+  // label, which is why each reads a different list.
+  const segments = foldNarrowSegments(moodSegments(totals));
   if (segments.length === 0) return null;
 
   return (
@@ -18,11 +20,12 @@ export function MoodBar({
       <div className={styles.bar}>
         {segments.map((segment) => (
           <span
-            key={segment.sentiment}
+            key={segment.key}
             className={`${styles.segment} ${styles[segment.tone]}`}
             style={{ "--share": `${segment.share * 100}%` }}
+            title={segment.title}
           >
-            {segment.sentiment} {segment.count}
+            {segment.label}
           </span>
         ))}
       </div>
