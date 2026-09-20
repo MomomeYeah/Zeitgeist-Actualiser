@@ -1244,7 +1244,16 @@ git commit -m "Split the render body out of its page, and trim it"
 
 **Interfaces:**
 - Consumes: `Modal` from Task 1; `RenderDetail` and `templateLabel` from Task 4 (the latter from `@/features/renders/render`); `InlineConfirm`'s Escape claim from Task 3.
-- Produces: `RenderModal({ record, onClose, onDeleted }: { record: RenderRecord; onClose: () => void; onDeleted: () => void })`. Task 6 mounts it.
+- Produces: `RenderModal({ record, onClose }: { record: RenderRecord; onClose: () => void })`. Task 6 mounts it.
+
+**Correction, found while implementing Task 6.** This originally carried an
+`onDeleted` callback too. It cannot work: the grid derives the open render
+from its `renders` list, so a successful delete drops the row, `open` goes
+null and the modal unmounts on the very next render — and react-query does
+not run a `mutate()` callback whose component has already gone. The
+callback fired only when `RenderModal` was mounted standalone, which is to
+say only in its own test. The prop is gone and the grid watches the row
+instead; see Task 6.
 
 **What this task does not test.** Escape, the backdrop click, the focus trap and focus restore belong to `Modal` and are covered by `Modal.test.tsx` in Task 1. Re-asserting them here would pin the same behaviour twice. The one exception is the armed-confirm case: that is an interaction *between* `InlineConfirm` and `Modal` that neither component's own tests can see, and it is the subtlest thing on this screen.
 
@@ -1491,7 +1500,24 @@ The last wiring: a tile click opens the modal instead of navigating, while the t
 - Modify: `web/src/components/MemeTile.tsx` (new `onActivate` prop)
 - Modify: `web/src/features/topics/RenderTile.tsx` (new `onOpen` prop, passed through)
 - Modify: `web/src/features/topics/RenderGrid.tsx` (open state, the modal, the modified-click rule)
+- Modify: `web/src/features/renders/RenderModal.tsx` (drop the `onDeleted` prop — see the correction below)
+- Test: `web/src/features/renders/RenderModal.test.tsx` (drop the case that asserted it)
 - Test: `web/src/features/topics/RenderGrid.test.tsx` (add cases; `MemeTile.test.tsx` is deliberately untouched — see Step 1)
+- Test: `web/src/features/topics/TopicDetailPage.test.tsx` (add one case)
+
+**Correction to Task 5, established by running it.** `RenderModal` cannot
+report a finished delete through a callback. The grid derives the open
+render from `renders`, so a successful delete drops the row, `open` goes
+null, and the modal unmounts on the very next render — and react-query
+does not run a `mutate()` callback whose component has already gone. Focus
+then falls to the document, which is the exact failure the focus handling
+exists to prevent; this was measured, not reasoned about.
+
+So the grid watches the row instead of waiting to be told, `RenderModal`
+loses its `onDeleted` prop, and `RenderModal.test.tsx` loses the case that
+asserted it. `RenderDetail` keeps its own `onDeleted` — the standalone page
+does not unmount it, so there the callback fires and navigates, as its
+passing test shows.
 
 **Interfaces:**
 - Consumes: `RenderModal` from Task 5; `renderPath` from Task 4.
@@ -1688,6 +1714,51 @@ Add to `web/src/features/topics/RenderGrid.test.tsx`, inside the existing `descr
   });
 ```
 
+Then add to `web/src/features/topics/TopicDetailPage.test.tsx`, inside its existing `describe`, immediately before `"says which topic is missing rather than showing an empty page"`:
+
+```tsx
+  it("puts focus back on the grid when a render is deleted from its modal", async () => {
+    // `Modal` hands focus back to whatever opened it, but the tile that did
+    // has unmounted with the row, and a detached node cannot take focus —
+    // so the grid's anchor is where it has to land instead.
+    //
+    // This lives here rather than in `RenderGrid.test.tsx` because only
+    // this screen can show it: the grid's own harness holds a fixed list of
+    // renders, so there the tile never actually goes and `Modal` correctly
+    // restores focus to it.
+    let renders = [makeRenderRecord({ id: "r1", templateId: "drake" })];
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(makeTopicDetail({ renders })),
+      ),
+      http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+      http.get("/api/config/options", () => HttpResponse.json(makeConfigOptions())),
+      http.delete("/api/renders/:renderId", ({ params }) => {
+        renders = renders.filter((render) => render.id !== params.renderId);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByAltText("drake meme"));
+    const dialog = await screen.findByRole("dialog", { name: "drake" });
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "yes" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.queryByAltText("drake meme")).not.toBeInTheDocument();
+    const anchor = screen
+      .getByText("Rendered from this topic")
+      .closest('div[tabindex="-1"]');
+    expect(anchor).toHaveFocus();
+  });
+```
+
+This case was run against the finished implementation before being written down; it is the one that proves the effect in Step 5 does its job. Every helper it uses (`makeRunDetail`, `makeConfigOptions`, `within`, `waitFor`) is already imported by that file.
+
+Finally, in `web/src/features/renders/RenderModal.test.tsx`, delete the case `"reports a confirmed delete once it has gone through"`. It asserted a callback that no real caller can receive — see the correction at the top of this task. The case `"stays open, and says why, when the server will not delete"` stays: a refused delete leaves the row in place, so the modal really does remain mounted, and its `expect(onDeleted).not.toHaveBeenCalled()` line goes with the prop.
+
 There is deliberately no new case asserting the tile's `href`. The file's first case, `"draws a ready render as its image, linked to the full-size view"`, already makes exactly that assertion on the same fixture, so swapping the local `to` construction for `renderPath(render)` in Step 4 is covered before this task adds a line.
 
 The imports at the top of this file grow:
@@ -1800,7 +1871,7 @@ In `web/src/features/topics/RenderGrid.tsx`, change the React import and add the
 
 ```tsx
 import type { MouseEvent } from "react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { GenerationRequest, RenderRecord } from "@/api/types";
 import { SectionLabel } from "@/components/SectionLabel";
@@ -1839,6 +1910,25 @@ Inside `RenderGrid`, after the existing `anchor` ref:
   // show a frame that has already moved on.
   const [openId, setOpenId] = useState<string | null>(null);
   const open = renders.find((render) => render.id === openId) ?? null;
+
+  // The open render's row leaving the list is how a delete finishes: the
+  // mutation drops it from the cache, so `open` goes null and the modal
+  // unmounts on the very next render. That is also why the modal cannot
+  // report the delete through a callback — react-query does not run a
+  // `mutate()` callback whose component has already gone, and this one
+  // has.
+  //
+  // Focus is what needs rescuing. `Modal` hands it back to whatever opened
+  // it, but that tile went with the row, and a detached node cannot take
+  // focus, so it falls to the document. This effect runs after that
+  // cleanup and puts it on the section label instead — where a tile-level
+  // delete already sends it, a tab away from whatever tiles remain.
+  useEffect(() => {
+    if (openId !== null && open === null) {
+      setOpenId(null);
+      anchor.current?.focus();
+    }
+  }, [openId, open]);
 ```
 
 Give the tile its handler:
@@ -1858,24 +1948,7 @@ Give the tile its handler:
 And mount the modal at the end of the `<section>`, after the ternary that draws the grid or the empty line:
 
 ```tsx
-      {open !== null && (
-        <RenderModal
-          record={open}
-          onClose={() => setOpenId(null)}
-          onDeleted={() => {
-            // `RenderModal` does not close itself on a delete — it reports,
-            // and the decision is the grid's, which is what lets a refused
-            // delete leave the modal up with its error showing. A delete
-            // that went through has no modal left to show, so close it.
-            setOpenId(null);
-            // The tile `Modal` would hand focus back to has unmounted with
-            // the row, and a detached node cannot take focus. It goes where
-            // a tile-level delete already sends it: the section label, a
-            // tab away from whatever tiles remain.
-            anchor.current?.focus();
-          }}
-        />
-      )}
+      {open !== null && <RenderModal record={open} onClose={() => setOpenId(null)} />}
 ```
 
 - [ ] **Step 6: Run the grid's and the tile's test files**
