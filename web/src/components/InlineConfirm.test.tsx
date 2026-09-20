@@ -136,6 +136,50 @@ describe("InlineConfirm", () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(screen.getByText("Abort run?")).toBeInTheDocument();
   });
+
+  it("consumes the Escape that disarms it rather than letting it travel on", async () => {
+    // An armed confirm is the innermost dismissible thing on the screen.
+    // Without this, one Escape inside the render modal disarms the confirm
+    // *and* closes the modal, losing the view as a side effect of
+    // cancelling something else.
+    //
+    // The enclosing `onKeyDown` stands in for `Modal`'s own handler, which
+    // is an ancestor of every confirm drawn inside one. That it is never
+    // called IS the requirement — there is no separate `defaultPrevented`
+    // assertion to make, because `stopPropagation()` halts the native
+    // event too, so no listener further up ever runs to observe it.
+    const outer = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <div onKeyDown={outer}>
+        <InlineConfirm label="Abort" question="Abort run?" onConfirm={vi.fn()} />
+      </div>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Abort" }));
+    await user.keyboard("{Escape}");
+
+    expect(screen.getByRole("button", { name: "Abort" })).toBeInTheDocument();
+    expect(outer).not.toHaveBeenCalled();
+  });
+
+  it("leaves an Escape alone when it is not armed", async () => {
+    // The pair to the case above: a resting trigger must not swallow a
+    // keystroke meant for whatever surrounds it, or Escape would never
+    // close the render modal while a tile's confirm sat idle inside it.
+    const outer = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <div onKeyDown={outer}>
+        <InlineConfirm label="Abort" question="Abort run?" onConfirm={vi.fn()} />
+      </div>,
+    );
+
+    screen.getByRole("button", { name: "Abort" }).focus();
+    await user.keyboard("{Escape}");
+
+    expect(outer).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("InlineConfirm as a tile footer", () => {

@@ -131,7 +131,17 @@ export function InlineConfirm({
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") answer();
+    if (event.key !== "Escape") return;
+    // An armed confirm is the innermost dismissible thing on the screen, so
+    // it consumes the keystroke rather than also dismissing whatever
+    // surrounds it — `Modal`'s own Escape handler sits on an ancestor of
+    // every confirm drawn inside one.
+    //
+    // No `preventDefault` beside this: React's `stopPropagation` halts the
+    // native event as well, so nothing further up ever runs to inspect the
+    // flag, and a call nothing can observe is a call nothing can test.
+    event.stopPropagation();
+    answer();
   }
 
   function onBlur(event: FocusEvent<HTMLDivElement>) {
