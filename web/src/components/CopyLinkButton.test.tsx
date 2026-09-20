@@ -76,6 +76,35 @@ describe("CopyLinkButton", () => {
     expect(screen.queryByRole("button", { name: "Copied" })).not.toBeInTheDocument();
   });
 
+  it("reschedules the revert on a second copy, rather than arming two timers", async () => {
+    // A second copy inside the two-second window must push the revert out
+    // to two seconds from itself, not leave the first copy's timer armed
+    // underneath it. Without the `clearTimeout` before rescheduling, the
+    // first timer still fires at 2s from the first click — 1s after the
+    // second click — and the label reverts a full second early.
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.useFakeTimers();
+    stubClipboard(writeText);
+    render(<CopyLinkButton path={PATH} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
+    await act(async () => {});
+    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
+
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    fireEvent.click(screen.getByRole("button", { name: "Copied" }));
+    await act(async () => {});
+
+    // 2.5s after the first click, 1.5s after the second: the first click's
+    // timer would have fired by now, the second's has not.
+    await act(() => vi.advanceTimersByTimeAsync(1500));
+    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
+
+    // 3.1s after the second click: its own revert has now fired.
+    await act(() => vi.advanceTimersByTimeAsync(1600));
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
+  });
+
   it("shows the URL to copy by hand when the clipboard refuses", async () => {
     // `writeText` rejects in a non-secure context and when permission is
     // denied. The button must not silently do nothing: the URL becomes

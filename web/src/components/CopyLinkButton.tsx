@@ -33,6 +33,10 @@ export function CopyLinkButton({ path }: { path: string }) {
       await navigator.clipboard.writeText(absolute);
       setRefused(null);
       setCopied(true);
+      // A second copy inside the revert window must reschedule it, not add
+      // a second timer — otherwise the label reverts on the first copy's
+      // schedule while the second is still "current".
+      if (revert.current) clearTimeout(revert.current);
       revert.current = setTimeout(() => setCopied(false), 2000);
     } catch {
       setCopied(false);

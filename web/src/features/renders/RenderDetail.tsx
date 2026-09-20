@@ -32,7 +32,14 @@ export function RenderDetail({
   onDeleted,
 }: {
   record: RenderRecord;
-  /** Called once the row has gone: the page navigates, the modal closes. */
+  /**
+   * Called once the row has gone. The standalone page is the real
+   * consumer: it is still mounted when the delete resolves, and navigates
+   * back to the topic. The modal path passes a no-op instead — `RenderGrid`
+   * derives closure from the row leaving `renders`, because react-query
+   * will not run a `mutate()` callback on a component that has already
+   * unmounted, which the modal has by then. See `RenderModal`.
+   */
   onDeleted: () => void;
 }) {
   const [failed, setFailed] = useState(false);
