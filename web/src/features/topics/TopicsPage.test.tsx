@@ -136,6 +136,34 @@ describe("TopicsPage", () => {
     expect(within(mood).getByText("cute 5")).toBeInTheDocument();
   });
 
+  it("folds the sentiments too narrow to label into an others segment", async () => {
+    // Nine sentiments over a 662px column leaves the tail a few pixels
+    // each, which is how `cringe 5` came to render as a clipped `cr`.
+    serve(
+      makeTopicIndex({
+        sentimentTotals: {
+          outrage: 35,
+          scary: 8,
+          mundane: 7,
+          cringe: 5,
+          funny: 4,
+          sad: 3,
+          cute: 3,
+          awe: 2,
+          gross: 2,
+        },
+        previousSentimentTotals: { outrage: 30, scary: 9 },
+      }),
+    );
+
+    renderWithProviders(<TopicsPage />);
+
+    const mood = await screen.findByTestId("mood");
+    expect(within(mood).getByText("outrage 35")).toBeInTheDocument();
+    expect(within(mood).getByText("+6 others")).toBeInTheDocument();
+    expect(within(mood).queryByText("cringe 5")).not.toBeInTheDocument();
+  });
+
   it("says how the leading sentiment moved against the previous run", async () => {
     serve(
       makeTopicIndex({

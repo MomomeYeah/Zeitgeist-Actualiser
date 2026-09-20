@@ -15,8 +15,8 @@
  *                      the failed render tile, the queue notice.
  *   --contrast-fill    rgba(61,99,230,.2) — the FAILED status pill's fill.
  *   --chip-fill        white 8% — the secondary chip, per "Chip".
- *   --mood-tail /      white 16% / 8% — the mood bar's third segment and
- *   --mood-rest        its tail.
+ *   --mood-tail /      white 16% / 8% — the mood bar's third segment, and
+ *   --mood-rest        its tail including the folded "+N others".
  *   --border-hover     white 16% — the handoff's suggested hover.
  *   --accent-border-soft   accent 20% — the in-flight card's border, in the
  *                      sidebar and on Runs. Softer than --accent-border

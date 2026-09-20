@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { byRank, moodLine, moodSegments } from "@/features/topics/ordering";
+import {
+  byRank,
+  foldNarrowSegments,
+  moodLine,
+  moodSegments,
+} from "@/features/topics/ordering";
 import { makeIndexedTopic } from "@/test/factories";
 
 describe("byRank", () => {
@@ -60,19 +65,134 @@ describe("moodSegments", () => {
     expect(segments[1]?.tone).toBe("second");
   });
 
-  it("always draws schadenfreude in contrast, wherever it ranks", () => {
-    // The handoff singles it out by name rather than by position.
+  it("tones every sentiment by rank, schadenfreude included", () => {
+    // Schadenfreude used to take `contrast` wherever it ranked, which made
+    // it the one segment whose colour did not mean a position. It is a
+    // sentiment like any other now, so third place takes the third tone.
     const segments = moodSegments({ funny: 9, cute: 5, schadenfreude: 1 });
 
-    expect(segments.find((s) => s.sentiment === "schadenfreude")?.tone).toBe(
-      "schadenfreude",
-    );
+    expect(segments.map((segment) => segment.tone)).toEqual([
+      "top",
+      "second",
+      "tail",
+    ]);
   });
 
   it("returns nothing for a window with no distilled topics", () => {
     // Every topic on the dormant path has a null sentiment, so the totals
     // can legitimately be empty. Dividing by zero would give NaN widths.
     expect(moodSegments({})).toEqual([]);
+  });
+});
+
+describe("foldNarrowSegments", () => {
+  it("keeps every segment when each label fits its own width", () => {
+    // 53%, 29% and 18% of a 662px column: 350px, 195px and 117px against
+    // labels needing 58px, 46px and 63px.
+    const folded = foldNarrowSegments(moodSegments({ funny: 9, cute: 5, mundane: 3 }));
+
+    expect(folded.map((segment) => segment.label)).toEqual([
+      "funny 9",
+      "cute 5",
+      "mundane 3",
+    ]);
+  });
+
+  it("folds the sentiments too narrow for their labels into one others segment", () => {
+    // The first three hold 51%, 12% and 10%, clearing the 10%, 8% and 10%
+    // their labels need. `cringe 5` is the first to fail: 7% against 9%.
+    const folded = foldNarrowSegments(
+      moodSegments({
+        outrage: 35,
+        scary: 8,
+        mundane: 7,
+        cringe: 5,
+        funny: 4,
+        sad: 3,
+        cute: 3,
+        awe: 2,
+        gross: 2,
+      }),
+    );
+
+    expect(folded.map((segment) => segment.label)).toEqual([
+      "outrage 35",
+      "scary 8",
+      "mundane 7",
+      "+6 others",
+    ]);
+  });
+
+  it("shows a lone narrow sentiment rather than folding it by itself", () => {
+    // `awe 3` is 3% and does not fit. Folding it would replace a name and a
+    // count with `+1 others`, which is wider and says less.
+    const folded = foldNarrowSegments(moodSegments({ funny: 50, cute: 40, awe: 3 }));
+
+    expect(folded.map((segment) => segment.label)).toEqual([
+      "funny 50",
+      "cute 40",
+      "awe 3",
+    ]);
+  });
+
+  it("folds a fitting segment in when the others label needs its width", () => {
+    // cute and awe hold 8% between them, short of the 10% `+2 others`
+    // needs, so `mundane 20` joins them despite fitting on its own.
+    const folded = foldNarrowSegments(
+      moodSegments({ outrage: 50, scary: 22, mundane: 20, cute: 4, awe: 4 }),
+    );
+
+    expect(folded.map((segment) => segment.label)).toEqual([
+      "outrage 50",
+      "scary 22",
+      "+3 others",
+    ]);
+  });
+
+  it("keeps the leader even when its own label does not fit", () => {
+    // An eleven-way tie gives every sentiment 9%, and `heartwarming 3`
+    // needs 14%. Folding every segment that fails would leave the bar a
+    // single `+11 others`, which names nothing at all.
+    const tied = Object.fromEntries(
+      [
+        "heartwarming",
+        "schadenfreude",
+        "cute",
+        "awe",
+        "sad",
+        "funny",
+        "scary",
+        "gross",
+        "cringe",
+        "mundane",
+        "outrage",
+      ].map((sentiment) => [sentiment, 3]),
+    );
+
+    const folded = foldNarrowSegments(moodSegments(tied));
+
+    expect(folded.map((segment) => segment.label)).toEqual([
+      "heartwarming 3",
+      "+10 others",
+    ]);
+  });
+
+  it("names the folded sentiments and counts in the others tooltip", () => {
+    // The fold drops names off the bar, so the segment that replaces them
+    // has to carry what it swallowed.
+    const folded = foldNarrowSegments(moodSegments({ funny: 50, cute: 3, awe: 2 }));
+
+    expect(folded.at(-1)?.title).toBe("cute 3, awe 2");
+  });
+
+  it("draws the others segment in the tail colour", () => {
+    const folded = foldNarrowSegments(moodSegments({ funny: 50, cute: 3, awe: 2 }));
+
+    expect(folded.at(-1)?.tone).toBe("rest");
+  });
+
+  it("returns nothing for a window with no distilled topics", () => {
+    expect(foldNarrowSegments(moodSegments({}))).toEqual([]);
   });
 });
 
