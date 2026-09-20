@@ -807,11 +807,15 @@ Do **not** add cases asserting that the slot text, the run id, the clock and the
 ```tsx
   it("offers a copy of its own permanent link", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
+    // After `setup()`, never before: user-event installs a clipboard stub
+    // of its own and replaces whatever is already there, so stubbing first
+    // means the component calls user-event's stub — which resolves — and
+    // this spy is never touched. Task 2 lost two rounds to that.
+    const user = userEvent.setup();
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText },
       configurable: true,
     });
-    const user = userEvent.setup();
     serve();
 
     renderPage();
