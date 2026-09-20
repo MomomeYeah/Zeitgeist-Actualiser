@@ -70,16 +70,12 @@ function Probe({ onClose }: { onClose: () => void }) {
 }
 
 describe("the test environment's <dialog>", () => {
-  it("opens a modal dialog on showModal", () => {
-    render(<Probe onClose={vi.fn()} />);
-
-    expect(screen.getByRole("dialog", { name: "probe" })).toBeInTheDocument();
-  });
-
-  it("closes a modal dialog on Escape", async () => {
+  it("opens on showModal and closes on Escape", async () => {
     const onClose = vi.fn();
     const user = userEvent.setup();
     render(<Probe onClose={onClose} />);
+
+    expect(screen.getByRole("dialog", { name: "probe" })).toBeInTheDocument();
 
     await user.keyboard("{Escape}");
 
@@ -88,12 +84,14 @@ describe("the test environment's <dialog>", () => {
 });
 ```
 
+One test, not two. This is a characterization test of an upstream assumption, and the rubric allows exactly one of those per assumption — the assumption here is "the environment implements modal dialogs", and splitting it into a case per symptom would start testing jsdom's feature list rather than naming the thing `RenderModal` was written against.
+
 There is deliberately no third case here asserting that a handler inside can cancel the Escape. Whether jsdom honours a cancelled keydown as a suppressed close request is answered by Task 5's own `"lets an armed delete confirm have the first Escape"`, against the real components — and that case is what decides whether Task 5 Step 7's fallback is needed. A probe here could only be committed red on the branch where the answer is no, and a test whose failure is authorised in advance is not a gate.
 
 - [ ] **Step 2: Run it against the current jsdom to watch it fail**
 
 Run: `npm --prefix web test -- src/test/dialog-support.test.tsx`
-Expected: FAIL. jsdom 25 throws `Not implemented: HTMLDialogElement.prototype.showModal`, so the first test cannot find the dialog.
+Expected: FAIL. jsdom 25 throws `Not implemented: HTMLDialogElement.prototype.showModal`, so the dialog is never found.
 
 - [ ] **Step 3: Bump the dependency**
 
@@ -104,9 +102,9 @@ This rewrites both `web/package.json` and `web/package-lock.json`. CI runs `npm 
 - [ ] **Step 4: Run the guard test again**
 
 Run: `npm --prefix web test -- src/test/dialog-support.test.tsx`
-Expected: PASS, both.
+Expected: PASS.
 
-**If the second test fails** — jsdom 26 implements `showModal` but does not close on Escape at all — stop and report. The spec's fallback applies: a hand-rolled `role="dialog" aria-modal="true"` portal owning its own Escape handler, focus-on-open, focus restore and Tab trap. That is a different plan from Task 5 onward.
+**If it passes the `showModal` assertion but fails on Escape** — jsdom 26 opens a modal dialog but does not treat Escape as a close request — stop and report. The spec's fallback applies: a hand-rolled `role="dialog" aria-modal="true"` portal owning its own Escape handler, focus-on-open, focus restore and Tab trap. That is a different plan from Task 5 onward.
 
 - [ ] **Step 5: Run the whole web suite to prove the bump broke nothing**
 
@@ -180,7 +178,14 @@ describe("CopyLinkButton", () => {
     );
   });
 
-  it("says it copied, then goes back to offering", async () => {
+  it("says it copied, and does not say so for ever", async () => {
+    // Two breaks, one case: a copy that reports nothing, and a button left
+    // reading "Copied" so the next click gives no feedback at all.
+    //
+    // The clock is advanced well past the revert rather than exactly onto
+    // it. How long the word stays is a decision someone is entitled to
+    // change; that it goes away is the behaviour, and pinning 2000 here
+    // would fail on the former while catching nothing extra of the latter.
     const writeText = vi.fn().mockResolvedValue(undefined);
     stubClipboard(writeText);
     vi.useFakeTimers();
@@ -190,7 +195,7 @@ describe("CopyLinkButton", () => {
     await user.click(screen.getByRole("button", { name: "Copy link" }));
     expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
 
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(10_000);
 
     expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Copied" })).not.toBeInTheDocument();
@@ -1292,9 +1297,15 @@ Add to `web/src/features/topics/RenderGrid.test.tsx`, inside the existing `descr
   });
 
   it("leaves the address bar on the topic while the modal is open", async () => {
-    // The modal is component state, not a route. This is the decision the
-    // design turns on: browsing a grid of memes should not write a history
-    // entry per glance, and Copy link is what hands out the permanent URL.
+    // The modal is component state, not a route: browsing a grid of memes
+    // should not write a history entry per glance, and Copy link is what
+    // hands out the permanent URL.
+    //
+    // The break this catches is not only that decision being reversed. The
+    // tile is a real `<Link>`, so an `onOpen` that opens the modal without
+    // cancelling the event leaves the router navigating underneath it —
+    // the modal appears over a screen that is already unmounting. Dropping
+    // `event.preventDefault()` fails here and nowhere else.
     const user = userEvent.setup();
     renderWithProviders(
       <>
