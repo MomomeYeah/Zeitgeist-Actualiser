@@ -17,7 +17,8 @@ In:
   decoded image dimensions from the render view.
 - Splitting `RenderDetailPage` into a fetching route and a body both it and
   the modal draw.
-- `dialog-polyfill` as a dependency, standing in for `<dialog>` under test.
+- A shared `Modal` primitive: a portalled `role="dialog"` panel owning
+  Escape, focus-on-open, focus restore, a Tab trap and a backdrop click.
 
 Out:
 
@@ -46,8 +47,12 @@ error line. It knows nothing about routing beyond the path it hands to
 **Copy link**, and renders no heading — its callers supply whatever
 surrounds it.
 
-**`RenderModal.tsx`** — a `<dialog>` around `RenderDetail`, plus a close
-`✕`. Takes the `RenderRecord` and an `onClose`.
+**`RenderModal.tsx`** — `Modal` around `RenderDetail`, plus a close `✕`.
+Takes the `RenderRecord`, an `onClose` and an `onDeleted`.
+
+`Modal` itself is a fourth file and a shared one, at
+`web/src/components/Modal.tsx` — nothing about it is specific to renders,
+and the next modal this app grows should not reimplement a focus trap.
 
 **`RenderDetailPage.tsx`** — keeps the route. `useRender` inside a
 `QueryBoundary`, `useTopicDetail` for the breadcrumb and the `<h1>`, then
@@ -111,17 +116,16 @@ modal is closed.
 
 ## Closing it
 
-Three ways out, and the element gives two of them. It is opened from an
-effect on mount through `openModally`, which brings Escape, the focus
-trap, the `::backdrop` pseudo-element, top-layer stacking and inerting of
-everything behind it. The `✕` calls `close()`. A click on the backdrop is not handled
-by the platform, so the dialog carries an `onClick` that closes when
-`event.target === dialogRef.current` — a click that landed on the dialog
-box itself rather than any of its children, which for a `<dialog>` in the
-top layer means the backdrop.
+Three ways out, and `Modal` owns two of them: Escape, handled on the panel
+that takes focus when it opens, and a click whose target is the backdrop
+itself rather than anything inside the panel. The `✕` is `RenderModal`'s
+own, because a modal primitive has no business deciding what chrome its
+caller wants.
 
-`onClose` on the element is what clears the grid's state, so every route
-out — Escape, `✕`, backdrop, a completed delete — converges on one place.
+All three call the same `onClose`, which clears the grid's state. `Modal`
+never unmounts itself — `onClose` is a request, and the caller decides
+whether to honour it, which is what lets a delete that fails leave the
+modal up with its error showing.
 
 ### Escape and the delete confirm
 
@@ -130,26 +134,25 @@ Escape would otherwise both disarm a `Delete this render?` and close the
 modal, losing the view as a side effect of cancelling something else.
 
 Escape is claimed innermost-first: the first press disarms the confirm, a
-second closes the modal. The mechanism is the dialog's own `cancel`
-handler, which calls `preventDefault()` while a confirm is armed — not the
-confirm cancelling the keystroke, because a close request survives that
-under the test stand-in.
+second closes the modal. `InlineConfirm` calls `stopPropagation()` on the
+Escape it handles, so the keystroke never reaches `Modal`'s handler on the
+way up, and `preventDefault()` alongside it marks the event handled for
+anything that inspects it rather than receiving it.
 
-The modal reads the armed state off the DOM, through a `data-asking`
-attribute on `InlineConfirm`'s asking container. Lifting it into React
-state would thread it up through `RenderDetail` and give two places to
-disagree about whether a confirm is showing; the component that owns the
-state stays the one that reports it.
+This is correct on its own terms, not a modal workaround — an armed
+confirm is the innermost dismissible thing on the screen, and today it
+silently lets the keystroke carry on to whatever encloses it. So it gets
+its own test rather than being folded into the modal's.
 
 ## Deleting
 
 From the modal, a confirmed delete closes it rather than navigating:
 `useDeleteRender` has already dropped the row from the topic's cache, so
-the grid behind has lost the tile before the dialog goes. Focus is the
-part the platform cannot do here — a `<dialog>` restores focus to the
-element that opened it, but that tile has unmounted. `RenderGrid` already
-solves this for tile-level deletes by focusing its section-label anchor,
-and the modal's delete reuses that path.
+the grid behind has lost the tile before the modal goes. Focus is the part
+that needs care — `Modal` restores focus to whatever held it, but that
+tile has unmounted, and a detached node cannot take focus. `RenderGrid`
+already solves this for tile-level deletes by focusing its section-label
+anchor, and the modal's delete reuses that path.
 
 From the standalone page, a confirmed delete still navigates back to the
 topic, because there is no grid behind it to return to.
@@ -191,38 +194,33 @@ referenced but not defined, not one defined and never referenced — so
 removing the dead rules is a step in the plan rather than something a gate
 will notice.
 
-## Dependency
+## Why not the native `<dialog>`
 
-`<dialog>` is the right production element, and no Node test environment
-implements it. This was measured rather than assumed:
+`<dialog>` with `showModal()` is what this design wants: Escape, the focus
+trap, `::backdrop`, top-layer stacking and background inerting, none of it
+written by us. It is not used, because no Node test environment implements
+it and a modal whose dismissal cannot be tested is the wrong trade. Each
+route was measured rather than assumed:
 
-- jsdom exposes `HTMLDialogElement` whose prototype carries only
+- **jsdom**, any version. `HTMLDialogElement.prototype` carries only
   `constructor` and `open` — no `showModal`, no `close` — in 25.0.1 (this
-  repo's pin), 26.1.0 and 30.1.0. There is no version to upgrade to.
-- happy-dom 20 implements `showModal` and `close`, but Escape does not
-  close the dialog, so the close request is missing there too.
+  repo's pin), 26.1.0 and 30.1.0 alike. There is no version to upgrade to.
+- **happy-dom** 20 implements `showModal` and `close`, but Escape never
+  closes the dialog, so the close request is missing there too.
+- **`dialog-polyfill`** 0.5.6, the latest, does everything asked of it —
+  but gates its Escape handling on the legacy `event.keyCode === 27`,
+  which `@testing-library/user-event` does not set and jsdom does not
+  synthesize from `key`. Making it work needs a magic `keyCode: 27` in
+  every Escape test, or a global `KeyboardEvent` shim across the suite.
 
-So the element ships and `dialog-polyfill` stands in for it under test,
-behind one function — `openModally` — that registers the polyfill only
-when `showModal` is absent. In a browser that guard is false and the
-polyfill never runs; the import is still in the bundle, which is the cost
-of testing the platform element rather than a substitute for it.
+Every route to the platform element ends in a test-only hack that moves
+the suite further from what ships. `Modal` owns roughly sixty lines
+instead, and the tests drive exactly the code a browser runs.
 
-The tests therefore drive a faithful implementation of `<dialog>` rather
-than a hand-written stub, which was the objection that ruled stubbing out.
-They are still not driving the thing that ships, and that is the honest
-limit of this approach: the focus trap, top-layer stacking and background
-inerting are verified by hand in a browser, not by the suite.
-
-Two behaviours of the stand-in shape the design. Escape fires `cancel`
-then `close` and clears `open`, as the platform does. But it ignores
-`preventDefault()` on the Escape keydown while honouring it on the
-`cancel` event — which is why the modal holds itself open through a
-`cancel` handler rather than by the confirm swallowing the keystroke.
-
-`web/src/test/setup.ts` deletes jsdom's hollow `HTMLDialogElement`
-constructor, because the polyfill reads its presence as proof of support
-and warns otherwise — a false warning on every modal test.
+The one thing not reproduced is background inerting. The page behind a
+`Modal` keeps its markup; `aria-modal="true"` is what tells a screen
+reader to ignore it, and the backdrop is what stops a mouse reaching it.
+A keyboard user cannot leave, because of the Tab trap.
 
 ## Accessibility
 
@@ -234,18 +232,23 @@ behind the modal and by the `<h1>` on the standalone route. Pointing
 renders a bare `<span>` with no id, and growing a shared component an `id`
 prop for one caller is worse than naming the dialog directly.
 
-The `✕` carries `aria-label="Close"`. Everything else — the focus trap,
-returning focus to the tile on close in the ordinary case, keeping the
-background from receiving focus — comes from `showModal()`.
+The `✕` carries `aria-label="Close"`. The focus trap, focus-on-open and
+returning focus to the tile on close all come from `Modal`, and are tested
+there rather than here.
 
 ## Tests
 
 New:
 
-- `RenderModal.test.tsx` — a tile click opens the dialog and a modified
-  click does not; Escape closes; a backdrop click closes and a click
-  inside does not; an armed delete confirm swallows the first Escape and
-  the modal survives it; a confirmed delete closes the modal.
+- `Modal.test.tsx` — names itself and says it is modal; portals out of the
+  tree it was mounted in; takes focus on open and gives it back on close;
+  Escape closes; a backdrop click closes and a click inside does not; Tab
+  wraps at both ends.
+- `RenderModal.test.tsx` — names itself by the template; draws the render
+  and its rationale; the close button closes; Escape reaches `Modal`; an
+  armed delete confirm swallows the first Escape and the modal survives
+  it; a confirmed delete reports; a refused delete leaves it open with the
+  error showing.
 - `CopyLinkButton.test.tsx` — writes the absolute URL for the path given;
   shows `Copied` and reverts; surfaces a rejected `writeText` as an alert
   carrying the URL.

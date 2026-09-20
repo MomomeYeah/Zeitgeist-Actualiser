@@ -4,9 +4,9 @@
 
 **Goal:** Open a render in a modal over its topic, keep the permanent route for sharing behind a Copy link action, and trim both views to the meme, its template and the model's rationale.
 
-**Architecture:** `RenderDetailPage` splits into a fetching route, a body (`RenderDetail`) that takes a `RenderRecord` it does not fetch, and a native `<dialog>` wrapper (`RenderModal`). `RenderGrid` holds the open render's id and passes the record it already has, so the modal makes no request. The address bar does not change when the modal opens.
+**Architecture:** `RenderDetailPage` splits into a fetching route, a body (`RenderDetail`) that takes a `RenderRecord` it does not fetch, and a modal wrapper (`RenderModal`) built on a new `Modal` primitive. `RenderGrid` holds the open render's id and passes the record it already has, so the modal makes no request. The address bar does not change when the modal opens.
 
-**Tech Stack:** React 19, react-router-dom 7, TanStack Query 5, CSS modules, Vitest + Testing Library + MSW, jsdom, `dialog-polyfill` (test stand-in for `<dialog>`).
+**Tech Stack:** React 19, react-router-dom 7, TanStack Query 5, CSS modules, Vitest + Testing Library + MSW, jsdom.
 
 Design spec: `docs/superpowers/specs/2026-09-20-render-modal-design.md`.
 
@@ -19,185 +19,381 @@ Design spec: `docs/superpowers/specs/2026-09-20-render-modal-design.md`.
 - No backend change in this plan. Do not touch `web/openapi.json`, `web/src/api/schema.ts`, or anything under `zeitgeist/`.
 - Definition of Done (from `CLAUDE.md`) — all seven must pass before the work is reported finished:
   `uv run ruff check .`, `uv run ruff format --check .`, `uv run ty check`, `uv run pytest`, `npm --prefix web run lint`, `npm --prefix web run typecheck`, `npm --prefix web test`.
-- `<dialog>` is opened through `openModally` (Task 1), never `showModal()` directly. No Node DOM implements the element — verified across jsdom 25.0.1, 26.1.0 and 30.1.0, and happy-dom 20 — so the polyfill stands in under test.
+- Modals are built on `Modal` (Task 1), not the native `<dialog>`. No Node DOM implements that element — verified across jsdom 25.0.1, 26.1.0 and 30.1.0, happy-dom 20, and `dialog-polyfill` 0.5.6 — so its dismissal could not be tested.
 - Commit after every task.
 
 ---
 
-### Task 1: Make `<dialog>` openable under test
+### Task 1: `Modal` — the primitive the render modal is built on
 
-`<dialog>` is the right production element — it brings Escape, the focus trap, `::backdrop`, top-layer stacking and background inerting that no hand-rolled overlay gets for free. But **no Node test environment implements it.** This was verified directly, not assumed:
+A `role="dialog" aria-modal="true"` panel in a portal, owning Escape, focus-on-open, focus restore, a Tab trap and a backdrop click.
 
-- jsdom exposes `HTMLDialogElement` whose prototype carries only `constructor, open` — no `showModal`, no `close` — in 25.0.1 (this repo's pin), 26.1.0 and 30.1.0 (latest). There is no version to bump to.
-- happy-dom does implement `showModal` and `close`, but does not close on Escape, so the close request is missing there too.
+**Why not the native `<dialog>`.** It was the first choice and it does not survive contact with the test environment. Measured, not assumed:
 
-So the platform element ships, and `dialog-polyfill` stands in for it under test. This task wires that up behind one function, so no component has to know about it.
+- jsdom's `HTMLDialogElement.prototype` carries only `constructor` and `open` — no `showModal`, no `close` — in 25.0.1 (this repo's pin), 26.1.0 and 30.1.0. There is no version to upgrade to.
+- happy-dom 20 implements the methods but never closes on Escape.
+- `dialog-polyfill` 0.5.6 (the latest) does everything asked of it, but gates its Escape handling on the legacy `event.keyCode === 27`, which `@testing-library/user-event` never sets and jsdom never synthesizes from `key`. Making it work needs either a magic `keyCode: 27` in every Escape test or a global `KeyboardEvent` shim.
+
+Every route to the platform element ends in a test-only hack that moves the suite further from what ships. This owns ~60 lines instead, and the tests drive exactly the code the browser runs.
 
 **Files:**
-- Modify: `web/package.json` (add the `dialog-polyfill` dependency)
-- Modify: `web/package-lock.json` (regenerated)
-- Modify: `web/src/test/setup.ts` (drop jsdom's hollow `HTMLDialogElement`)
-- Create: `web/src/components/modal.ts`
-- Test: `web/src/components/modal.test.tsx`
+- Create: `web/src/components/Modal.tsx`
+- Create: `web/src/components/Modal.module.css`
+- Modify: `web/src/styles/tokens.css` (one token, `--scrim`)
+- Test: `web/src/components/Modal.test.tsx`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `openModally(dialog: HTMLDialogElement): void`. Task 5 calls it in place of `dialog.showModal()`. Everything else — `close()`, the `close` and `cancel` events — is the element's own API in production and the polyfill's faithful stand-in under test, so no wrapper is needed for those.
+- Produces: `Modal({ label, onClose, children }: { label: string; onClose: () => void; children: ReactNode })`. `label` becomes the dialog's accessible name. `onClose` fires on Escape and on a backdrop click; the component never unmounts itself, so the caller owns whether it is shown. Task 5 wraps `RenderDetail` in it.
 
-**Two facts established by probe that later tasks depend on:**
+Note for Task 5: this deliberately has no close button of its own. What sits inside the panel is the caller's business.
 
-1. With the polyfill registered, Escape fires `cancel` then `close`, and `open` goes false. Reopening and explicit `close()` both work.
-2. The polyfill **ignores `preventDefault()` on the Escape keydown** but **honours `preventDefault()` on the `cancel` event**. Task 5's Escape-and-armed-confirm handling is built on `cancel` for that reason, and it is not conditional.
+- [ ] **Step 1: Write the failing tests**
 
-- [ ] **Step 1: Write the failing test**
-
-Create `web/src/components/modal.test.tsx`:
+Create `web/src/components/Modal.test.tsx`:
 
 ```tsx
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useEffect, useRef } from "react";
 import { describe, expect, it, vi } from "vitest";
 
-import { openModally } from "@/components/modal";
+import { Modal } from "@/components/Modal";
 
-function Probe({ onClose }: { onClose: () => void }) {
-  const dialog = useRef<HTMLDialogElement | null>(null);
-  useEffect(() => {
-    if (dialog.current !== null) openModally(dialog.current);
-  }, []);
-  return (
-    <dialog ref={dialog} onClose={onClose} aria-label="probe">
-      <button type="button">inside</button>
-    </dialog>
+function open(onClose = vi.fn()) {
+  const view = render(
+    <Modal label="drake" onClose={onClose}>
+      <button type="button">first</button>
+      <button type="button">last</button>
+    </Modal>,
   );
+  return { onClose, user: userEvent.setup(), view };
 }
 
-describe("openModally", () => {
-  it("opens a dialog modally, and leaves it closing on Escape", async () => {
-    // One case, because it names one assumption: that a `<dialog>` can be
-    // driven at all here. jsdom implements neither `showModal` nor `close`
-    // in any released version, so without the registration this function
-    // does, the call throws and the dialog never opens — which is the
-    // break this catches. Escape is asserted in the same breath because
-    // `RenderModal` gets Escape, the focus trap and the backdrop from the
-    // element rather than from code of its own; if the stand-in does not
-    // deliver that, the modal's own tests are measuring nothing.
-    const onClose = vi.fn();
-    const user = userEvent.setup();
-    render(<Probe onClose={onClose} />);
+describe("Modal", () => {
+  it("names itself, and says it is modal", () => {
+    // The accessible name is how a screen reader announces what has just
+    // taken over the screen, and `aria-modal` is what tells it the rest of
+    // the page is inert. A panel with neither is a div on top of things.
+    open();
 
-    expect(screen.getByRole("dialog", { name: "probe" })).toBeInTheDocument();
+    const dialog = screen.getByRole("dialog", { name: "drake" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+  });
+
+  it("renders through a portal, outside the tree it was mounted in", () => {
+    // The panel has to escape any ancestor with `overflow: hidden` or a
+    // stacking context of its own — the topic grid is inside both — or it
+    // is clipped behind the page it is supposed to cover.
+    const { view } = open();
+
+    expect(view.container).not.toContainElement(screen.getByRole("dialog"));
+    expect(document.body).toContainElement(screen.getByRole("dialog"));
+  });
+
+  it("takes focus when it opens", () => {
+    // Without this the keyboard is still on the page behind, so Escape and
+    // the Tab trap — both handlers on the panel — never see a keystroke.
+    open();
+
+    expect(screen.getByRole("dialog")).toHaveFocus();
+  });
+
+  it("gives focus back to whatever had it when it closes", () => {
+    // The tile that opened the modal is where the keyboard was, and where
+    // it belongs afterwards — otherwise focus falls to the top of the
+    // document and the user tabs back through the whole page.
+    function Host({ open: showing }: { open: boolean }) {
+      return (
+        <>
+          <button type="button">opener</button>
+          {showing && (
+            <Modal label="drake" onClose={vi.fn()}>
+              <button type="button">inside</button>
+            </Modal>
+          )}
+        </>
+      );
+    }
+    const { rerender } = render(<Host open={false} />);
+    const opener = screen.getByRole("button", { name: "opener" });
+    opener.focus();
+
+    rerender(<Host open={true} />);
+    expect(screen.getByRole("dialog")).toHaveFocus();
+
+    rerender(<Host open={false} />);
+
+    expect(opener).toHaveFocus();
+  });
+
+  it("closes on Escape", async () => {
+    const { onClose, user } = open();
 
     await user.keyboard("{Escape}");
 
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it("closes on a click that lands on the backdrop", async () => {
+    const { onClose, user } = open();
+    const backdrop = screen.getByRole("dialog").parentElement;
+    if (backdrop === null) throw new Error("the panel should sit inside a backdrop");
+
+    await user.click(backdrop);
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays open when the click landed on something inside it", async () => {
+    // The pair to the case above, and the one that fails if the handler
+    // forgets to compare the target: without that check every click
+    // anywhere in the panel closes it.
+    const { onClose, user } = open();
+
+    await user.click(screen.getByRole("button", { name: "first" }));
+
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("keeps Tab inside itself, wrapping at the end", async () => {
+    // A modal whose Tab escapes puts the keyboard on a page the user
+    // cannot see, which is the failure `aria-modal` promises is not
+    // happening.
+    const { user } = open();
+
+    await user.tab();
+    expect(screen.getByRole("button", { name: "first" })).toHaveFocus();
+
+    await user.tab();
+    expect(screen.getByRole("button", { name: "last" })).toHaveFocus();
+
+    await user.tab();
+    expect(screen.getByRole("button", { name: "first" })).toHaveFocus();
+  });
+
+  it("wraps backwards too", async () => {
+    const { user } = open();
+
+    await user.tab({ shift: true });
+
+    expect(screen.getByRole("button", { name: "last" })).toHaveFocus();
+  });
 });
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `npm --prefix web test -- src/components/modal.test.tsx`
-Expected: FAIL — `Failed to resolve import "@/components/modal"`.
+Run: `npm --prefix web test -- src/components/Modal.test.tsx`
+Expected: FAIL — `Failed to resolve import "@/components/Modal"`.
 
-- [ ] **Step 3: Add the dependency**
+- [ ] **Step 3: Add the backdrop token**
 
-Run: `npm --prefix web install dialog-polyfill`
+In `web/src/styles/tokens.css`, add to the `:root` block, immediately after the `--mood-rest` line:
 
-A `dependency`, not a devDependency: `modal.ts` is imported by shipped code. The polyfill never *runs* in a browser — every target supports `<dialog>` natively, so the guard below is false there — but the import is part of the bundle, which is the honest cost of testing the platform element rather than a substitute for it.
-
-- [ ] **Step 4: Drop jsdom's hollow constructor**
-
-`dialog-polyfill` warns `This browser already supports <dialog>, the polyfill may not work correctly` whenever `window.HTMLDialogElement` exists. jsdom defines that constructor while implementing none of its methods, so the warning is false and would print on every modal test — the project's bar is pristine test output.
-
-Add to the end of `web/src/test/setup.ts`:
-
-```ts
-// jsdom defines `HTMLDialogElement` but implements neither `showModal` nor
-// `close` on it — the prototype carries only `constructor` and `open`, in
-// every released version. `dialog-polyfill` treats the constructor's mere
-// presence as proof of support and warns that it may misbehave, which is
-// false here and would print on every test that opens the render modal.
-//
-// Removing the hollow constructor makes the polyfill's own feature
-// detection tell it the truth. Nothing reads `window.HTMLDialogElement`:
-// the role mapping that finds `getByRole("dialog")` goes by tag name, and
-// `openModally` tests for the method rather than the constructor.
-Reflect.deleteProperty(window, "HTMLDialogElement");
+```css
+  --scrim: rgba(10, 8, 5, 0.72);
 ```
 
-- [ ] **Step 5: Write the helper**
+And add to the file's header comment, in the list of tokens the handoff does not name as rows, after the `--contrast-border-strong` entry:
 
-Create `web/src/components/modal.ts`:
+```
+ *   --scrim            rgba(10,8,5,.72) — the wash behind a modal.
+ *                      Darker and browner than plain black, so the page
+ *                      reads as dimmed rather than covered.
+```
 
-```ts
-import dialogPolyfill from "dialog-polyfill";
+- [ ] **Step 4: Write the component**
+
+Create `web/src/components/Modal.tsx`:
+
+```tsx
+import type { KeyboardEvent, ReactNode } from "react";
+import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
+
+import styles from "./Modal.module.css";
 
 /**
- * Open a `<dialog>` as a modal, wherever the code is running.
- *
- * In a browser this is `showModal()` and nothing else — the platform
- * brings Escape, the focus trap, `::backdrop`, top-layer stacking and
- * inerting of the page behind, none of which is worth reimplementing.
- *
- * Under test it needs help. No Node DOM implements the element: jsdom
- * exposes `HTMLDialogElement` with only `open` on its prototype — no
- * `showModal`, no `close` — in 25.0.1, 26.1.0 and 30.1.0 alike, and
- * happy-dom implements the methods but never closes on Escape. So the
- * polyfill stands in, and the tests drive a faithful implementation of the
- * element rather than a stub of it.
- *
- * The guard is the method, not the constructor: jsdom has the constructor
- * and none of the behaviour, so `window.HTMLDialogElement` would report
- * support that is not there. In a real browser `showModal` is a function
- * and the polyfill is never touched.
+ * What the Tab trap counts as a stop. Deliberately the plain list rather
+ * than anything clever: the panel's contents are this app's own controls,
+ * and a selector that tried to be exhaustive would be harder to check than
+ * the thing it guards.
  */
-export function openModally(dialog: HTMLDialogElement): void {
-  if (typeof dialog.showModal !== "function") {
-    dialogPolyfill.registerDialog(dialog);
+const FOCUSABLE = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(", ");
+
+/**
+ * A panel that takes over the screen until it is dismissed.
+ *
+ * This is the job `<dialog>` and `showModal()` exist to do, and the native
+ * element would be the right answer in a browser. It is not used because
+ * no Node DOM implements it — jsdom exposes `HTMLDialogElement` with only
+ * `open` on its prototype in every released version, happy-dom never
+ * closes on Escape, and `dialog-polyfill` keys its Escape handling on the
+ * legacy `keyCode` that `user-event` does not send. Each route ends in a
+ * test-only shim, and a modal whose dismissal is untested is the part most
+ * worth testing. See the design spec, "Dependency".
+ *
+ * So the four things the platform would have given are owned here: focus
+ * on open and restore on close, Escape, a Tab trap, and a backdrop click.
+ * Background inerting is the one thing not reproduced — the page behind
+ * keeps its `aria-hidden`-less markup, and `aria-modal` is what tells a
+ * screen reader to ignore it.
+ *
+ * It never unmounts itself. `onClose` is a request, and the caller decides
+ * whether to honour it, which is what lets a delete that fails leave the
+ * modal up with its error showing.
+ */
+export function Modal({
+  label,
+  onClose,
+  children,
+}: {
+  /** The dialog's accessible name. */
+  label: string;
+  /** Escape, or a click on the backdrop. Never called for a click inside. */
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const panel = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const opener = document.activeElement;
+    panel.current?.focus();
+    return () => {
+      // Only if it is still on the page: the control that opened a modal is
+      // often a tile the modal's own action has just deleted, and focusing
+      // a detached node silently sends focus to the document instead.
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
+  }, []);
+
+  function trap(event: KeyboardEvent<HTMLDivElement>) {
+    const held = panel.current;
+    if (held === null) return;
+    const stops = Array.from(held.querySelectorAll<HTMLElement>(FOCUSABLE));
+    const first = stops.at(0);
+    const last = stops.at(-1);
+    if (first === undefined || last === undefined) {
+      // Nothing to move to, so Tab would leave. The panel itself holds
+      // focus in that case.
+      event.preventDefault();
+      return;
+    }
+    const active = document.activeElement;
+    // The panel counts as "before the first stop": it is what holds focus
+    // when the modal opens, so a first Shift+Tab has to wrap to the end
+    // rather than escaping upwards.
+    if (event.shiftKey && (active === first || active === held)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
-  dialog.showModal();
+
+  function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      onClose();
+      return;
+    }
+    if (event.key === "Tab") trap(event);
+  }
+
+  return createPortal(
+    <div
+      className={styles.scrim}
+      onClick={(event) => {
+        // Only a click that landed on the backdrop itself — a click inside
+        // the panel bubbles up to here with a different target.
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        ref={panel}
+        role="dialog"
+        aria-modal="true"
+        aria-label={label}
+        tabIndex={-1}
+        className={styles.panel}
+        onKeyDown={onKeyDown}
+      >
+        {children}
+      </div>
+    </div>,
+    document.body,
+  );
 }
 ```
 
-If `dialog-polyfill` ships no types and `tsc` complains, add `web/src/dialog-polyfill.d.ts`:
+Create `web/src/components/Modal.module.css`:
 
-```ts
-declare module "dialog-polyfill" {
-  const dialogPolyfill: {
-    registerDialog(dialog: HTMLDialogElement): void;
-  };
-  export default dialogPolyfill;
+```css
+/* Fixed to the viewport and portalled to `document.body`, so no ancestor's
+   `overflow` or stacking context can clip it. */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--gap-page);
+  background: var(--scrim);
+}
+
+.panel {
+  position: relative;
+  width: min(560px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-card);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+/* The panel takes focus on open, which would otherwise draw the browser's
+   focus ring around the whole modal. Its own contents keep theirs. */
+.panel:focus {
+  outline: none;
 }
 ```
 
-Check first — do not add the file if the package's own types resolve.
+- [ ] **Step 5: Run the tests to verify they pass**
 
-- [ ] **Step 6: Run the test to verify it passes**
+Run: `npm --prefix web test -- src/components/Modal.test.tsx`
+Expected: PASS, all nine.
 
-Run: `npm --prefix web test -- src/components/modal.test.tsx`
-Expected: PASS, and **no** `This browser already supports <dialog>` warning in the output. A warning here means Step 4 did not take.
+If the Tab-wrapping cases fail, check what `user.tab()` reports as `document.activeElement` before assuming the trap is wrong — jsdom and `user-event` agree about tab order for the plain controls used here, but the panel's own `tabIndex={-1}` means it is focusable without being a tab stop, which is what the `active === held` branch exists for.
 
-- [ ] **Step 7: Run the whole web suite**
+- [ ] **Step 6: Run the stylesheet gate**
 
-Run: `npm --prefix web test`
-Expected: PASS, with the same count as before this task plus one.
+Run: `npm --prefix web test -- src/styles/no-raw-colours.test.ts`
+Expected: PASS. `--scrim` is the only new colour and it lives in `tokens.css`.
 
-- [ ] **Step 8: Lint and type-check**
+- [ ] **Step 7: Lint, type-check and the whole suite**
 
 Run: `npm --prefix web run lint`
 Run: `npm --prefix web run typecheck`
-Expected: PASS both.
+Run: `npm --prefix web test`
+Expected: PASS all three. `noUncheckedIndexedAccess` is on, which is why the trap reads `stops.at(0)` and checks for `undefined` rather than indexing — there is no `!` and no `as` available to shortcut it.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add web/package.json web/package-lock.json web/src/test/setup.ts web/src/components/modal.ts web/src/components/modal.test.tsx
-git commit -m "Let a <dialog> be opened modally under test"
+git add web/src/components/Modal.tsx web/src/components/Modal.module.css web/src/components/Modal.test.tsx web/src/styles/tokens.css
+git commit -m "Add a modal panel that owns its own focus and dismissal"
 ```
-
-If you added the declaration file, include `web/src/dialog-polyfill.d.ts` in the `git add`.
 
 ---
 
@@ -445,26 +641,124 @@ git commit -m "Add a button that copies a link to the clipboard"
 
 ---
 
-### Task 3: folded into Task 5 — do not dispatch
+### Task 3: An armed `InlineConfirm` consumes its Escape
 
-This task was "An armed `InlineConfirm` consumes its Escape", making the
-component call `preventDefault()` and `stopPropagation()` on the Escape it
-handles.
+`InlineConfirm` disarms on Escape but lets the keystroke carry on. Inside `Modal`, whose panel handles Escape on an ancestor of the confirm, one press both cancels the confirm and closes the modal. Escape should be claimed innermost-first.
 
-It is gone because the mechanism changed. `dialog-polyfill` ignores
-`preventDefault()` on an Escape keydown and honours it on the `cancel`
-event, so the modal keeps itself open through the dialog's own `cancel`
-handler rather than by the confirm swallowing the keystroke. That handler
-needs to know a confirm is armed, which is a one-line `data-asking`
-attribute on `InlineConfirm` — setup for Task 5's deliverable, and folded
-into Task 5 accordingly.
+**Files:**
+- Modify: `web/src/components/InlineConfirm.tsx` (the `onKeyDown` handler)
+- Test: `web/src/components/InlineConfirm.test.tsx` (add one case)
 
-The attribute gets no test of its own there: it has no user-visible
-consequence, and the only break it can suffer is exactly what fails Task
-5's `"lets an armed delete confirm have the first Escape"`.
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `InlineConfirm`'s Escape handling now calls `preventDefault()` and `stopPropagation()`. `stopPropagation` is what keeps the keystroke from reaching `Modal`'s handler, so Task 5 relies on it.
 
-Task numbering is unchanged so that briefs, the ledger and every
-cross-reference in this plan keep pointing at the same tasks.
+- [ ] **Step 1: Write the failing test**
+
+Append inside the existing `describe("InlineConfirm", ...)` block in `web/src/components/InlineConfirm.test.tsx`:
+
+```tsx
+  it("consumes the Escape that disarms it rather than letting it travel on", async () => {
+    // An armed confirm is the innermost dismissible thing on the screen.
+    // Without this, one Escape inside the render modal disarms the confirm
+    // *and* closes the modal, losing the view as a side effect of
+    // cancelling something else.
+    //
+    // Both halves matter and are checked separately: `defaultPrevented` is
+    // what suppresses a `<dialog>`'s close request, and the outer handler
+    // is what an ordinary React ancestor would see.
+    const outer = vi.fn();
+    let preventedAtDocument: boolean | undefined;
+    const watch = (event: KeyboardEvent) => {
+      preventedAtDocument = event.defaultPrevented;
+    };
+    document.addEventListener("keydown", watch);
+    try {
+      const user = userEvent.setup();
+      render(
+        <div onKeyDown={outer}>
+          <InlineConfirm label="Abort" question="Abort run?" onConfirm={vi.fn()} />
+        </div>,
+      );
+
+      await user.click(screen.getByRole("button", { name: "Abort" }));
+      await user.keyboard("{Escape}");
+
+      expect(screen.getByRole("button", { name: "Abort" })).toBeInTheDocument();
+      expect(preventedAtDocument).toBe(true);
+      expect(outer).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener("keydown", watch);
+    }
+  });
+
+  it("leaves an Escape alone when it is not armed", async () => {
+    // The pair to the case above: a resting trigger must not swallow a
+    // keystroke meant for whatever surrounds it, or Escape would never
+    // close the render modal while a tile's confirm sat idle inside it.
+    const outer = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <div onKeyDown={outer}>
+        <InlineConfirm label="Abort" question="Abort run?" onConfirm={vi.fn()} />
+      </div>,
+    );
+
+    screen.getByRole("button", { name: "Abort" }).focus();
+    await user.keyboard("{Escape}");
+
+    expect(outer).toHaveBeenCalledTimes(1);
+  });
+```
+
+- [ ] **Step 2: Run the tests to verify the first fails**
+
+Run: `npm --prefix web test -- src/components/InlineConfirm.test.tsx`
+Expected: the armed case FAILS — `preventedAtDocument` is `false` and `outer` was called once. The unarmed case already passes.
+
+- [ ] **Step 3: Make the handler claim the key**
+
+In `web/src/components/InlineConfirm.tsx`, replace:
+
+```tsx
+  function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") answer();
+  }
+```
+
+with:
+
+```tsx
+  function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Escape") return;
+    // An armed confirm is the innermost dismissible thing on the screen, so
+    // it consumes the keystroke rather than also dismissing whatever
+    // surrounds it. `stopPropagation` is what keeps it from reaching
+    // `Modal`'s own Escape handler, an ancestor of every confirm drawn
+    // inside one; `preventDefault` marks it handled for anything that
+    // inspects the event rather than receiving it.
+    event.preventDefault();
+    event.stopPropagation();
+    answer();
+  }
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `npm --prefix web test -- src/components/InlineConfirm.test.tsx`
+Expected: PASS, the whole file — the existing cases cover disarming on Escape, on `no` and on blur, and none of them should move.
+
+- [ ] **Step 5: Run every suite that uses an inline confirm**
+
+Run: `npm --prefix web test`
+Expected: PASS. `RunActions`, `RenderTile`, `RenderGrid`, `RunDetailPage` and `RenderDetailPage` all mount one.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add web/src/components/InlineConfirm.tsx web/src/components/InlineConfirm.test.tsx
+git commit -m "Let an armed confirm swallow the Escape that disarms it"
+```
 
 ---
 
@@ -908,25 +1202,25 @@ git commit -m "Split the render body out of its page, and trim it"
 
 ### Task 5: `RenderModal`
 
-A native `<dialog>` around `RenderDetail`.
+`Modal` around `RenderDetail`, plus the close button `Modal` deliberately does not provide.
 
 **Files:**
 - Create: `web/src/features/renders/RenderModal.tsx`
 - Create: `web/src/features/renders/RenderModal.module.css`
-- Modify: `web/src/styles/tokens.css` (one token)
-- Modify: `web/src/components/InlineConfirm.tsx` (one attribute — Task 3, folded in here)
 - Test: `web/src/features/renders/RenderModal.test.tsx`
 
 **Interfaces:**
-- Consumes: `RenderDetail`, `templateLabel` from Task 4; `openModally` from Task 1.
+- Consumes: `Modal` from Task 1; `RenderDetail`, `templateLabel` from Task 4; `InlineConfirm`'s Escape claim from Task 3.
 - Produces: `RenderModal({ record, onClose, onDeleted }: { record: RenderRecord; onClose: () => void; onDeleted: () => void })`. Task 6 mounts it.
+
+**What this task does not test.** Escape, the backdrop click, the focus trap and focus restore belong to `Modal` and are covered by `Modal.test.tsx` in Task 1. Re-asserting them here would pin the same behaviour twice. The one exception is the armed-confirm case: that is an interaction *between* `InlineConfirm` and `Modal` that neither component's own tests can see, and it is the subtlest thing on this screen.
 
 - [ ] **Step 1: Write the failing tests**
 
 Create `web/src/features/renders/RenderModal.test.tsx`:
 
 ```tsx
-import { fireEvent, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
@@ -953,7 +1247,7 @@ function openModal(
 }
 
 describe("RenderModal", () => {
-  it("opens as a modal dialog naming the template it is showing", () => {
+  it("names itself by the template it is showing", () => {
     // A dialog needs an accessible name, and the template is what tells one
     // render of a topic from another — the topic itself is named by the
     // screen behind the modal.
@@ -972,15 +1266,8 @@ describe("RenderModal", () => {
     expect(screen.getByText("Two panels, one reversal.")).toBeInTheDocument();
   });
 
-  it("closes on Escape", async () => {
-    const { onClose, user } = openModal();
-
-    await user.keyboard("{Escape}");
-
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
   it("closes on the close button", async () => {
+    // `Modal` has no close button of its own; this one is this component's.
     const { onClose, user } = openModal();
 
     await user.click(screen.getByRole("button", { name: "Close" }));
@@ -988,32 +1275,21 @@ describe("RenderModal", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("closes on a click that lands on the backdrop", async () => {
-    // A `<dialog>` in the top layer fills the viewport; a click whose
-    // target is the dialog element itself landed outside the content.
-    // The platform does not do this one, so the component must.
-    const { onClose } = openModal();
-
-    fireEvent.click(screen.getByRole("dialog"));
-
-    await vi.waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-  });
-
-  it("stays open when the click landed on something inside it", async () => {
-    // The pair to the case above, and the one that fails if the handler
-    // forgets to compare the target: without it, every click anywhere in
-    // the modal closes it.
+  it("is wired to Modal's own dismissal", async () => {
+    // One integration assertion, not a re-test of `Modal`: Escape is
+    // covered in `Modal.test.tsx`, and what this catches is `RenderModal`
+    // failing to pass `onClose` down at all.
     const { onClose, user } = openModal();
 
-    await user.click(screen.getByRole("img", { name: "drake meme" }));
+    await user.keyboard("{Escape}");
 
-    expect(onClose).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("lets an armed delete confirm have the first Escape, and closes on the second", async () => {
-    // Escape is claimed innermost-first. Losing the whole view as a side
-    // effect of cancelling a confirm is the bug this prevents.
+    // The interaction neither component's own tests can see. Escape is
+    // claimed innermost-first, so losing the whole view as a side effect of
+    // cancelling a confirm is the bug this prevents.
     const { onClose, user } = openModal();
 
     await user.click(screen.getByRole("button", { name: "Delete" }));
@@ -1029,7 +1305,7 @@ describe("RenderModal", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("closes itself once a confirmed delete has gone through", async () => {
+  it("reports a confirmed delete once it has gone through", async () => {
     let deleted = "";
     server.use(
       http.delete("/api/renders/:renderId", ({ params }) => {
@@ -1037,18 +1313,17 @@ describe("RenderModal", () => {
         return new HttpResponse(null, { status: 204 });
       }),
     );
-    const { onClose, onDeleted, user } = openModal();
+    const { onDeleted, user } = openModal();
 
     await user.click(screen.getByRole("button", { name: "Delete" }));
     await user.click(screen.getByRole("button", { name: "yes" }));
 
     await vi.waitFor(() => expect(onDeleted).toHaveBeenCalledTimes(1));
     expect(deleted).toBe("r1");
-    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("stays open, and says why, when the server will not delete", async () => {
-    // The error is only readable while the modal is up, so a close on
+    // The error is only readable while the modal is up, so closing on
     // failure would throw away the one thing the user needs to see.
     server.use(
       http.delete("/api/renders/:renderId", () =>
@@ -1075,31 +1350,13 @@ describe("RenderModal", () => {
 Run: `npm --prefix web test -- src/features/renders/RenderModal.test.tsx`
 Expected: FAIL — `Failed to resolve import "@/features/renders/RenderModal"`.
 
-- [ ] **Step 3: Add the backdrop token**
-
-In `web/src/styles/tokens.css`, add to the `:root` block, immediately after the `--mood-rest` line:
-
-```css
-  --scrim: rgba(10, 8, 5, 0.72);
-```
-
-And add to the file's header comment, in the list of tokens the handoff does not name as rows, after the `--contrast-border-strong` entry:
-
-```
- *   --scrim            rgba(10,8,5,.72) — the wash behind the render
- *                      modal. Darker and browner than plain black, so the
- *                      page reads as dimmed rather than covered.
-```
-
-- [ ] **Step 4: Write the component**
+- [ ] **Step 3: Write the component**
 
 Create `web/src/features/renders/RenderModal.tsx`:
 
 ```tsx
-import { useEffect, useRef } from "react";
-
 import type { RenderRecord } from "@/api/types";
-import { openModally } from "@/components/modal";
+import { Modal } from "@/components/Modal";
 import { RenderDetail, templateLabel } from "@/features/renders/RenderDetail";
 
 import styles from "./RenderModal.module.css";
@@ -1107,19 +1364,14 @@ import styles from "./RenderModal.module.css";
 /**
  * A render, opened over the topic it came from.
  *
- * A native `<dialog>` rather than a hand-rolled overlay: `showModal()`
- * brings Escape, the focus trap, the `::backdrop`, top-layer stacking and
- * inerting of everything behind it, none of which is worth reimplementing.
- * The one thing the platform does not do is dismiss on a backdrop click,
- * so that is handled here.
- *
- * Every way out converges on the element's own `close()`, and `onClose` is
- * what the grid listens to — so Escape, the close button, the backdrop and
- * a finished delete all clear the same state exactly once.
+ * Everything about being a modal — Escape, the focus trap, focus restore,
+ * the backdrop — belongs to `Modal`. What is added here is the close
+ * button, which `Modal` leaves to its caller, and the decision about what
+ * a finished delete means.
  *
  * The address bar does not change while this is open. The permanent route
- * is still there and `Copy link` hands it out, but browsing a grid of memes
- * should not write a history entry per glance.
+ * is still there and `Copy link` hands it out, but browsing a grid of
+ * memes should not write a history entry per glance.
  */
 export function RenderModal({
   record,
@@ -1127,68 +1379,27 @@ export function RenderModal({
   onDeleted,
 }: {
   record: RenderRecord;
-  /** The dialog has closed, by whatever route. */
+  /** Escape, the backdrop, or the close button. */
   onClose: () => void;
   /**
-   * The row has been deleted. Fired after `close()`, so a caller that moves
-   * focus wins against the dialog's own restore — which has nowhere to go,
-   * the tile that opened it having unmounted with the row.
+   * The row has been deleted. Separate from `onClose` because the caller
+   * has more to do — the tile this modal was opened from has gone with the
+   * row, so focus needs somewhere to land.
    */
   onDeleted: () => void;
 }) {
-  const dialog = useRef<HTMLDialogElement | null>(null);
-
-  useEffect(() => {
-    if (dialog.current !== null) openModally(dialog.current);
-  }, []);
-
   return (
-    <dialog
-      ref={dialog}
-      className={styles.dialog}
-      // Named directly rather than by pointing at the template chip:
-      // `Chip` renders a bare `<span>`, and growing it an `id` prop for one
-      // caller is worse than naming the dialog here.
-      aria-label={templateLabel(record)}
-      onClose={onClose}
-      onCancel={(event) => {
-        // Escape arrives here as a close request. An armed delete confirm
-        // is the innermost dismissible thing on the screen and must have
-        // the keystroke to itself, so the first press only disarms and the
-        // second closes the modal.
-        //
-        // Read off the DOM rather than lifted into state: `InlineConfirm`
-        // owns whether it is asking, and mirroring that up through
-        // `RenderDetail` would give two places to disagree. Cancelling the
-        // keydown instead does not work — a dialog's close request
-        // survives it under `dialog-polyfill`, which the tests run on.
-        if (dialog.current?.querySelector('[data-asking="true"]') != null) {
-          event.preventDefault();
-        }
-      }}
-      onClick={(event) => {
-        // A modal `<dialog>` fills the viewport, so a click whose target is
-        // the element itself landed on the backdrop or the dialog's own
-        // padding rather than on any of its contents.
-        if (event.target === dialog.current) dialog.current?.close();
-      }}
-    >
+    <Modal label={templateLabel(record)} onClose={onClose}>
       <button
         type="button"
         className={styles.close}
         aria-label="Close"
-        onClick={() => dialog.current?.close()}
+        onClick={onClose}
       >
         ✕
       </button>
-      <RenderDetail
-        record={record}
-        onDeleted={() => {
-          dialog.current?.close();
-          onDeleted();
-        }}
-      />
-    </dialog>
+      <RenderDetail record={record} onDeleted={onDeleted} />
+    </Modal>
   );
 }
 ```
@@ -1196,26 +1407,8 @@ export function RenderModal({
 Create `web/src/features/renders/RenderModal.module.css`:
 
 ```css
-/* `position: relative` so the close button can sit over the chips row
-   without a header element of its own. A dialog in the top layer is
-   positioned by the browser; this only establishes the containing block. */
-.dialog {
-  position: relative;
-  width: min(560px, calc(100vw - 2 * var(--gap-page)));
-  max-height: calc(100vh - 2 * var(--gap-page));
-  overflow-y: auto;
-  padding: 14px;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-card);
-  color: var(--text);
-  font-family: var(--font-ui);
-}
-
-.dialog::backdrop {
-  background: var(--scrim);
-}
-
+/* Sits over the chips row rather than taking a header of its own. `Modal`'s
+   panel is the positioned ancestor. */
 .close {
   position: absolute;
   top: 14px;
@@ -1235,47 +1428,22 @@ Create `web/src/features/renders/RenderModal.module.css`:
 }
 ```
 
-- [ ] **Step 5: Mark an armed `InlineConfirm`, which Step 4's `onCancel` reads**
-
-This is the folded-in Task 3, and it is not optional — the `onCancel` handler above has nothing to read without it.
-
-In `web/src/components/InlineConfirm.tsx`, add `data-asking="true"` to the container `div` that carries `onKeyDown` (the one the asking branch renders, classed `styles.tileAsking` / `styles.asking`):
-
-```tsx
-    <div
-      className={tile ? styles.tileAsking : styles.asking}
-      // Read by an enclosing `<dialog>` — the render modal — so Escape
-      // reaches the innermost dismissible thing first: an armed confirm
-      // disarms on the first press, and the modal closes on the second.
-      // The confirm cannot do this by cancelling the keystroke, because a
-      // dialog's close request survives that.
-      data-asking="true"
-      onKeyDown={onKeyDown}
-      onBlur={onBlur}
-    >
-```
-
-No test of its own. The attribute has no user-visible consequence, and the only break it can suffer — the marker going missing — is exactly what fails `"lets an armed delete confirm have the first Escape"` in Step 1. A second test would pin the mechanism while duplicating the coverage.
-
-`InlineConfirm` is shared, so run the screens that mount it before committing.
-
-Run: `npm --prefix web test -- src/components/InlineConfirm.test.tsx src/features/runs src/features/topics src/features/renders`
-Expected: PASS.
-
-- [ ] **Step 6: Run the tests to verify they pass**
+- [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npm --prefix web test -- src/features/renders/RenderModal.test.tsx`
-Expected: PASS, all nine.
+Expected: PASS, all seven.
 
-- [ ] **Step 7: Run the stylesheet gate**
+If `"lets an armed delete confirm have the first Escape"` fails with `onClose` called on the first press, the cause is Task 3: `InlineConfirm`'s Escape handler must call `stopPropagation()`, or the keystroke reaches `Modal`'s handler on the way up. Check that task landed rather than adding a second mechanism here.
+
+- [ ] **Step 5: Run the stylesheet gate**
 
 Run: `npm --prefix web test -- src/styles/no-raw-colours.test.ts`
-Expected: PASS. `--scrim` is the only new colour and it lives in `tokens.css`.
+Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add web/src/features/renders/RenderModal.tsx web/src/features/renders/RenderModal.module.css web/src/features/renders/RenderModal.test.tsx web/src/styles/tokens.css web/src/components/InlineConfirm.tsx
+git add web/src/features/renders/RenderModal.tsx web/src/features/renders/RenderModal.module.css web/src/features/renders/RenderModal.test.tsx
 git commit -m "Add a modal that shows one render over its topic"
 ```
 
@@ -1456,9 +1624,10 @@ Add to `web/src/features/topics/RenderGrid.test.tsx`, inside the existing `descr
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(deleted).toEqual(["r1"]);
     expect(screen.getByAltText("two_buttons meme")).toBeInTheDocument();
-    // The dialog restores focus to the element that opened it, but that
-    // tile went with the row. Focus lands where a tile-level delete already
-    // sends it rather than at the top of the document.
+    // `Modal` restores focus to whatever had it, but that tile went with
+    // the row and a detached node cannot take focus. It lands where a
+    // tile-level delete already sends it instead of at the top of the
+    // document.
     expect(
       screen.getByText("Rendered from this topic").closest('div[tabindex="-1"]'),
     ).toHaveFocus();
