@@ -17,3 +17,9 @@
 .close:hover {
   color: var(--text);
 }
+
+/* The paging announcement. For a screen reader only: the frame already
+   draws `2 / 7` for the eye, and the same fact twice would be read twice. */
+.announce {
+  composes: srOnly from "../../styles/a11y.module.css";
+}

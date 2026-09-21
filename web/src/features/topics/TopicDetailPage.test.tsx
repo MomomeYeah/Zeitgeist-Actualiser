@@ -282,15 +282,84 @@ describe("TopicDetailPage", () => {
     expect(anchor).toHaveFocus();
   });
 
-  it("puts focus back on the grid when a render is deleted from its modal", async () => {
-    // `Modal` hands focus back to whatever opened it, but the tile that did
-    // has unmounted with the row, and a detached node cannot take focus —
-    // so the grid's anchor is where it has to land instead.
-    //
-    // This lives here rather than in `RenderGrid.test.tsx` because only
-    // this screen can show it: the grid's own harness holds a fixed list of
-    // renders, so there the tile never actually goes and `Modal` correctly
-    // restores focus to it.
+  it("stays open on the next render when one is deleted from the modal", async () => {
+    // What paging is for: clearing three duds out of seven costs one open
+    // and three clicks, not three of each. The row genuinely leaves the
+    // cache here, which is why this lives on the screen rather than in
+    // `RenderGrid.test.tsx` — that harness holds a fixed list, so there the
+    // deleted tile never actually goes.
+    let renders = [
+      makeRenderRecord({ id: "r1", templateId: "drake" }),
+      makeRenderRecord({ id: "r2", templateId: "two_buttons" }),
+    ];
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(makeTopicDetail({ renders })),
+      ),
+      http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+      http.get("/api/config/options", () => HttpResponse.json(makeConfigOptions())),
+      http.delete("/api/renders/:renderId", ({ params }) => {
+        renders = renders.filter((render) => render.id !== params.renderId);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByAltText("drake meme"));
+    const dialog = await screen.findByRole("dialog", { name: "drake" });
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "yes" }));
+
+    // The modal is still up, on the render that took the deleted one's
+    // place, and the counter has shrunk with the list.
+    expect(await screen.findByRole("dialog", { name: "two_buttons" })).toBeInTheDocument();
+    expect(screen.queryByAltText("drake meme")).not.toBeInTheDocument();
+    // One render left, so there is nothing to page to any more.
+    expect(screen.queryByRole("button", { name: "Next render" })).not.toBeInTheDocument();
+  });
+
+  it("still answers the keyboard after a delete has moved it on", async () => {
+    // The delete the user just pressed unmounts with the render it belonged
+    // to — the modal's body is keyed by the render's id — and removing the
+    // focused node hands focus to the document, where none of `Modal`'s
+    // handlers can see a keystroke. Escape is the consequence that matters:
+    // paging through a topic dismissing duds is what this feature is for,
+    // and one dismissal must not leave the modal impossible to close from
+    // the keyboard.
+    let renders = [
+      makeRenderRecord({ id: "r1", templateId: "drake" }),
+      makeRenderRecord({ id: "r2", templateId: "two_buttons" }),
+    ];
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(makeTopicDetail({ renders })),
+      ),
+      http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+      http.get("/api/config/options", () => HttpResponse.json(makeConfigOptions())),
+      http.delete("/api/renders/:renderId", ({ params }) => {
+        renders = renders.filter((render) => render.id !== params.renderId);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByAltText("drake meme"));
+    const dialog = await screen.findByRole("dialog", { name: "drake" });
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "yes" }));
+    expect(await screen.findByRole("dialog", { name: "two_buttons" })).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("closes the modal and lands focus on the grid when the last render goes", async () => {
+    // The one case where `Modal` cannot hand focus back: the tile it would
+    // return it to has unmounted with the row, and a detached node cannot
+    // take focus, so it would fall to the top of the document.
     let renders = [makeRenderRecord({ id: "r1", templateId: "drake" })];
     server.use(
       http.get("/api/runs/:runId/topics/:topicId", () =>
@@ -317,6 +386,48 @@ describe("TopicDetailPage", () => {
       .getByText("Rendered from this topic")
       .closest('div[tabindex="-1"]');
     expect(anchor).toHaveFocus();
+  });
+
+  it("pages through the topic's renders from the modal", async () => {
+    // End to end on the real screen, against the list the API actually
+    // returned — including a failed row, which the arrows must be able to
+    // land on and leave again.
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(
+          makeTopicDetail({
+            renders: [
+              makeRenderRecord({ id: "r1", templateId: "drake" }),
+              makeRenderRecord({
+                id: "f1",
+                templateId: "two_buttons",
+                status: "failed",
+                error: "caption for rejected overflows its box",
+              }),
+            ],
+          }),
+        ),
+      ),
+      http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+      http.get("/api/config/options", () => HttpResponse.json(makeConfigOptions())),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByAltText("drake meme"));
+    expect(await screen.findByText("1 / 2")).toBeInTheDocument();
+
+    await user.keyboard("{ArrowRight}");
+
+    const dialog = screen.getByRole("dialog", { name: "two_buttons" });
+    expect(
+      within(dialog).getByText("caption for rejected overflows its box"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("2 / 2")).toBeInTheDocument();
+
+    await user.keyboard("{ArrowLeft}");
+
+    expect(screen.getByRole("dialog", { name: "drake" })).toBeInTheDocument();
   });
 
   it("says which topic is missing rather than showing an empty page", async () => {

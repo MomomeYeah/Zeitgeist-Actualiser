@@ -16,6 +16,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
   margin: 0 0 var(--gap-section);
   padding: 18px;
   background: var(--surface-log);
@@ -46,6 +47,9 @@
   font-family: var(--font-mono);
   font-size: 12px;
   text-align: center;
+  /* Long enough for a reason, narrow enough to read. */
+  max-width: 56ch;
+  line-height: 1.6;
 }
 
 .rationale {
@@ -90,10 +94,93 @@
   line-height: 1;
 }
 
+/* Deliberately `InlineConfirm`'s resting trigger, token for token: this
+   button occupies the same footer slot as that control and swapping between
+   them as you page must not change the footer's shape. Written out rather
+   than composed, because reaching into another component's stylesheet
+   couples this file to that component's internals. */
+.dismiss {
+  padding: 8px 14px;
+  border: 1px solid var(--contrast-border-strong);
+  border-radius: var(--radius-pill);
+  background: none;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--contrast-light);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.dismiss:hover:not(:disabled) {
+  background: var(--contrast-confirm);
+}
+
+.dismiss:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .deleteError {
   margin-top: 10px;
   font-family: var(--font-mono);
   font-size: 10.5px;
   line-height: 1.5;
   color: var(--contrast-light);
+}
+
+/* On the frame's edges rather than hidden until hover: a modal that has
+   quietly gained paging teaches nobody it has, and a touch screen has no
+   hover to teach with. 40% at rest is quiet enough not to fight the meme. */
+.chevron {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 56px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--scrim);
+  color: var(--text-40);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition);
+}
+
+/* Focus as well as hover, or the keyboard gets a control it cannot see. */
+.chevron:hover:not(:disabled),
+.chevron:focus-visible {
+  color: var(--text);
+}
+
+.chevron:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.prev {
+  left: 6px;
+}
+
+.next {
+  right: 6px;
+}
+
+/* In the frame's own padding band, under the image rather than over it. */
+.counter {
+  position: absolute;
+  bottom: 4px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-35);
 }

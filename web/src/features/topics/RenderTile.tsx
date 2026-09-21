@@ -1,9 +1,11 @@
 import type { MouseEvent } from "react";
+import { Link } from "react-router-dom";
 
 import { useDeleteRender } from "@/api/queries";
 import type { RenderRecord } from "@/api/types";
 import { InlineConfirm } from "@/components/InlineConfirm";
 import { MemeTile } from "@/components/MemeTile";
+import { WorkingBar } from "@/components/WorkingBar";
 import { renderPath } from "@/features/renders/render";
 
 import styles from "./RenderTile.module.css";
@@ -20,19 +22,35 @@ export function GeneratingTile({
   label,
   doing,
   onCancel,
+  to,
+  onOpen,
 }: {
   label: string;
   doing: string;
   onCancel?: () => void;
+  /**
+   * The render's permanent address. Absent on the grid's placeholders —
+   * a request in flight has no row, so there is nothing to address.
+   */
+  to?: string;
+  /** First refusal on a click of the preview — see `RenderGrid`. */
+  onOpen?: (event: MouseEvent<HTMLAnchorElement>) => void;
 }) {
+  const working = (
+    <div className={styles.working}>
+      <WorkingBar doing={doing} />
+    </div>
+  );
+
   return (
     <div className={styles.generating}>
-      <div className={styles.working}>
-        <span className={styles.track} aria-hidden="true">
-          <span className={styles.sweep} />
-        </span>
-        <span className={styles.doing}>{doing}</span>
-      </div>
+      {to === undefined ? (
+        working
+      ) : (
+        <Link className={styles.previewLink} to={to} onClick={onOpen}>
+          {working}
+        </Link>
+      )}
       <div className={styles.footer}>
         <span className={styles.line}>{label}</span>
         {onCancel !== undefined && (
@@ -59,9 +77,10 @@ export function GeneratingTile({
  *   has been made, so there is nothing to lose but the wait. The job keeps
  *   running server-side and its result is dropped, because a deleted row
  *   stays deleted (`generation._draw`).
- * - **failed** — kept rather than vanishing, per the handoff, with the
- *   server's own sentence in the footer. Its `✕` dismisses at once: there
- *   is no image to lose.
+ * - **failed** — kept rather than vanishing, per the handoff. The footer
+ *   says only `Render failed`; the server's reason is in the modal the
+ *   preview opens, which has room for a sentence. Its `✕` dismisses at
+ *   once: there is no image to lose.
  * - **deleting** — dimmed until the row leaves the cache, so one click
  *   cannot become two DELETEs.
  *
@@ -108,6 +127,8 @@ export function RenderTile({
           label={`${render.template_id ?? "choosing…"} · ${provenance}`}
           doing={provenance === "manual" ? "rendering…" : "writing brief…"}
           onCancel={drop}
+          to={renderPath(render)}
+          onOpen={onOpen}
         />
         {failure}
       </>
@@ -117,16 +138,19 @@ export function RenderTile({
   if (render.status === "failed") {
     return (
       <div className={styles.failed}>
-        <div className={styles.failedPreview}>
-          <span className={styles.failedWord}>failed</span>
-          <span className={styles.failedLine}>
-            {`${render.template_id ?? "no template"} · ${provenance}`}
+        <Link className={styles.previewLink} to={renderPath(render)} onClick={onOpen}>
+          <span className={styles.failedPreview}>
+            <span className={styles.failedWord}>failed</span>
+            <span className={styles.failedLine}>
+              {`${render.template_id ?? "no template"} · ${provenance}`}
+            </span>
           </span>
-        </div>
+        </Link>
         <div className={styles.footer}>
-          <span className={styles.error} title={render.error ?? undefined}>
-            {render.error ?? "No reason was recorded."}
-          </span>
+          {/* The server's sentence lives in the modal now. A footer line
+              either truncates it or stretches the tile, and the modal has
+              room to show it whole. */}
+          <span className={styles.error}>Render failed</span>
           <button
             type="button"
             className={styles.cross}
