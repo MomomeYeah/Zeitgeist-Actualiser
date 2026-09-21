@@ -46,6 +46,9 @@
   font-family: var(--font-mono);
   font-size: 12px;
   text-align: center;
+  /* Long enough for a reason, narrow enough to read. */
+  max-width: 56ch;
+  line-height: 1.6;
 }
 
 .rationale {
@@ -88,6 +91,34 @@
   font-size: 12px;
   font-weight: 700;
   line-height: 1;
+}
+
+/* Deliberately `InlineConfirm`'s resting trigger, token for token: this
+   button occupies the same footer slot as that control and swapping between
+   them as you page must not change the footer's shape. Written out rather
+   than composed, because reaching into another component's stylesheet
+   couples this file to that component's internals. */
+.dismiss {
+  padding: 8px 14px;
+  border: 1px solid var(--contrast-border-strong);
+  border-radius: var(--radius-pill);
+  background: none;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--contrast-light);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.dismiss:hover:not(:disabled) {
+  background: var(--contrast-confirm);
+}
+
+.dismiss:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .deleteError {

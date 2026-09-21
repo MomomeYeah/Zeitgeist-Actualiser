@@ -76,11 +76,17 @@ describe("RenderDetailPage", () => {
 
   it("says no template was chosen for a render whose brief failed before choosing", async () => {
     // The model is asked to pick, fails before it does, and the row names
-    // no template. Every place the page names the template still needs a
-    // word, and "null" is not one: the chip, the breadcrumb's last entry,
-    // the image's alt text and the download's file name. Each is checked,
-    // because each is its own use site — the type checker is satisfied by
-    // a template literal that prints "null".
+    // no template. The chip and the breadcrumb's last entry still need a
+    // word, and "null" is not one — the type checker is satisfied by a
+    // template literal that prints "null".
+    //
+    // `template_id` is only ever null on a `generating` or `failed` row
+    // (`RenderRecord`'s docstring in `zeitgeist/records.py`), and neither
+    // status draws an `<img>` or a download link any more — Task 4 taught
+    // this screen that a failed render shows its reason instead. So the
+    // image's alt text and the download's file name, which this test used
+    // to check here, are no longer reachable for this combination and are
+    // covered instead by the failed-render tests below.
     serve(makeRenderRecord({ templateId: null, status: "failed", error: "the model is down" }));
 
     renderPage();
@@ -89,10 +95,6 @@ describe("RenderDetailPage", () => {
     expect(within(chips).getByText("no template chosen")).toBeInTheDocument();
     const crumb = screen.getByRole("navigation", { name: "Breadcrumb" });
     expect(within(crumb).getByText("no template chosen")).toBeInTheDocument();
-    expect(screen.getByAltText("no template chosen meme")).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", { name: "Download PNG" }).getAttribute("download"),
-    ).not.toMatch(/null/);
   });
 
   it("explains the model's choice on an auto render", async () => {
@@ -264,6 +266,17 @@ describe("RenderDetailPage", () => {
     expect(writeText).toHaveBeenCalledWith(
       `http://localhost:3000/runs/${RUN_ID}/renders/${RENDER_ID}`,
     );
+  });
+
+  it("draws a failed render's reason rather than a broken image", async () => {
+    // The route shows the same body as the modal, so it gains the failed
+    // panel too — today it draws an `<img>` at a URL that 404s.
+    serve(makeRenderRecord({ status: "failed", error: "the model is down" }));
+
+    renderPage();
+
+    expect(await screen.findByText("the model is down")).toBeInTheDocument();
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
   });
 
   it("still names the topic it belongs to, for someone who arrived by link", async () => {
