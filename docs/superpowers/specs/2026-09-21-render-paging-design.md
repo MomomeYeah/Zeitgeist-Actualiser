@@ -64,6 +64,15 @@ to a screen reader. A `2 / 7` counter sits centred at the foot of the frame,
 inside its 18px padding band rather than over the image, in `--font-mono` at
 `--text-35`.
 
+That counter is for the eye alone — `aria-hidden`, because `2 / 7` is read
+as arithmetic. What paging says out loud is a `role="status"` region holding
+`Render 2 of 7`, visually hidden, and it belongs to `RenderModal` rather
+than to the frame: a live region has to be in the document before its text
+changes to be announced at all, and the body below is remounted by its key
+on every page. Without it paging is silent — the counter is in no live
+region, a changed `aria-label` on an already-focused dialog is not
+re-announced, and the grid's highlight is behind `aria-modal="true"`.
+
 Persistent-but-dim was chosen over revealing them on hover. Hover-reveal
 looks better in a screenshot and leaves the meme unobstructed, but it hides
 the feature's own existence: a modal that has quietly gained paging teaches
@@ -101,7 +110,12 @@ place of the `InlineConfirm`, firing the mutation on its only click, exactly
 as the tile's `✕` does — there is no image to lose.
 
 **generating.** The sweeping bar and the tile's own `writing brief…` or
-`rendering…`, at panel scale. No Download. The delete action becomes
+`rendering…`, at panel scale — `WorkingBar`'s own `size="panel"`, whose
+height is the failed panel's 320px so that paging between those two states
+does not move the frame's edges or the chevrons on them. The variant lives
+in `WorkingBar`'s stylesheet rather than being imposed from
+`RenderDetail.module.css`: one module resizing another's internals leaves
+the cascade order between them decided by import order. No Download. The delete action becomes
 **Cancel**, also unconfirmed, matching the tile: the job keeps running
 server-side and its result is dropped, because a deleted row stays deleted
 (`generation._draw`). When a poll turns the row ready the panel swaps to
@@ -242,6 +256,31 @@ Escape's existing innermost-first arrangement is untouched: an armed
 `InlineConfirm` still swallows the first press. Nothing else in the modal
 uses the arrow keys.
 
+### And so does keeping focus inside it
+
+Every one of those keys — Escape, Tab, `←`/`→` — hangs off the one handler
+on the panel, so focus landing on `<body>` disarms all three at once and
+leaves a container still claiming `aria-modal` over a page the user can now
+tab into. This design creates two ways for that to happen: deleting from
+inside the modal unmounts the very button that was pressed, because the body
+is keyed by the render's id, and the last press of a chevron disables the
+button under the user. The platform answers both by moving focus to the
+document.
+
+`Modal` puts it back, which covers the chevron as well as the delete and
+whatever comes next; a fix in `RenderDetail` would cover only the delete.
+The check is deferred and re-reads where focus landed rather than acting at
+the moment of the loss — `InlineConfirm`'s precedent, and for its reason:
+that control moves focus to its `no` button and back on purpose, and a
+recovery firing mid-move would fight it. Only `<body>` is recovered from,
+and the timer is cleared on unmount so a closing modal cannot drag focus
+back out of the opener.
+
+Its trigger is a check after every commit rather than `focusout`. Neither
+loss announces itself: removing the focused node fires no blur event in
+jsdom and none in Chrome, and nor does disabling it. What they have in
+common is happening during a DOM update.
+
 ## The highlight
 
 The open render's `<li>` in the grid takes
@@ -298,11 +337,21 @@ outlined without a modal over it.
   action is **Cancel**.
 - An auto record with `rationale: ""` draws no **Why this template**.
 - Given `nav`, draws both chevrons and the counter; without it, neither.
+
+`RenderModal.test.tsx` — the two keyed-reset cases, which is the bug this
+design would otherwise ship:
+
 - Paging from a record whose image failed to one that loads draws the
-  image — the keyed-reset case, which is the bug this design would
-  otherwise ship.
+  image.
 - Arming the delete confirm and then changing the record leaves the next
   render unarmed.
+
+They belong here rather than under `RenderDetail.test.tsx`, where an
+earlier draft of this list put them: `key={record.id}` is set by
+`RenderModal`, so a `RenderDetail`-level test could only reproduce the
+reset by keying its own harness, which tests the harness. This is also
+where the paging announcement is tested, for the same reason — the live
+region has to outlive the keyed body, so it is `RenderModal`'s.
 
 `RenderTile.test.tsx`:
 
@@ -316,6 +365,17 @@ outlined without a modal over it.
   panel itself, immediately after opening.
 - Neither key does anything when `onArrowKey` is absent.
 - Neither fires when the event comes from an `input`.
+- A control that unmounts while it holds focus leaves the panel focused, and
+  Escape still closes.
+
+`TopicDetailPage.test.tsx` — on the screen where a delete really takes the
+row out of the cache: Escape still closes the modal after a delete has moved
+it on to the next render.
+
+The chevron half of that same failure — the button disabling itself under
+the user — has no test and cannot have one here: jsdom leaves
+`activeElement` on a button after `disabled` is set, so there is nothing for
+an assertion to see. Faking it with a `blur()` call would test the fake.
 
 `RenderDetailPage.test.tsx` — the route draws a failed render's reason
 rather than a broken image.

@@ -17,7 +17,7 @@ export interface RenderCursor {
   count: number;
   hasPrev: boolean;
   hasNext: boolean;
-  /** Show this render. A id that is not in the list is ignored. */
+  /** Show this render. An id that is not in the list is ignored. */
   open: (id: string) => void;
   close: () => void;
   prev: () => void;
@@ -51,6 +51,12 @@ export interface RenderCursor {
  * it on the way in — a visible flinch in the middle of the interaction this
  * exists to smooth. The effect below only writes the resolved position
  * back, so the next deletion resolves from where the row actually is.
+ *
+ * **One step per render pass.** `prev` and `next` read `index` from the pass
+ * they were created in, so two calls batched into a single pass both step
+ * from the same place and the second wins — one step, not two. React
+ * flushes discrete events one at a time, so a person holding `→` down cannot
+ * reach this; calling `next()` twice in a row from code can.
  */
 export function useRenderCursor(renders: RenderRecord[]): RenderCursor {
   const [position, setPosition] = useState<Position | null>(null);
