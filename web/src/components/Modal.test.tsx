@@ -1,5 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { Modal } from "@/components/Modal";
@@ -114,6 +115,43 @@ describe("Modal", () => {
 
     await user.tab();
     expect(screen.getByRole("button", { name: "first" })).toHaveFocus();
+  });
+
+  it("takes focus back when the control holding it disappears", async () => {
+    // Everything this component does about the keyboard hangs off one
+    // handler on the panel, so focus dropping to `<body>` disarms Escape,
+    // the Tab trap and the arrow keys together — and leaves a container
+    // still claiming `aria-modal` over a page the user can now tab into. A
+    // control that unmounts under the user is ordinary (the render modal's
+    // delete takes its own render's body with it), and the platform answers
+    // it by putting focus on the document.
+    //
+    // The same loss happens when the focused control disables itself
+    // instead, which is what the last press of a paging chevron does. That
+    // one cannot be tested here: jsdom leaves `activeElement` on a button
+    // after `disabled` is set, so there is nothing for a test to observe.
+    const onClose = vi.fn();
+    function Host() {
+      const [showing, setShowing] = useState(true);
+      return (
+        <Modal label="drake" onClose={onClose}>
+          {showing && (
+            <button type="button" onClick={() => setShowing(false)}>
+              remove me
+            </button>
+          )}
+          <span>what is left</span>
+        </Modal>
+      );
+    }
+    const user = userEvent.setup();
+    render(<Host />);
+
+    await user.click(screen.getByRole("button", { name: "remove me" }));
+
+    await waitFor(() => expect(screen.getByRole("dialog")).toHaveFocus());
+    await user.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("wraps backwards too", async () => {

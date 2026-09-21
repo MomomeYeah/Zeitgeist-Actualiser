@@ -319,6 +319,43 @@ describe("TopicDetailPage", () => {
     expect(screen.queryByRole("button", { name: "Next render" })).not.toBeInTheDocument();
   });
 
+  it("still answers the keyboard after a delete has moved it on", async () => {
+    // The delete the user just pressed unmounts with the render it belonged
+    // to — the modal's body is keyed by the render's id — and removing the
+    // focused node hands focus to the document, where none of `Modal`'s
+    // handlers can see a keystroke. Escape is the consequence that matters:
+    // paging through a topic dismissing duds is what this feature is for,
+    // and one dismissal must not leave the modal impossible to close from
+    // the keyboard.
+    let renders = [
+      makeRenderRecord({ id: "r1", templateId: "drake" }),
+      makeRenderRecord({ id: "r2", templateId: "two_buttons" }),
+    ];
+    server.use(
+      http.get("/api/runs/:runId/topics/:topicId", () =>
+        HttpResponse.json(makeTopicDetail({ renders })),
+      ),
+      http.get("/api/runs/:runId", () => HttpResponse.json(makeRunDetail())),
+      http.get("/api/config/options", () => HttpResponse.json(makeConfigOptions())),
+      http.delete("/api/renders/:renderId", ({ params }) => {
+        renders = renders.filter((render) => render.id !== params.renderId);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByAltText("drake meme"));
+    const dialog = await screen.findByRole("dialog", { name: "drake" });
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "yes" }));
+    expect(await screen.findByRole("dialog", { name: "two_buttons" })).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
   it("closes the modal and lands focus on the grid when the last render goes", async () => {
     // The one case where `Modal` cannot hand focus back: the tile it would
     // return it to has unmounted with the row, and a detached node cannot

@@ -33,9 +33,11 @@ const FOCUSABLE = [
  *
  * So the four things the platform would have given are owned here: focus
  * on open and restore on close, Escape, a Tab trap, and a backdrop click.
- * Background inerting is the one thing not reproduced — the page behind
- * keeps its `aria-hidden`-less markup, and `aria-modal` is what tells a
- * screen reader to ignore it.
+ * `showModal()` would also have kept focus inside the dialog once it was
+ * there; `recoverFocus` below is that part, and it is the one that has to be
+ * written out rather than assumed. Background inerting is the one thing not
+ * reproduced — the page behind keeps its `aria-hidden`-less markup, and
+ * `aria-modal` is what tells a screen reader to ignore it.
  *
  * It never unmounts itself. `onClose` is a request, and the caller decides
  * whether to honour it, which is what lets a delete that fails leave the
@@ -62,6 +64,7 @@ export function Modal({
   children: ReactNode;
 }) {
   const panel = useRef<HTMLDivElement | null>(null);
+  const recovery = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const opener = document.activeElement;
@@ -71,6 +74,63 @@ export function Modal({
       // often a tile the modal's own action has just deleted, and focusing
       // a detached node silently sends focus to the document instead.
       if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
+  }, []);
+
+  /**
+   * Put focus back on the panel once it has fallen out of the open dialog.
+   *
+   * Everything this component does about the keyboard — Escape, the Tab
+   * trap, the arrow keys — hangs off a handler on the panel, so focus
+   * landing on `<body>` disarms all three at once while a container still
+   * advertising `aria-modal="true"` sits over the page. The two ways it
+   * happens are the caller's ordinary business rather than anything exotic:
+   * a control unmounts under the user (the delete inside the render modal
+   * takes its own render's body with it) or disables itself (the last press
+   * of a next chevron), and the platform answers either by moving focus to
+   * the document.
+   *
+   * Deferred and re-checked rather than acted on at the moment of the loss,
+   * which is `InlineConfirm`'s precedent and for its reason: where focus is
+   * *going* is ambiguous while it is in flight, where it *landed* is not.
+   * `InlineConfirm` deliberately moves focus to its `no` button when armed
+   * and back to its trigger when answered, and a recovery that fired
+   * mid-move would fight it; a task later the move has finished, the check
+   * sees focus inside the panel, and it does nothing.
+   *
+   * Only `<body>` is recovered from. Focus resting on any other element is
+   * somebody's deliberate placement — a nested dialog, a control portalled
+   * out of the panel — while the document is where nobody put it.
+   */
+  function recoverFocus() {
+    if (recovery.current !== null) clearTimeout(recovery.current);
+    recovery.current = setTimeout(() => {
+      recovery.current = null;
+      const held = panel.current;
+      if (held === null || !held.isConnected) return;
+      const active = document.activeElement;
+      if (active !== null && active !== document.body) return;
+      held.focus();
+    });
+  }
+
+  // Checked after every commit rather than on `focusout`, because neither
+  // loss announces itself: removing the focused node fires no blur event in
+  // jsdom and none in Chrome, and nor does disabling it. What they do have
+  // in common is happening *during* a DOM update, so every commit is when to
+  // look. `onBlur` on the panel covers the rest — a loss with no render
+  // behind it, such as a press on the backdrop the caller declines to close
+  // on.
+  useEffect(() => {
+    recoverFocus();
+  });
+
+  // As `InlineConfirm` does: the deferred check outlives a single render, so
+  // it is cleared on the way out. A modal that has closed must not drag
+  // focus back out of wherever the restore above has just put it.
+  useEffect(() => {
+    return () => {
+      if (recovery.current !== null) clearTimeout(recovery.current);
     };
   }, []);
 
@@ -135,6 +195,7 @@ export function Modal({
         tabIndex={-1}
         className={styles.panel}
         onKeyDown={onKeyDown}
+        onBlur={recoverFocus}
       >
         {children}
       </div>
