@@ -2080,9 +2080,12 @@ delete-error cases must be untouched.
 
 Run: `npm --prefix web run lint` then `npm --prefix web run typecheck` then
 `npm --prefix web test`
-Expected: all clean. `TopicDetailPage.test.tsx` may now fail on the
-modal-delete case — leave it; Task 9 owns it. If it does fail, note the
-failure and continue rather than patching it here.
+Expected: all clean, including `TopicDetailPage.test.tsx`. That file has no
+failed-render tests, and its modal-delete case uses a single render — which
+empties the list, closes the modal and lands focus on the anchor under the
+new behaviour exactly as under the old. So a red suite here is a real
+regression from this task, not an expected casualty of Task 9. Do not
+commit through it.
 
 - [ ] **Step 7: Commit**
 
@@ -2428,8 +2431,13 @@ MSG
 
 The grid's own harness holds a fixed `renders` prop, so a delete never
 actually removes a row there. Only the topic screen can show what this
-feature is for, and one existing test on that screen asserts the opposite of
-the new behaviour.
+feature is for.
+
+The existing `"puts focus back on the grid when a render is deleted from its
+modal"` test is not wrong — it deletes the only render, which still closes
+the modal and still lands focus on the anchor. It is narrow: it describes
+the last-render case while reading as though it described every delete. This
+task renames it to say which case it covers and adds the two it does not.
 
 **Files:**
 - Modify: `web/src/features/topics/TopicDetailPage.test.tsx`
@@ -2437,13 +2445,19 @@ the new behaviour.
 **Interfaces:**
 - Consumes: everything above. Produces nothing.
 
-- [ ] **Step 1: Replace the test that asserts the old behaviour**
+- [ ] **Step 1: Narrow the existing test and add the cases it misses**
 
 In `web/src/features/topics/TopicDetailPage.test.tsx`, replace the whole
 `"puts focus back on the grid when a render is deleted from its modal"` test
-with the two below. The first inherits its handler setup — a mutable
-`renders` array that the DELETE handler filters — which is what makes the row
+with the three below. The second is that test under a name that says which
+case it covers, with its single-render fixture and its assertions intact;
+the other two are new. All three use its handler setup — a mutable `renders`
+array that the DELETE handler filters — which is what makes the row
 genuinely leave the cache.
+
+Run the file before changing anything and confirm it is green: the tasks
+before this one must not have broken it, and starting from a red file hides
+which change did.
 
 ```tsx
   it("stays open on the next render when one is deleted from the modal", async () => {
