@@ -33,7 +33,8 @@ export function WorkingBar({
   // Both classes, the variant second: same stylesheet, so source order
   // decides and the modifier wins. That is the whole reason it is here
   // rather than in the caller's module.
-  const at = (base: string, variant: string) => (panel ? `${base} ${variant}` : base);
+  const at = (base: string | undefined, variant: string | undefined) =>
+    panel ? [base, variant].filter(Boolean).join(" ") : base;
 
   return (
     <span className={at(styles.bar, styles.panelBar)}>

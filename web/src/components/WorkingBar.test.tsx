@@ -20,7 +20,7 @@ describe("WorkingBar", () => {
     expect(container.querySelector("[aria-hidden='true']")).not.toBeNull();
   });
 
-  it("takes the larger look only when it is asked for", async () => {
+  it("takes the larger look only when it is asked for", () => {
     // The two callers' boxes are 112px and a whole modal frame apart, and at
     // tile scale in the frame the bar leaves it about 57px tall — between a
     // failed panel's 320px and an image's 60vh, so paging swings the frame's
