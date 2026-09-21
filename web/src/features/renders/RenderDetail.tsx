@@ -177,9 +177,14 @@ export function RenderDetail({
               ›
             </button>
             {/* The glyphs above say nothing to a screen reader, which is
-                what the aria-labels are for; this line is for the eye and
-                needs no label of its own. */}
-            <span className={styles.counter}>{`${nav.index + 1} / ${nav.count}`}</span>
+                what the aria-labels are for. This line is for the eye only:
+                `2 / 7` reads as arithmetic, and the modal carries the same
+                fact as "Render 2 of 7" in a live region that is also what
+                announces a page. Two copies of it in the accessibility tree
+                would be read twice. */}
+            <span className={styles.counter} aria-hidden="true">
+              {`${nav.index + 1} / ${nav.count}`}
+            </span>
           </>
         )}
       </figure>

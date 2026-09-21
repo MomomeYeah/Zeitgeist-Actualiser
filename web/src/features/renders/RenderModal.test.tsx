@@ -180,6 +180,32 @@ describe("RenderModal", () => {
     expect(onPrev).not.toHaveBeenCalled();
   });
 
+  it("announces which render paging has arrived at", () => {
+    // Otherwise `→` is silence. The counter is a plain span with no live
+    // region, and a dialog's `aria-label` changing under a container that
+    // already holds focus is not re-announced — nor can the grid's own
+    // highlight help, sitting behind `aria-modal="true"`.
+    const { nav } = paging({ index: 1, count: 3 });
+    const { view } = openModal({ id: "r1", templateId: "drake" }, { nav });
+    const region = screen.getByRole("status");
+    expect(region).toHaveTextContent("Render 2 of 3");
+
+    view.rerender(
+      <RenderModal
+        record={makeRenderRecord({ id: "r2", templateId: "two_buttons" })}
+        onClose={vi.fn()}
+        nav={{ ...nav, index: 2 }}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("Render 3 of 3");
+    // The same node, not a replacement. A live region has to already be in
+    // the document for a change to it to be announced, so one rebuilt on
+    // every page — which is what moving this inside the keyed body would do
+    // — would announce nothing.
+    expect(screen.getByRole("status")).toBe(region);
+  });
+
   it("starts the next render clean when it pages to one", async () => {
     // The body holds four things about the render it is showing: whether
     // its image failed, the delete mutation, that mutation's error, and

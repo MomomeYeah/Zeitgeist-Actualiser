@@ -1,0 +1,31 @@
+/* Text for a screen reader and not for the eye, in one place.
+
+   There were two copies of this rule before it moved here — `LlmPanel`'s
+   radio label and `ManualPanel`'s select label — written out again the
+   second time because sharing it was a follow-up to whichever change needed
+   it next. The render modal's paging announcement is the third caller, and
+   three copies of eight properties nobody can check by eye is what
+   `styles/pills.module.css` was made to stop.
+
+   `composes` rather than a second class in `className`, for that file's
+   reason: two single-class selectors from different stylesheets land in
+   whichever cascade order the bundler reached them in, which no component
+   controls. `composes` puts this rule first by construction, so a module
+   that wants to override one of these properties still can.
+
+   The clip-rect form rather than `display: none` or `visibility: hidden`,
+   both of which take the text out of the accessibility tree along with the
+   layout — which would leave nothing to announce. This keeps it in the tree
+   and out of the picture. */
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

@@ -79,6 +79,25 @@ export function RenderModal({
         nav={nav}
         onDeleted={() => undefined}
       />
+      {/* What paging tells a screen reader. Nothing else does: the counter
+          is a plain span, a dialog's `aria-label` changing under a container
+          that already has focus is not re-announced, and the grid's own
+          highlight sits behind `aria-modal="true"` where assistive
+          technology cannot reach it — so `→` was silence.
+
+          Outside the keyed body on purpose. A live region has to be in the
+          document *before* its text changes for the change to be announced,
+          and `RenderDetail` is remounted by its key on every page, which
+          would destroy and rebuild the region each time. This one is mounted
+          for as long as the modal is, text or no text.
+
+          `role="status"` rather than a bare `aria-live`: it carries polite
+          and atomic already, and it says what the region is for as well as
+          how it behaves. "Render 2 of 7" rather than the counter's own
+          `2 / 7`, which a screen reader reads as arithmetic. */}
+      <p className={styles.announce} role="status">
+        {nav === undefined ? "" : `Render ${nav.index + 1} of ${nav.count}`}
+      </p>
     </Modal>
   );
 }
