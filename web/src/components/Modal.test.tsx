@@ -123,4 +123,42 @@ describe("Modal", () => {
 
     expect(screen.getByRole("button", { name: "last" })).toHaveFocus();
   });
+
+  /** A modal that pages, with one stop inside it and a text field. */
+  function openPaging(onArrowKey = vi.fn()) {
+    render(
+      <Modal label="drake" onClose={vi.fn()} onArrowKey={onArrowKey}>
+        <button type="button">inside</button>
+        <input aria-label="note" />
+      </Modal>,
+    );
+    return { onArrowKey, user: userEvent.setup() };
+  }
+
+  it("pages on the arrow keys, from the focus it opens with", async () => {
+    // The keys have to work the instant the modal appears, which is when
+    // someone is most likely to try them — and at that moment focus is on
+    // the panel itself, not on anything inside it. A handler mounted on a
+    // wrapper within the panel would see none of this.
+    const { onArrowKey, user } = openPaging();
+    expect(screen.getByRole("dialog")).toHaveFocus();
+
+    await user.keyboard("{ArrowLeft}");
+    expect(onArrowKey).toHaveBeenCalledWith(-1);
+
+    await user.keyboard("{ArrowRight}");
+    expect(onArrowKey).toHaveBeenCalledWith(1);
+    expect(onArrowKey).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves the arrow keys to a text field inside it", async () => {
+    // The caret's keys belong to the field. This modal has no text input
+    // today, but the primitive is shared and the next one will.
+    const { onArrowKey, user } = openPaging();
+
+    await user.click(screen.getByLabelText("note"));
+    await user.keyboard("{ArrowLeft}");
+
+    expect(onArrowKey).not.toHaveBeenCalled();
+  });
 });

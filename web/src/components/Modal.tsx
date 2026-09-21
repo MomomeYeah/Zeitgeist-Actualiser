@@ -44,12 +44,21 @@ const FOCUSABLE = [
 export function Modal({
   label,
   onClose,
+  onArrowKey,
   children,
 }: {
   /** The dialog's accessible name. */
   label: string;
   /** Escape, or a click on the backdrop. Never called for a click inside. */
   onClose: () => void;
+  /**
+   * `←` and `→`, as -1 and 1. Given a home here rather than left to the
+   * caller because the panel is what holds focus when the modal opens, so
+   * a handler on anything inside it would be deaf until the user had
+   * tabbed onto a control. Narrow on purpose: this is one more named key
+   * beside Escape and Tab, not a general `onKeyDown` escape hatch.
+   */
+  onArrowKey?: (step: -1 | 1) => void;
   children: ReactNode;
 }) {
   const panel = useRef<HTMLDivElement | null>(null);
@@ -93,6 +102,17 @@ export function Modal({
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") {
       onClose();
+      return;
+    }
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      if (onArrowKey === undefined) return;
+      // A caret's keys belong to the field it is in. `event.target` is what
+      // the key was typed into, which is the control that should keep it.
+      const typed = event.target;
+      if (typed instanceof HTMLInputElement || typed instanceof HTMLTextAreaElement) {
+        return;
+      }
+      onArrowKey(event.key === "ArrowLeft" ? -1 : 1);
       return;
     }
     if (event.key === "Tab") trap(event);
