@@ -80,8 +80,11 @@ describe("RenderGrid", () => {
     expect(screen.getByText("choosing… · auto")).toBeInTheDocument();
   });
 
-  it("keeps a failed render's tile, carrying the server's reason", () => {
-    // Per the handoff: a failed render keeps its tile rather than vanishing.
+  it("keeps a failed render's tile, saying only that it failed", async () => {
+    // Per the handoff a failed render keeps its tile rather than vanishing.
+    // The reason moved into the modal, where there is room to read it — a
+    // one-line footer either truncates it or stretches the tile.
+    const user = userEvent.setup();
     renderGrid([
       makeRenderRecord({
         id: "f1",
@@ -90,9 +93,77 @@ describe("RenderGrid", () => {
       }),
     ]);
 
-    expect(screen.getByText("failed")).toBeInTheDocument();
-    expect(screen.getByText("caption for rejected overflows its box")).toBeInTheDocument();
+    // Absent from the footer's text *and* from its `title`: a tooltip
+    // holding the reason would be the same sentence in a second place,
+    // and `queryByText` cannot see an attribute.
+    expect(screen.getByText("Render failed")).not.toHaveAttribute("title");
+    expect(
+      screen.queryByText("caption for rejected overflows its box"),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
+
+    await user.click(screen.getByText("failed"));
+
+    expect(
+      within(await screen.findByRole("dialog")).getByText(
+        "caption for rejected overflows its box",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("links a failed tile to its permanent address, like a ready one", () => {
+    // The href is what makes a tile shareable without opening it, and what
+    // a ⌘-click opens in a new tab.
+    renderGrid([makeRenderRecord({ id: "f1", status: "failed", error: "overflow" })]);
+
+    expect(screen.getByText("failed").closest("a")).toHaveAttribute(
+      "href",
+      `/runs/${RUN_ID}/renders/f1`,
+    );
+  });
+
+  it("opens a generating render in a modal, showing what it is still doing", async () => {
+    const user = userEvent.setup();
+    renderGrid([makeRenderRecord({ id: "g1", status: "generating" })]);
+
+    await user.click(screen.getByText("writing brief…"));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("writing brief…")).toBeInTheDocument();
+  });
+
+  it("links a generating tile to its permanent address", () => {
+    renderGrid([makeRenderRecord({ id: "g1", status: "generating" })]);
+
+    expect(screen.getByText("writing brief…").closest("a")).toHaveAttribute(
+      "href",
+      `/runs/${RUN_ID}/renders/g1`,
+    );
+  });
+
+  it("leaves a placeholder unlinked, because it has no row to open", async () => {
+    // A request still in flight has no render id, so there is nothing to
+    // address and nothing to show at full size.
+    const user = userEvent.setup();
+    renderGrid([], [{ mode: "llm", template_id: null, count: 1 }]);
+
+    expect(screen.getByText("writing brief…").closest("a")).toBeNull();
+    await user.click(screen.getByText("writing brief…"));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("dismisses a failed render from its tile without opening the modal", async () => {
+    // The ✕ sits outside the link. Inside it, every dismissal would also
+    // put the modal up on the render being dismissed.
+    const deleted = recordDeletes();
+    const user = userEvent.setup();
+    renderGrid([makeRenderRecord({ id: "f1", status: "failed", error: "overflow" })]);
+
+    await user.click(screen.getByRole("button", { name: "Dismiss render" }));
+
+    await waitFor(() => expect(deleted).toEqual(["f1"]));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("names no template on a failed render whose brief failed before choosing one", () => {

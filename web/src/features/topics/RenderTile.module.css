@@ -43,6 +43,12 @@
   gap: 8px;
 }
 
+/* The anchor wrapping a preview, so the link fills the box rather than
+   shrink-wrapping the words inside it. */
+.previewLink {
+  display: block;
+}
+
 .footer {
   display: flex;
   align-items: center;
