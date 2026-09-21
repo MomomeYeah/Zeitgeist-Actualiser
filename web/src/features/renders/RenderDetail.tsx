@@ -14,6 +14,24 @@ import { shortRunId } from "@/format";
 import styles from "./RenderDetail.module.css";
 
 /**
+ * What a caller that can page hands down.
+ *
+ * It lives on `RenderDetail` rather than on `RenderModal` because the
+ * chevrons sit on the image frame, and the frame is this component's.
+ * Positioning them from outside would mean guessing the frame's height and
+ * would break the moment its padding changed.
+ */
+export interface RenderNav {
+  onPrev: () => void;
+  onNext: () => void;
+  hasPrev: boolean;
+  hasNext: boolean;
+  /** 0-based. The counter draws `index + 1`. */
+  index: number;
+  count: number;
+}
+
+/**
  * What the frame holds.
  *
  * A render only has an image once it is `ready`, and even then the PNG can
@@ -88,6 +106,7 @@ function Frame({
 export function RenderDetail({
   record,
   onDeleted,
+  nav,
 }: {
   record: RenderRecord;
   /**
@@ -98,6 +117,12 @@ export function RenderDetail({
    * the modal. See `useRenderCursor`.
    */
   onDeleted: () => void;
+  /**
+   * Prev/next, when there is more than one render to look at. Absent on the
+   * standalone route and on a topic with a single render, and then the
+   * frame draws no chevrons and no counter.
+   */
+  nav?: RenderNav;
 }) {
   const [broken, setBroken] = useState(false);
   const remove = useDeleteRender();
@@ -127,7 +152,35 @@ export function RenderDetail({
       </div>
 
       <figure className={styles.frame}>
+        {nav !== undefined && (
+          <button
+            type="button"
+            className={`${styles.chevron} ${styles.prev}`}
+            aria-label="Previous render"
+            disabled={!nav.hasPrev}
+            onClick={nav.onPrev}
+          >
+            ‹
+          </button>
+        )}
         <Frame record={record} broken={broken} onBroken={() => setBroken(true)} />
+        {nav !== undefined && (
+          <>
+            <button
+              type="button"
+              className={`${styles.chevron} ${styles.next}`}
+              aria-label="Next render"
+              disabled={!nav.hasNext}
+              onClick={nav.onNext}
+            >
+              ›
+            </button>
+            {/* The glyphs above say nothing to a screen reader, which is
+                what the aria-labels are for; this line is for the eye and
+                needs no label of its own. */}
+            <span className={styles.counter}>{`${nav.index + 1} / ${nav.count}`}</span>
+          </>
+        )}
       </figure>
 
       {why}

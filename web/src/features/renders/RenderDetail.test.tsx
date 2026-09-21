@@ -4,6 +4,7 @@ import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 
 import { RenderDetail } from "@/features/renders/RenderDetail";
+import type { RenderNav } from "@/features/renders/RenderDetail";
 import { makeRenderRecord } from "@/test/factories";
 import { renderWithProviders } from "@/test/render";
 import { server } from "@/test/server";
@@ -17,6 +18,22 @@ function draw(overrides: Parameters<typeof makeRenderRecord>[0] = {}) {
     />,
   );
   return { onDeleted, user: userEvent.setup(), view };
+}
+
+function drawWithNav(
+  nav: Partial<RenderNav> = {},
+  overrides: Parameters<typeof makeRenderRecord>[0] = {},
+) {
+  const onPrev = vi.fn();
+  const onNext = vi.fn();
+  renderWithProviders(
+    <RenderDetail
+      record={makeRenderRecord({ id: "r1", templateId: "drake", ...overrides })}
+      onDeleted={vi.fn()}
+      nav={{ onPrev, onNext, hasPrev: true, hasNext: true, index: 1, count: 7, ...nav }}
+    />,
+  );
+  return { onPrev, onNext, user: userEvent.setup() };
 }
 
 /** Every render id a DELETE went out for, in order. */
@@ -134,5 +151,58 @@ describe("RenderDetail", () => {
     // record's is "r1" (`web/src/format.ts`).
     expect(screen.getByText("Render r1 has no image on disk")).toBeInTheDocument();
     expect(screen.queryByText("Download PNG")).not.toBeInTheDocument();
+  });
+
+  it("draws no chevrons and no counter when it was given nothing to page", () => {
+    // The standalone route, and a topic with a single render.
+    draw();
+
+    expect(screen.queryByRole("button", { name: "Previous render" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Next render" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d+ \/ \d+/)).not.toBeInTheDocument();
+  });
+
+  it("counts from one, so the first render reads 1 / 7", () => {
+    // The index is 0-based and the counter is not. Off by one here is the
+    // kind of thing nobody notices until it says 0 / 7.
+    drawWithNav({ index: 0, count: 7, hasPrev: false });
+
+    expect(screen.getByText("1 / 7")).toBeInTheDocument();
+  });
+
+  it("pages on the chevrons", async () => {
+    const { onPrev, onNext, user } = drawWithNav();
+
+    await user.click(screen.getByRole("button", { name: "Previous render" }));
+    expect(onPrev).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Next render" }));
+    expect(onNext).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the chevron that would step off the front of the list", () => {
+    // Disabled rather than wrapping, and disabled rather than merely
+    // ignored: a dimmed arrow says where you are, and a disabled button
+    // drops out of the modal's Tab order.
+    drawWithNav({ hasPrev: false, index: 0 });
+
+    expect(screen.getByRole("button", { name: "Previous render" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next render" })).toBeEnabled();
+  });
+
+  it("disables the chevron that would step off the end of the list", () => {
+    drawWithNav({ hasNext: false, index: 6 });
+
+    expect(screen.getByRole("button", { name: "Next render" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Previous render" })).toBeEnabled();
+  });
+
+  it("keeps the chevrons on a render that has no image to page away from", () => {
+    // Paging has to work from a failed render too, or the cycle has holes
+    // you can fall into and not get out of.
+    drawWithNav({}, { status: "failed", error: "overflow" });
+
+    expect(screen.getByRole("button", { name: "Next render" })).toBeEnabled();
+    expect(screen.getByText("2 / 7")).toBeInTheDocument();
   });
 });
