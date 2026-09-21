@@ -9,6 +9,17 @@
   gap: var(--gap-card);
 }
 
+/* The open render, marked through the modal's scrim so the grid behind is a
+   map of where the arrows are. An outline rather than a border: a border
+   would resize the tile and reflow the row while the modal sits over it.
+   Selected on the attribute the component sets, so the accessible signal
+   and the paint cannot drift apart. */
+.grid li[aria-current="true"] {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-tile);
+}
+
 /* The spec's nothing-rendered-yet row: the grid's place, dashed, with the
    one instruction that matters. The mockup's dashed white 10% is the
    border token (9%). */

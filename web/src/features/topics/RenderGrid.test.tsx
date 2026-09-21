@@ -523,4 +523,162 @@ describe("RenderGrid", () => {
     await waitFor(() => expect(deleted).toEqual(["r1"]));
     expect(screen.getByAltText("two_buttons meme")).toBeInTheDocument();
   });
+
+  it("pages to the next render on the chevron, without closing", async () => {
+    const user = userEvent.setup();
+    renderGrid([
+      makeRenderRecord({ id: "r1", templateId: "drake" }),
+      makeRenderRecord({ id: "r2", templateId: "two_buttons" }),
+    ]);
+
+    await user.click(screen.getByAltText("drake meme"));
+    expect(await screen.findByRole("dialog", { name: "drake" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Next render" }));
+
+    // Named by the template, so the dialog's own accessible name is proof
+    // it is a different render rather than the same one redrawn.
+    expect(screen.getByRole("dialog", { name: "two_buttons" })).toBeInTheDocument();
+  });
+
+  it("pages back on the previous chevron", async () => {
+    const user = userEvent.setup();
+    renderGrid([
+      makeRenderRecord({ id: "r1", templateId: "drake" }),
+      makeRenderRecord({ id: "r2", templateId: "two_buttons" }),
+    ]);
+
+    await user.click(screen.getByAltText("two_buttons meme"));
+    await user.click(screen.getByRole("button", { name: "Previous render" }));
+
+    expect(screen.getByRole("dialog", { name: "drake" })).toBeInTheDocument();
+  });
+
+  it("pages on the arrow keys", async () => {
+    const user = userEvent.setup();
+    renderGrid([
+      makeRenderRecord({ id: "r1", templateId: "drake" }),
+      makeRenderRecord({ id: "r2", templateId: "two_buttons" }),
+    ]);
+
+    await user.click(screen.getByAltText("drake meme"));
+    await screen.findByRole("dialog", { name: "drake" });
+
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByRole("dialog", { name: "two_buttons" })).toBeInTheDocument();
+
+    await user.keyboard("{ArrowLeft}");
+    expect(screen.getByRole("dialog", { name: "drake" })).toBeInTheDocument();
+  });
+
+  it("says where in the topic's renders the open one sits", async () => {
+    const user = userEvent.setup();
+    renderGrid([
+      makeRenderRecord({ id: "r1", templateId: "drake" }),
+      makeRenderRecord({ id: "g1", status: "generating" }),
+      makeRenderRecord({ id: "f1", status: "failed", error: "overflow" }),
+    ]);
+
+    await user.click(screen.getByAltText("drake meme"));
+
+    // Three, not one: the counter counts every row the grid drew, which is
+    // what the arrows walk. Counting only ready renders would read 1 / 1
+    // beside two tiles the arrows can still reach.
+    expect(await screen.findByText("1 / 3")).toBeInTheDocument();
+  });
+
+  it("counts the placeholders out, because the arrows cannot reach them", async () => {
+    // A request in flight has no row and no id. Including it in the count
+    // would promise a render the arrows cannot get to.
+    const user = userEvent.setup();
+    renderGrid(
+      [makeRenderRecord({ id: "r1", templateId: "drake" })],
+      [{ mode: "llm", template_id: null, count: 2 }],
+    );
+
+    await user.click(screen.getByAltText("drake meme"));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.queryByText(/\d+ \/ \d+/)).not.toBeInTheDocument();
+  });
+
+  it("offers no paging on a topic with one render", async () => {
+    const user = userEvent.setup();
+    renderGrid([makeRenderRecord({ id: "r1", templateId: "drake" })]);
+
+    await user.click(screen.getByAltText("drake meme"));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Next render" })).not.toBeInTheDocument();
+  });
+
+  it("marks the open render in the grid behind the modal", async () => {
+    // The grid stays visible through the scrim, so it can say where the
+    // arrows are. `aria-current` is the signal; the outline is what paints
+    // it.
+    const user = userEvent.setup();
+    renderGrid([
+      makeRenderRecord({ id: "r1", templateId: "drake" }),
+      makeRenderRecord({ id: "r2", templateId: "two_buttons" }),
+    ]);
+
+    await user.click(screen.getByAltText("drake meme"));
+    await screen.findByRole("dialog", { name: "drake" });
+
+    // Scoped to the grid's own `<ul>`, not a document-wide lookup: once the
+    // modal is open, the tile and the modal's frame both draw an
+    // `<img alt="…meme">` for the same render, so an unscoped
+    // `screen.getByAltText` is ambiguous by construction. The claim here is
+    // about the grid specifically — that it marked the right tile — and the
+    // modal's own copy of the image has nothing to say about that.
+    const grid = () => within(screen.getByRole("list"));
+    const marked = () =>
+      document.querySelectorAll('li[aria-current="true"]');
+    expect(marked()).toHaveLength(1);
+    expect(marked()[0]).toContainElement(grid().getByAltText("drake meme"));
+
+    await user.click(screen.getByRole("button", { name: "Next render" }));
+
+    expect(marked()).toHaveLength(1);
+    expect(marked()[0]).toContainElement(grid().getByAltText("two_buttons meme"));
+  });
+
+  it("marks no tile when the modal is closed", () => {
+    renderGrid([makeRenderRecord({ id: "r1", templateId: "drake" })]);
+
+    expect(document.querySelectorAll('li[aria-current="true"]')).toHaveLength(0);
+  });
+
+  it("gives focus back to the tile when the modal is simply closed", async () => {
+    // The focus rescue below the cursor is guarded on the list being
+    // empty, and this is the test that holds it to that. Drop the guard —
+    // rescue focus whenever the modal closes — and every ordinary
+    // dismissal dumps the keyboard on the section label instead of the
+    // tile the user was looking at, three tabs from where they were.
+    //
+    // `Modal`'s own restore test cannot see this: `Modal` does the right
+    // thing and the grid's effect then undoes it, one commit later.
+    const user = userEvent.setup();
+    renderGrid([
+      makeRenderRecord({ id: "r1", templateId: "drake" }),
+      makeRenderRecord({ id: "r2", templateId: "two_buttons" }),
+    ]);
+
+    const tile = screen.getByAltText("drake meme");
+    await user.click(tile);
+    await screen.findByRole("dialog", { name: "drake" });
+    await user.keyboard("{Escape}");
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    // The tile's own link, which is what `Modal` recorded as the opener:
+    // `user-event` focuses the nearest focusable ancestor of what was
+    // clicked, and that is the `<a>` wrapping the image.
+    expect(tile.closest("a")).toHaveFocus();
+    const anchor = screen
+      .getByText("Rendered from this topic")
+      .closest('div[tabindex="-1"]');
+    expect(anchor).not.toHaveFocus();
+  });
 });
