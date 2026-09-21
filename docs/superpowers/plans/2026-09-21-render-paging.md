@@ -492,24 +492,6 @@ Add to `web/src/components/Modal.test.tsx`, inside the existing
     expect(onArrowKey).toHaveBeenCalledTimes(2);
   });
 
-  it("leaves the arrow keys alone when it was given no handler", async () => {
-    // A modal with nothing to page through must not throw on a keystroke
-    // it has no use for: this fails outright if the handler is called
-    // without checking it exists.
-    const onClose = vi.fn();
-    render(
-      <Modal label="drake" onClose={onClose}>
-        <button type="button">inside</button>
-      </Modal>,
-    );
-    const user = userEvent.setup();
-
-    await user.keyboard("{ArrowLeft}{ArrowRight}");
-
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(onClose).not.toHaveBeenCalled();
-  });
-
   it("leaves the arrow keys to a text field inside it", async () => {
     // The caret's keys belong to the field. This modal has no text input
     // today, but the primitive is shared and the next one will.
@@ -525,9 +507,15 @@ Add to `web/src/components/Modal.test.tsx`, inside the existing
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `npm --prefix web test -- src/components/Modal.test.tsx`
-Expected: FAIL — the first two with `onArrowKey` not being a known prop (a
-type error at build, or `onArrowKey` never called), the third passing
-vacuously for now.
+Expected: FAIL — the paging test, with `onArrowKey` not a known prop (a
+type error at build, or the spy never called). The text-field test passes
+vacuously until the prop exists.
+
+There is deliberately no test for a `Modal` given no `onArrowKey` at all.
+The only mutation it could catch — calling the handler without checking it
+exists — is a type error on an optional prop, so `npm run typecheck` fails
+before vitest gets a chance, and the test could only ever go red by
+throwing.
 
 - [ ] **Step 3: Add the prop and the handler**
 
@@ -1637,17 +1625,6 @@ the imports. Then the new cases:
     expect(onPrev).not.toHaveBeenCalled();
   });
 
-  it("ignores the arrow keys when there is nothing to page through", async () => {
-    // A single-render modal passes no `nav`, so no `onArrowKey` reaches
-    // `Modal` and the keys are inert rather than throwing.
-    const { onClose, user } = openModal();
-
-    await user.keyboard("{ArrowLeft}{ArrowRight}");
-
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(onClose).not.toHaveBeenCalled();
-  });
-
   it("starts the next render clean when it pages to one", async () => {
     // The body holds four things about the render it is showing: whether
     // its image failed, the delete mutation, that mutation's error, and
@@ -1696,6 +1673,12 @@ the imports. Then the new cases:
 
 Add `fireEvent` to the `@testing-library/react` import at the top of the
 file.
+
+As in Task 2, there is no test for a modal given no `nav`. `nav` is only
+narrowed non-undefined inside the ternary that builds the handler, so the
+mutation such a test would catch is a type error, and the test itself
+could fail only by throwing. Task 8 covers the half that is observable:
+a topic with one render draws no chevrons.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -2254,12 +2237,49 @@ already has this pattern in its "shows the open render's current row" test.
 
     expect(document.querySelectorAll('li[aria-current="true"]')).toHaveLength(0);
   });
+
+  it("gives focus back to the tile when the modal is simply closed", async () => {
+    // The focus rescue below the cursor is guarded on the list being
+    // empty, and this is the test that holds it to that. Drop the guard —
+    // rescue focus whenever the modal closes — and every ordinary
+    // dismissal dumps the keyboard on the section label instead of the
+    // tile the user was looking at, three tabs from where they were.
+    //
+    // `Modal`'s own restore test cannot see this: `Modal` does the right
+    // thing and the grid's effect then undoes it, one commit later.
+    const user = userEvent.setup();
+    renderGrid([
+      makeRenderRecord({ id: "r1", templateId: "drake" }),
+      makeRenderRecord({ id: "r2", templateId: "two_buttons" }),
+    ]);
+
+    const tile = screen.getByAltText("drake meme");
+    await user.click(tile);
+    await screen.findByRole("dialog", { name: "drake" });
+    await user.keyboard("{Escape}");
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    // The tile's own link, which is what `Modal` recorded as the opener:
+    // `user-event` focuses the nearest focusable ancestor of what was
+    // clicked, and that is the `<a>` wrapping the image.
+    expect(tile.closest("a")).toHaveFocus();
+    const anchor = screen
+      .getByText("Rendered from this topic")
+      .closest('div[tabindex="-1"]');
+    expect(anchor).not.toHaveFocus();
+  });
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `npm --prefix web test -- src/features/topics/RenderGrid.test.tsx`
-Expected: FAIL — no chevrons, no counter, no `aria-current`.
+Expected: FAIL — no chevrons, no counter, no `aria-current`. The
+focus-on-close test may pass before the change, since today's grid has no
+rescue to get wrong; it is there to stay green as Step 3 adds one, and to
+fail if that rescue is written without its empty-list guard. Confirm that
+by deleting the guard once Step 3 is in and watching this test go red.
 
 - [ ] **Step 3: Rewrite the grid's state**
 
@@ -2613,6 +2633,24 @@ that name in Tasks 6 and 8. `RenderCursor`'s members — `record`, `index`,
 with those exact names in Task 8. `WorkingBar`'s single `doing` prop is used
 as such in Tasks 3 and 4. `onArrowKey(step: -1 | 1)` is defined in Task 2 and
 called with that signature in Task 6.
+
+**Rubric pass against `writing-good-tests.md`.** Three findings, none of
+which the dispatched reviewer raised:
+
+1. Task 2's `"leaves the arrow keys alone when it was given no handler"`
+   could go red only by throwing, and the throw it imagines is a type
+   error on an optional prop — caught by `npm run typecheck`, not by the
+   suite. Deleted.
+2. Task 6's `"ignores the arrow keys when there is nothing to page
+   through"` is the same shape: with no `nav` there is nothing that could
+   move the view, so every assertion reduces to "it did not throw".
+   Deleted. Task 8 keeps the observable half — one render, no chevrons.
+3. **Missing coverage.** Task 8's focus rescue is guarded on
+   `renders.length === 0`. Dropping that guard sends focus to the section
+   label on *every* modal close rather than back to the tile, and nothing
+   in the plan caught it — Task 9 tests only the positive case, and
+   `Modal`'s own restore test cannot see a theft that happens in the
+   grid's effect one commit later. Added to Task 8.
 
 **Change-detector pass.** `reviewing-plan-tests` reported zero findings
 across 59 tests; its own documented blind spot is change detectors, so
