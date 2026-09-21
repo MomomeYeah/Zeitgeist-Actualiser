@@ -52,6 +52,7 @@ function Frame({
   if (record.status === "generating") {
     return (
       <WorkingBar
+        size="panel"
         doing={record.origin.provenance === "manual" ? "rendering…" : "writing brief…"}
       />
     );

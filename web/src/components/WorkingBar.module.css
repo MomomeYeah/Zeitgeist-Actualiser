@@ -59,3 +59,28 @@
   line-height: 1;
   color: var(--accent);
 }
+
+/* The `"panel"` size: the render modal's frame rather than a 112px preview
+   box. 320px is `RenderDetail`'s `.failed` panel's own `min-height`, written
+   as the same number for the same reason — paging from a failed render to a
+   generating one must not move the frame's edges or the chevrons sitting on
+   them. A 3px track and 9.5px type read as a tile shrunk into a large box;
+   at this scale they are the sizes the frame's other states use. */
+.panelBar {
+  min-height: 320px;
+  gap: 18px;
+}
+
+.panelTrack {
+  width: 40%;
+  height: 6px;
+  border-radius: 3px;
+}
+
+.panelTrack .sweep {
+  border-radius: 3px;
+}
+
+.panelDoing {
+  font-size: 12px;
+}
