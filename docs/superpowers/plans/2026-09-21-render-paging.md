@@ -2224,15 +2224,22 @@ already has this pattern in its "shows the open render's current row" test.
     await user.click(screen.getByAltText("drake meme"));
     await screen.findByRole("dialog", { name: "drake" });
 
+    // Scoped to the grid's own `<ul>`, not a document-wide lookup: once the
+    // modal is open, the tile and the modal's frame both draw an
+    // `<img alt="…meme">` for the same render, so an unscoped
+    // `screen.getByAltText` is ambiguous by construction. The claim here is
+    // about the grid specifically — that it marked the right tile — and the
+    // modal's own copy of the image has nothing to say about that.
+    const grid = () => within(screen.getByRole("list"));
     const marked = () =>
       document.querySelectorAll('li[aria-current="true"]');
     expect(marked()).toHaveLength(1);
-    expect(marked()[0]).toContainElement(screen.getByAltText("drake meme"));
+    expect(marked()[0]).toContainElement(grid().getByAltText("drake meme"));
 
     await user.click(screen.getByRole("button", { name: "Next render" }));
 
     expect(marked()).toHaveLength(1);
-    expect(marked()[0]).toContainElement(screen.getByAltText("two_buttons meme"));
+    expect(marked()[0]).toContainElement(grid().getByAltText("two_buttons meme"));
   });
 
   it("marks no tile when the modal is closed", () => {
@@ -2647,6 +2654,29 @@ that name in Tasks 6 and 8. `RenderCursor`'s members — `record`, `index`,
 with those exact names in Task 8. `WorkingBar`'s single `doing` prop is used
 as such in Tasks 3 and 4. `onArrowKey(step: -1 | 1)` is defined in Task 2 and
 called with that signature in Task 6.
+
+**Found during execution, not by any of the three review passes.** The
+version of `"marks the open render in the grid behind the modal"` written
+above could not run at all: it looked up `screen.getByAltText("drake meme")`
+while the modal was open, and at that moment the grid tile and the modal's
+own frame both carry that alt text, so the query throws "found multiple
+elements". The implementer caught it, stopped, and asked rather than
+patching around it. The test above is now the version that shipped, scoped
+to the grid's `<ul>`.
+
+Worth recording why three passes missed it. `reviewing-plan-tests`, the
+change-detector sweep and the `writing-good-tests` pass all asked whether
+each test *could fail* — none asked whether it could *execute*. A test that
+throws on an ambiguous query fails loudly the first time it is run, so the
+cost was small; but the blind spot is systematic, and the cheap check is to
+ask of any assertion made while a modal is open which of the two copies of
+the component it means.
+
+One variant was rejected during that exchange: scoping to
+`within(marked()[0])` rather than to the grid. It would have asked whether
+the marked `<li>` contains an image found inside the marked `<li>`, which
+is true no matter which tile got marked — passing with the highlight on the
+wrong tile, or on every tile.
 
 **Rubric pass against `writing-good-tests.md`.** Three findings, none of
 which the dispatched reviewer raised:
