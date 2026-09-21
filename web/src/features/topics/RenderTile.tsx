@@ -4,6 +4,7 @@ import { useDeleteRender } from "@/api/queries";
 import type { RenderRecord } from "@/api/types";
 import { InlineConfirm } from "@/components/InlineConfirm";
 import { MemeTile } from "@/components/MemeTile";
+import { WorkingBar } from "@/components/WorkingBar";
 import { renderPath } from "@/features/renders/render";
 
 import styles from "./RenderTile.module.css";
@@ -28,10 +29,7 @@ export function GeneratingTile({
   return (
     <div className={styles.generating}>
       <div className={styles.working}>
-        <span className={styles.track} aria-hidden="true">
-          <span className={styles.sweep} />
-        </span>
-        <span className={styles.doing}>{doing}</span>
+        <WorkingBar doing={doing} />
       </div>
       <div className={styles.footer}>
         <span className={styles.line}>{label}</span>
