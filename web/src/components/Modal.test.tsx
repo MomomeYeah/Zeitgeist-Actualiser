@@ -125,11 +125,6 @@ describe("Modal", () => {
     // control that unmounts under the user is ordinary (the render modal's
     // delete takes its own render's body with it), and the platform answers
     // it by putting focus on the document.
-    //
-    // The same loss happens when the focused control disables itself
-    // instead, which is what the last press of a paging chevron does. That
-    // one cannot be tested here: jsdom leaves `activeElement` on a button
-    // after `disabled` is set, so there is nothing for a test to observe.
     const onClose = vi.fn();
     function Host() {
       const [showing, setShowing] = useState(true);
@@ -152,6 +147,42 @@ describe("Modal", () => {
     await waitFor(() => expect(screen.getByRole("dialog")).toHaveFocus());
     await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes focus back when the control holding it disables itself", async () => {
+    // The other half of the same loss, and the one the paging chevrons hit:
+    // the last press of "Next render" disables the button under the user's
+    // focus.
+    //
+    // What this test can and cannot show. Chromium leaves
+    // `document.activeElement` on the disabled button and then delivers the
+    // next keystroke to nothing at all, so the *consequence* — a dead
+    // keyboard — is browser-only and is not asserted here. jsdom models the
+    // `disabled` property faithfully and keeps `activeElement` on the button
+    // in just the same way, which is enough for the recovery's own decision
+    // to be observed: the assertion is that focus has moved back to the
+    // panel, and nothing in this test simulates a focus change the
+    // environment would not perform. Before the disabled branch of
+    // `focusIsLost`, focus stayed on the button here and this failed.
+    function Host() {
+      const [spent, setSpent] = useState(false);
+      return (
+        <Modal label="drake" onClose={vi.fn()}>
+          <button type="button" disabled={spent} onClick={() => setSpent(true)}>
+            next
+          </button>
+          <span>what is left</span>
+        </Modal>
+      );
+    }
+    const user = userEvent.setup();
+    render(<Host />);
+    const next = screen.getByRole("button", { name: "next" });
+
+    await user.click(next);
+    expect(next).toBeDisabled();
+
+    await waitFor(() => expect(screen.getByRole("dialog")).toHaveFocus());
   });
 
   it("wraps backwards too", async () => {

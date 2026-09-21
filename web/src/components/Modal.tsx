@@ -2,6 +2,7 @@ import type { KeyboardEvent, ReactNode } from "react";
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
+import { focusIsLost } from "./focus";
 import styles from "./Modal.module.css";
 
 /**
@@ -82,13 +83,13 @@ export function Modal({
    *
    * Everything this component does about the keyboard — Escape, the Tab
    * trap, the arrow keys — hangs off a handler on the panel, so focus
-   * landing on `<body>` disarms all three at once while a container still
+   * falling out of it disarms all three at once while a container still
    * advertising `aria-modal="true"` sits over the page. The two ways it
    * happens are the caller's ordinary business rather than anything exotic:
    * a control unmounts under the user (the delete inside the render modal
    * takes its own render's body with it) or disables itself (the last press
-   * of a next chevron), and the platform answers either by moving focus to
-   * the document.
+   * of a next chevron). `focusIsLost`, in `./focus`, is what the two have in
+   * common and how they differ — read its comment before this one.
    *
    * Deferred and re-checked rather than acted on at the moment of the loss,
    * which is `InlineConfirm`'s precedent and for its reason: where focus is
@@ -96,11 +97,13 @@ export function Modal({
    * `InlineConfirm` deliberately moves focus to its `no` button when armed
    * and back to its trigger when answered, and a recovery that fired
    * mid-move would fight it; a task later the move has finished, the check
-   * sees focus inside the panel, and it does nothing.
+   * sees focus on `no`, `focusIsLost` says no, and it does nothing. The one
+   * thing the deferral cannot buy is a second look at a disabled control:
+   * that reading is the same a task later as it was immediately, which is
+   * why the predicate and not the delay is what had to change.
    *
-   * Only `<body>` is recovered from. Focus resting on any other element is
-   * somebody's deliberate placement — a nested dialog, a control portalled
-   * out of the panel — while the document is where nobody put it.
+   * It terminates because the panel is a `tabindex="-1"` div that cannot be
+   * disabled, so `focusIsLost` is false of it the moment it has focus.
    */
   function recoverFocus() {
     if (recovery.current !== null) clearTimeout(recovery.current);
@@ -108,16 +111,16 @@ export function Modal({
       recovery.current = null;
       const held = panel.current;
       if (held === null || !held.isConnected) return;
-      const active = document.activeElement;
-      if (active !== null && active !== document.body) return;
+      if (!focusIsLost(document.activeElement)) return;
       held.focus();
     });
   }
 
-  // Checked after every commit rather than on `focusout`, because neither
-  // loss announces itself: removing the focused node fires no blur event in
-  // jsdom and none in Chrome, and nor does disabling it. What they do have
-  // in common is happening *during* a DOM update, so every commit is when to
+  // Checked after every commit rather than only on `focusout`, because the
+  // removal half announces itself nowhere: it fires no blur event in jsdom
+  // and none in Chromium. (Disabling does fire one, but a check hanging off
+  // that alone would still have missed the removal.) What the two have in
+  // common is happening *during* a DOM update, so every commit is when to
   // look. `onBlur` on the panel covers the rest — a loss with no render
   // behind it, such as a press on the backdrop the caller declines to close
   // on.
