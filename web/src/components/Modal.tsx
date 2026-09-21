@@ -87,9 +87,10 @@ export function Modal({
    * advertising `aria-modal="true"` sits over the page. The two ways it
    * happens are the caller's ordinary business rather than anything exotic:
    * a control unmounts under the user (the delete inside the render modal
-   * takes its own render's body with it) or disables itself (the last press
-   * of a next chevron). `focusIsLost`, in `./focus`, is what the two have in
-   * common and how they differ — read its comment before this one.
+   * takes its own render's body with it) or disables itself (the render
+   * modal's Dismiss/Cancel button, disabled while its delete request is in
+   * flight). `focusIsLost`, in `./focus`, is what the two have in common and
+   * how they differ — read its comment before this one.
    *
    * Deferred and re-checked rather than acted on at the moment of the loss,
    * which is `InlineConfirm`'s precedent and for its reason: where focus is
@@ -118,12 +119,12 @@ export function Modal({
 
   // Checked after every commit rather than only on `focusout`, because the
   // removal half announces itself nowhere: it fires no blur event in jsdom
-  // and none in Chromium. (Disabling does fire one, but a check hanging off
-  // that alone would still have missed the removal.) What the two have in
-  // common is happening *during* a DOM update, so every commit is when to
-  // look. `onBlur` on the panel covers the rest — a loss with no render
-  // behind it, such as a press on the backdrop the caller declines to close
-  // on.
+  // and none in Chromium. (Disabling does fire one in Chromium — though not
+  // in jsdom — but a check hanging off that alone would still have missed
+  // the removal.) What the two have in common is happening *during* a DOM
+  // update, so every commit is when to look. `onBlur` on the panel covers
+  // the rest — a loss with no render behind it, such as a press on the
+  // backdrop the caller declines to close on.
   useEffect(() => {
     recoverFocus();
   });

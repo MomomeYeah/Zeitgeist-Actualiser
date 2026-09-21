@@ -6,8 +6,9 @@
  * export a non-component. The two losses an open dialog has to survive are a
  * focused control unmounting under the user (the delete inside the render
  * modal takes its own render's body with it) and a focused control disabling
- * itself under the user (the last press of a next chevron), and Chromium
- * answers them differently. Measured in a real browser, not assumed:
+ * itself under the user (the render modal's Dismiss/Cancel button, disabled
+ * while its delete request is in flight), and Chromium answers them
+ * differently. Measured in a real browser, not assumed:
  *
  * - **Removed.** `document.activeElement` becomes `<body>` synchronously.
  * - **Disabled.** `blur` and `focusout` both fire on the button, and
