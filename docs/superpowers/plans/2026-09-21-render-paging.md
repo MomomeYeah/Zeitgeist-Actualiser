@@ -633,10 +633,14 @@ describe("WorkingBar", () => {
     // is — so it is decoration, and the sentence is the only thing worth
     // announcing. A track without `aria-hidden` is an unlabelled element
     // read out between the tile and its footer.
+    //
+    // Asserted as "the decoration is hidden" rather than as a count of
+    // hidden elements: a second decorative span is a change someone is
+    // entitled to make, and a count would fail on it while catching no bug.
     const { container } = render(<WorkingBar doing="writing brief…" />);
 
     expect(screen.getByText("writing brief…")).toBeInTheDocument();
-    expect(container.querySelectorAll("[aria-hidden='true']")).toHaveLength(1);
+    expect(container.querySelector("[aria-hidden='true']")).not.toBeNull();
   });
 });
 ```
@@ -1856,7 +1860,10 @@ In `web/src/features/topics/RenderGrid.test.tsx`, replace the existing
       }),
     ]);
 
-    expect(screen.getByText("Render failed")).toBeInTheDocument();
+    // Absent from the footer's text *and* from its `title`: a tooltip
+    // holding the reason would be the same sentence in a second place,
+    // and `queryByText` cannot see an attribute.
+    expect(screen.getByText("Render failed")).not.toHaveAttribute("title");
     expect(
       screen.queryByText("caption for rejected overflows its box"),
     ).not.toBeInTheDocument();
@@ -1877,14 +1884,6 @@ In `web/src/features/topics/RenderGrid.test.tsx`, replace the existing
 Add after it:
 
 ```tsx
-  it("carries no tooltip on the failed tile, now that the reason has a home", () => {
-    // Two copies of one sentence, and the tooltip is the worse copy: it
-    // cannot be selected, copied, or reached by keyboard.
-    renderGrid([makeRenderRecord({ id: "f1", status: "failed", error: "overflow" })]);
-
-    expect(screen.getByText("Render failed")).not.toHaveAttribute("title");
-  });
-
   it("links a failed tile to its permanent address, like a ready one", () => {
     // The href is what makes a tile shareable without opening it, and what
     // a ⌘-click opens in a new tab.
@@ -2615,7 +2614,30 @@ with those exact names in Task 8. `WorkingBar`'s single `doing` prop is used
 as such in Tasks 3 and 4. `onArrowKey(step: -1 | 1)` is defined in Task 2 and
 called with that signature in Task 6.
 
-**Fixed during review.** Three places wrote something wrong and then
+**Change-detector pass.** `reviewing-plan-tests` reported zero findings
+across 59 tests; its own documented blind spot is change detectors, so
+the plan's tests were walked again asking only whether a failure would
+mean a bug or a change of mind. Two were amended:
+
+1. Task 7's `"carries no tooltip on the failed tile"` could fail only if
+   someone decided to keep the tooltip. Its one substantive assertion —
+   that the reason is not on the tile, which `queryByText` cannot check
+   for an attribute — moved into the neighbouring
+   `"saying only that it failed"` test, and the standalone test is gone.
+2. Task 3 counted the bar's `aria-hidden` elements. A second decorative
+   span is a legitimate change that would have failed it, so it now
+   asserts that the decoration is hidden rather than how much of it
+   there is.
+
+Task 5's `"1 / 7"` counter assertion was examined and kept: the
+separator is a formatting choice, but `index + 1` is an off-by-one this
+is the only test to catch, and the design spec fixes the format.
+
+Neither amendment touches a signature, so the `Interfaces` blocks in
+Tasks 3, 4, 7 and 8 are unchanged and the type-consistency check from
+`writing-plans` re-runs clean.
+
+**Fixed during the first review.** Three places wrote something wrong and then
 explained it rather than correcting it: an unused `settled` ref in the hook
 with a later step to delete it again, a first `RenderModal` test that
 asserted against the wrong spy with a corrected copy underneath, and a
