@@ -9,6 +9,7 @@
   width: 100%;
 }
 
+/* White at 12% in the mockup; border-strong (14%) is the nearest token. */
 .track {
   position: relative;
   width: 64%;
@@ -29,6 +30,8 @@
   animation: sweep 1.4s ease-in-out infinite;
 }
 
+/* From fully off the left edge to fully off the right: the track is 100 /
+   45 = 2.22 segment-widths wide. */
 @keyframes sweep {
   from {
     transform: translateX(-100%);
@@ -38,6 +41,9 @@
   }
 }
 
+/* Full width at reduced opacity rather than the animated 45%-wide segment
+   sitting still: a static partial bar would read as "45% done", exactly
+   the claim Decision 4 avoids by making progress indeterminate. */
 @media (prefers-reduced-motion: reduce) {
   .sweep {
     animation: none;
