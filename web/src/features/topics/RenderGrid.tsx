@@ -1,10 +1,11 @@
 import type { MouseEvent } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
 import type { GenerationRequest, RenderRecord } from "@/api/types";
 import { SectionLabel } from "@/components/SectionLabel";
 import { RenderModal } from "@/features/renders/RenderModal";
 import { GeneratingTile, RenderTile } from "@/features/topics/RenderTile";
+import { useRenderCursor } from "@/features/topics/useRenderCursor";
 import { shortRunId } from "@/format";
 
 import styles from "./RenderGrid.module.css";
@@ -73,6 +74,10 @@ function placeholdersFor(request: GenerationRequest): { label: string; doing: st
  * keyboard unmounts the `✕` that was focused, and focus would fall to the
  * top of the document; it lands here instead, a tab away from whatever
  * tiles remain.
+ *
+ * Clicking any tile opens the render over the topic, and the modal pages
+ * between them — see `useRenderCursor` for what happens when the row it is
+ * showing is deleted from under it.
  */
 export function RenderGrid({
   renders,
@@ -86,30 +91,23 @@ export function RenderGrid({
   const placeholders = pending.flatMap(placeholdersFor);
   const empty = renders.length === 0 && placeholders.length === 0;
   const anchor = useRef<HTMLDivElement | null>(null);
-  // The id rather than the record: the row behind it can change — a
-  // generating render turning ready — and a copy taken at click time would
-  // show a frame that has already moved on.
-  const [openId, setOpenId] = useState<string | null>(null);
-  const open = renders.find((render) => render.id === openId) ?? null;
+  // Which render the modal is showing, and what happens to it when a row
+  // goes: a delete from inside the modal advances to the render that took
+  // its place rather than closing. See `useRenderCursor`.
+  const cursor = useRenderCursor(renders);
+  const wasOpen = useRef(false);
 
-  // The open render's row leaving the list is how a delete finishes: the
-  // mutation drops it from the cache, so `open` goes null and the modal
-  // unmounts on the very next render. That is also why the modal cannot
-  // report the delete through a callback — react-query does not run a
-  // `mutate()` callback whose component has already gone, and this one
-  // has.
-  //
-  // Focus is what needs rescuing. `Modal` hands it back to whatever opened
-  // it, but that tile went with the row, and a detached node cannot take
-  // focus, so it falls to the document. This effect runs after that
-  // cleanup and puts it on the section label instead — where a tile-level
-  // delete already sends it, a tab away from whatever tiles remain.
+  // Focus needs rescuing in exactly one case: the modal closing because the
+  // last render went. `Modal` hands focus back to whatever opened it, but
+  // that tile left with the row, and a detached node cannot take focus — so
+  // it falls to the document. Every other close has a tile to return to and
+  // `Modal` has already used it, which is why this is guarded on the list
+  // being empty rather than on the modal merely closing.
   useEffect(() => {
-    if (openId !== null && open === null) {
-      setOpenId(null);
-      anchor.current?.focus();
-    }
-  }, [openId, open]);
+    const open = cursor.record !== null;
+    if (wasOpen.current && !open && renders.length === 0) anchor.current?.focus();
+    wasOpen.current = open;
+  }, [cursor.record, renders.length]);
 
   return (
     <section className={styles.section}>
@@ -123,14 +121,21 @@ export function RenderGrid({
       ) : (
         <ul className={styles.grid}>
           {renders.map((render) => (
-            <li key={render.id}>
+            <li
+              key={render.id}
+              // The open render, marked so the grid behind the scrim says
+              // where the arrows are. The attribute carries the meaning and
+              // the stylesheet paints from it, so there is one source of
+              // truth rather than a class nothing asserts.
+              aria-current={render.id === cursor.record?.id ? "true" : undefined}
+            >
               <RenderTile
                 render={render}
                 onRemoved={() => anchor.current?.focus()}
                 onOpen={(event) => {
                   if (!opensHere(event)) return;
                   event.preventDefault();
-                  setOpenId(render.id);
+                  cursor.open(render.id);
                 }}
               />
             </li>
@@ -144,7 +149,27 @@ export function RenderGrid({
           ))}
         </ul>
       )}
-      {open !== null && <RenderModal record={open} onClose={() => setOpenId(null)} />}
+      {cursor.record !== null && (
+        <RenderModal
+          record={cursor.record}
+          onClose={cursor.close}
+          // Nothing to page to with a single render, and then the modal
+          // draws neither chevrons nor counter — a topic with one meme looks
+          // exactly as it did before paging existed.
+          nav={
+            cursor.count > 1
+              ? {
+                  onPrev: cursor.prev,
+                  onNext: cursor.next,
+                  hasPrev: cursor.hasPrev,
+                  hasNext: cursor.hasNext,
+                  index: cursor.index,
+                  count: cursor.count,
+                }
+              : undefined
+          }
+        />
+      )}
     </section>
   );
 }

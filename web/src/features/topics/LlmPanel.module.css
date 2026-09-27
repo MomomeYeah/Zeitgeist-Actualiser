@@ -250,13 +250,5 @@
 /* A radio a person never sees, but a keyboard and a screen reader do: the
    row and the tiles are its labels. */
 .srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-  border: 0;
+  composes: srOnly from "../../styles/a11y.module.css";
 }

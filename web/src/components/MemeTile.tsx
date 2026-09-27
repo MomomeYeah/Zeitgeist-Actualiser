@@ -51,13 +51,27 @@ export function MemeTile({
   const box = grid ? undefined : { "--tile": `${size}px` };
 
   if (failed) {
+    const note = `Render ${renderId} has no image on disk`;
     return (
       <span
         className={grid ? `${styles.failed} ${styles.grid}` : styles.failed}
         style={box}
-        title={`Render ${renderId} has no image on disk`}
+        title={note}
       >
-        failed
+        {to === undefined ? (
+          // The runs-list tile, which sits inside its row's own anchor.
+          "failed"
+        ) : (
+          // Still linked, unlike earlier: the destination used to draw a
+          // broken `<img>`, so the affordance went with the image. It now
+          // names the problem, withholds the download and offers Delete —
+          // and a render whose PNG has vanished is the likeliest to want
+          // deleting. `aria-label` because a link called "failed" says
+          // nothing about where it goes or which render it is.
+          <Link to={to} onClick={onActivate} aria-label={note}>
+            failed
+          </Link>
+        )}
       </span>
     );
   }
