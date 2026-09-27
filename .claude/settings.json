@@ -8,7 +8,7 @@
             "shell": "bash",
             "timeout": 600,
             "statusMessage": "Checking lint, format, types, tests, web",
-            "command": "out=$( { uv sync --locked && npm --prefix web ci && uv run ruff check . && uv run ruff format --check . && uv run ty check && uv run pytest && npm --prefix web run lint && npm --prefix web run typecheck && npm --prefix web test ; } 2>&1 ) || { printf '%s\\n' \"$out\" >&2; echo 'Definition of Done failed. Fix the failures above before completing this task.' >&2; exit 2; }"
+            "command": "out=$( { uv sync --locked && { [ web/node_modules/.package-lock.json -nt web/package-lock.json ] || { echo 'web/node_modules is missing or older than web/package-lock.json. Run: npm --prefix web ci'; false; }; } && uv run ruff check . && uv run ruff format --check . && uv run ty check && uv run pytest && npm --prefix web run lint && npm --prefix web run typecheck && npm --prefix web test ; } 2>&1 ) || { printf '%s\\n' \"$out\" >&2; echo 'Definition of Done failed. Fix the failures above before completing this task.' >&2; exit 2; }"
           }
         ]
       }
