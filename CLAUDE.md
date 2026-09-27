@@ -20,8 +20,18 @@ npm --prefix web test
 Do not report a task as finished, and do not open a pull request, until you
 have run them and seen them pass. A Stop hook enforces this, and CI runs the
 same seven commands on pushes to `main` and on every pull request. Both the
-Stop hook and CI run `uv sync --locked` and `npm --prefix web ci` before the
-seven commands, so a stale lockfile on either side fails fast.
+Stop hook and CI run `uv sync --locked` before the seven commands, so a stale
+`uv.lock` fails fast.
+
+On the web side, CI runs `npm --prefix web ci`, but the Stop hook deliberately
+does not. `npm ci` starts by deleting `node_modules`, and the hook can fire
+while a subagent is still running vitest or tsc, which would pull the
+toolchain out from under it. Instead the hook fails if
+`web/node_modules/.package-lock.json` is missing or older than
+`web/package-lock.json`, the state after a pull or merge that changed
+dependencies. When that happens, run `npm --prefix web ci` yourself once
+nothing else is using `node_modules`. When you add or change a dependency,
+use `npm --prefix web install`, which keeps both lockfiles current.
 
 `npm --prefix web run typecheck` also regenerates `web/src/api/schema.ts`
 from `web/openapi.json` and fails if the checked-in file differs, and
