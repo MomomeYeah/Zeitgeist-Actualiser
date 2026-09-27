@@ -350,6 +350,31 @@ describe("RenderGrid", () => {
     expect(await screen.findByRole("dialog", { name: "drake" })).toBeInTheDocument();
   });
 
+  it("opens a ready render whose PNG has gone missing from disk", async () => {
+    // The gap this closes: every other tile state opens the modal, and this
+    // one did not, because `MemeTile` dropped its link the moment the image
+    // 404'd. Paging onto such a render always worked — the cursor hands the
+    // modal a record and never goes through the tile — so the two routes to
+    // the same render disagreed, and only the direct click was broken.
+    //
+    // It is also the render most worth opening: the modal is where its id
+    // is legible and where Delete is, and an orphaned row is the likeliest
+    // thing to want deleted.
+    const user = userEvent.setup();
+    renderGrid([makeRenderRecord({ id: "r1", templateId: "drake" })]);
+
+    fireEvent.error(screen.getByAltText("drake meme"));
+    await user.click(screen.getByText("failed"));
+
+    // That the dialog opened at all is the whole assertion: before the fix
+    // the tile had no anchor, so this click reached nothing. What the modal
+    // then draws for a missing PNG is `RenderDetail`'s own business and is
+    // tested there — the tile's failed state and the modal's are separate
+    // pieces of state, and firing an error at one says nothing about the
+    // other.
+    expect(await screen.findByRole("dialog", { name: "drake" })).toBeInTheDocument();
+  });
+
   it("leaves the address bar on the topic while the modal is open", async () => {
     // The modal is component state, not a route: browsing a grid of memes
     // should not write a history entry per glance, and Copy link is what

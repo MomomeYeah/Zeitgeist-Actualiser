@@ -44,14 +44,52 @@ describe("MemeTile", () => {
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
   });
 
-  it("stops being a link once its image has failed", () => {
-    // Nothing to open at full size, so the affordance goes with it.
+  it("stays a link once its image has failed", () => {
+    // This reverses the earlier rule that the affordance went with the
+    // image, on the grounds that there was "nothing to open at full size".
+    // That was true when the destination drew a broken `<img>`; it is not
+    // any more. The render view now names the problem — "Render … has no
+    // image on disk" — withholds the download, and offers Copy link and
+    // Delete. A render whose PNG has vanished is the one most likely to
+    // want deleting, and this is the only route to the control that does
+    // it: the grid's `✕` deletes the row, but the modal is where you can
+    // read which render you are about to destroy.
     renderWithProviders(
       <MemeTile renderId="render-1" size={34} to="/runs/r1/renders/render-1" />,
     );
 
     fireEvent.error(screen.getByRole("img"));
 
+    expect(screen.getByText("failed")).toBeInTheDocument();
+    expect(screen.getByRole("link")).toHaveAttribute(
+      "href",
+      "/runs/r1/renders/render-1",
+    );
+  });
+
+  it("names the render on a failed tile's link, not just 'failed'", () => {
+    // The visible word is all the link would otherwise be called, and
+    // "failed" says nothing about where it goes or which render it is.
+    renderWithProviders(
+      <MemeTile renderId="render-1" size={34} to="/runs/r1/renders/render-1" />,
+    );
+
+    fireEvent.error(screen.getByRole("img"));
+
+    expect(
+      screen.getByRole("link", { name: "Render render-1 has no image on disk" }),
+    ).toBeInTheDocument();
+  });
+
+  it("still renders no link for a failed tile that has no destination", () => {
+    // The runs-list case, where the tile sits inside the row's own anchor:
+    // the failed branch must not invent a destination either, or it nests
+    // one anchor inside another.
+    renderWithProviders(<MemeTile renderId="render-1" size={34} />);
+
+    fireEvent.error(screen.getByRole("img"));
+
+    expect(screen.getByText("failed")).toBeInTheDocument();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 
